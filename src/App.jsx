@@ -3,10 +3,11 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import Login from './pages/Login'
 import Onboarding from './pages/Onboarding'
+import LinkedInImport from './pages/LinkedInImport'
 import Dashboard from './pages/Dashboard'
 
 function ProtectedRoute({ children }) {
-  const { user, loading } = useAuth()
+  const { user, profile, loading } = useAuth()
 
   if (loading) {
     return (
@@ -20,6 +21,8 @@ function ProtectedRoute({ children }) {
   }
 
   if (!user) return <Navigate to="/login" replace />
+  if (!profile?.onboarding_completed) return <Navigate to="/onboarding" replace />
+  if (!profile?.linkedin_import_completed) return <Navigate to="/import" replace />
   return children
 }
 
@@ -39,6 +42,30 @@ function OnboardingRoute({ children }) {
   return children
 }
 
+function ImportRoute({ children }) {
+  const { user, profile, loading } = useAuth()
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-page-bg">
+        <div className="w-12 h-12 border-4 border-gold border-t-transparent rounded-full animate-spin mx-auto" />
+      </div>
+    )
+  }
+
+  if (!user) return <Navigate to="/login" replace />
+  if (!profile?.onboarding_completed) return <Navigate to="/onboarding" replace />
+  if (profile?.linkedin_import_completed) return <Navigate to="/dashboard" replace />
+  return children
+}
+
+function routeForUser(user, profile) {
+  if (!user) return '/login'
+  if (!profile?.onboarding_completed) return '/onboarding'
+  if (!profile?.linkedin_import_completed) return '/import'
+  return '/dashboard'
+}
+
 function AppRoutes() {
   const { user, profile, loading } = useAuth()
 
@@ -52,10 +79,11 @@ function AppRoutes() {
 
   return (
     <Routes>
-      <Route path="/login" element={user ? <Navigate to={profile?.onboarding_completed ? '/dashboard' : '/onboarding'} replace /> : <Login />} />
+      <Route path="/login" element={user ? <Navigate to={routeForUser(user, profile)} replace /> : <Login />} />
       <Route path="/onboarding" element={<OnboardingRoute><Onboarding /></OnboardingRoute>} />
+      <Route path="/import" element={<ImportRoute><LinkedInImport /></ImportRoute>} />
       <Route path="/dashboard/*" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-      <Route path="/" element={<Navigate to={user ? (profile?.onboarding_completed ? '/dashboard' : '/onboarding') : '/login'} replace />} />
+      <Route path="/" element={<Navigate to={routeForUser(user, profile)} replace />} />
     </Routes>
   )
 }

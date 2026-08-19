@@ -501,7 +501,7 @@ export default function Onboarding() {
       if (profileErr) throw profileErr
 
       await refreshProfile()
-      navigate('/dashboard')
+      navigate('/import')
     } catch (err) {
       setError(err.message || 'Something went wrong. Please try again.')
     } finally {
