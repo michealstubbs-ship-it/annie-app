@@ -67,10 +67,16 @@ export default function SupportWidget() {
     setInput('')
     setLoading(true)
 
-    try {
-      const topic = await tagTopic(userMsg.content)
-      await supabase.from('support_messages').insert({ user_id: user.id, role: 'user', content: userMsg.content, topic })
+    // Tagging runs in the background and never blocks the reply the customer is waiting on
+    let insertedUserId = null
+    supabase.from('support_messages').insert({ user_id: user.id, role: 'user', content: userMsg.content }).select().single()
+      .then(({ data }) => { insertedUserId = data?.id; return tagTopic(userMsg.content) })
+      .then(topic => {
+        if (topic && insertedUserId) supabase.from('support_messages').update({ topic }).eq('id', insertedUserId)
+      })
+      .catch(() => {})
 
+    try {
       const resp = await fetch('/.netlify/functions/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
