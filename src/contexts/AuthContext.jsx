@@ -9,12 +9,15 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // Safety net — never spin forever
+    const fallback = setTimeout(() => setLoading(false), 8000)
+
     // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
-      if (session?.user) fetchProfile(session.user.id)
-      else setLoading(false)
-    })
+      if (session?.user) fetchProfile(session.user.id).finally(() => clearTimeout(fallback))
+      else { setLoading(false); clearTimeout(fallback) }
+    }).catch(() => { setLoading(false); clearTimeout(fallback) })
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -26,7 +29,7 @@ export function AuthProvider({ children }) {
       }
     })
 
-    return () => subscription.unsubscribe()
+    return () => { subscription.unsubscribe(); clearTimeout(fallback) }
   }, [])
 
   async function fetchProfile(userId) {
