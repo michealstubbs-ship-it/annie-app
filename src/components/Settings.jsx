@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 
 export default function Settings() {
+  const navigate = useNavigate()
   const { user, profile, refreshProfile } = useAuth()
   const [form, setForm] = useState({ full_name: '', firm_name: '', job_title: '', phone: '' })
   const [onboarding, setOnboarding] = useState(null)
@@ -50,6 +52,12 @@ export default function Settings() {
           <button onClick={saveProfile} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save changes'}</button>
           {saved && <span className="text-green-600 text-sm font-medium">Saved!</span>}
         </div>
+      </div>
+
+      <div className="card p-6 mb-6">
+        <h2 className="text-lg font-bold text-navy mb-1">LinkedIn contacts</h2>
+        <p className="text-sm text-gray-500 mb-4">Import or re-import your LinkedIn connections. Annie only adds contacts matching the filters you set.</p>
+        <button onClick={() => navigate('/dashboard/import-linkedin')} className="btn-primary">Import LinkedIn contacts</button>
       </div>
 
       {onboarding && (

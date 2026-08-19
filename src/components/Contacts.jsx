@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 
@@ -14,6 +15,7 @@ const STATUS_COLORS = {
 const EMPTY = { name: '', email: '', phone: '', company: '', title: '', linkedin_url: '', status: 'warm', notes: '' }
 
 export default function Contacts() {
+  const navigate = useNavigate()
   const { user } = useAuth()
   const [contacts, setContacts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -72,7 +74,10 @@ export default function Contacts() {
           <h1 className="text-3xl font-bold text-navy">Contacts</h1>
           <p className="text-gray-500 mt-1">{contacts.length} contacts in your network</p>
         </div>
-        <button onClick={openAdd} className="btn-primary">+ Add Contact</button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => navigate('/dashboard/import-linkedin')} className="btn-ghost">Import from LinkedIn</button>
+          <button onClick={openAdd} className="btn-primary">+ Add Contact</button>
+        </div>
       </div>
 
       <input className="input max-w-sm mb-6" placeholder="Search contacts..." value={search} onChange={e => setSearch(e.target.value)} />

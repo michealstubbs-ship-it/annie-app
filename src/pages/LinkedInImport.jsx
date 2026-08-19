@@ -66,7 +66,47 @@ function findColumn(headers, candidates) {
   return -1
 }
 
-export default function LinkedInImport() {
+function ExportWalkthrough() {
+  return (
+    <div className="bg-page-bg rounded-xl p-5 mb-6">
+      <h3 className="text-sm font-bold text-navy mb-1">How to export your LinkedIn connections</h3>
+      <p className="text-xs text-gray-500 mb-4">Takes about two minutes. LinkedIn emails you the file, nothing leaves your inbox until you upload it here.</p>
+
+      <div className="space-y-2.5">
+        {[
+          { n: 1, title: 'Open LinkedIn and go to Settings', path: ['Me ▾', 'Settings & Privacy'] },
+          { n: 2, title: 'Go to Data privacy, then request your data', path: ['Data privacy', 'Get a copy of your data'] },
+          { n: 3, title: 'Select "Connections" only, then request the archive', path: ['Want something in particular?', 'Connections'] },
+          { n: 4, title: 'Wait for the email, then download Connections.csv', path: null },
+        ].map(step => (
+          <div key={step.n} className="bg-white rounded-lg px-4 py-3 flex items-start gap-3 border border-gray-100">
+            <div className="w-6 h-6 rounded-full bg-navy text-gold text-xs font-bold flex items-center justify-center flex-shrink-0">{step.n}</div>
+            <div className="flex-1">
+              <div className="text-xs font-semibold text-navy">{step.title}</div>
+              {step.path && (
+                <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+                  {step.path.map((p, i) => (
+                    <React.Fragment key={p}>
+                      <span className="bg-page-bg border border-gray-200 rounded text-[11px] px-2 py-0.5 text-gray-600">{p}</span>
+                      {i < step.path.length - 1 && <span className="text-gray-300 text-[11px]">then</span>}
+                    </React.Fragment>
+                  ))}
+                </div>
+              )}
+              {step.n === 4 && <p className="text-[11px] text-gray-400 mt-1">LinkedIn usually sends this within ten minutes.</p>}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <p className="text-[11px] text-gray-400 mt-4 leading-relaxed">
+        This is your own data, exported directly from LinkedIn under its official data portability tools. Nothing is scraped or accessed without your permission.
+      </p>
+    </div>
+  )
+}
+
+export default function LinkedInImport({ embedded = false }) {
   const { user, refreshProfile } = useAuth()
   const navigate = useNavigate()
   const fileInputRef = useRef(null)
@@ -77,11 +117,11 @@ export default function LinkedInImport() {
   const [seniority, setSeniority] = useState(DEFAULT_SENIORITY)
   const [years, setYears] = useState(5)
 
-  const [rawContacts, setRawContacts] = useState(null) // parsed from CSV
+  const [rawContacts, setRawContacts] = useState(null)
   const [fileName, setFileName] = useState('')
   const [error, setError] = useState('')
   const [importing, setImporting] = useState(false)
-  const [done, setDone] = useState(null) // { imported, targets }
+  const [done, setDone] = useState(null)
 
   function toggle(arr, setArr, value) {
     setArr(prev => prev.includes(value) ? prev.filter(v => v !== value) : [...prev, value])
@@ -128,21 +168,18 @@ export default function LinkedInImport() {
   function matchesFilters(contact) {
     const text = `${contact.title} ${contact.company}`.toLowerCase()
 
-    // Function filter — must match at least one selected function's keywords
     if (functions.length) {
       const selectedFns = FUNCTION_OPTIONS.filter(f => functions.includes(f.label))
       const fnMatch = selectedFns.some(f => f.keywords.some(k => text.includes(k)))
       if (!fnMatch) return false
     }
 
-    // Seniority filter
     if (seniority.length && !seniority.includes('Any level')) {
       const selectedSen = SENIORITY_OPTIONS.filter(s => seniority.includes(s.label))
       const senMatch = selectedSen.some(s => s.keywords.some(k => text.includes(k)))
       if (!senMatch) return false
     }
 
-    // Years filter
     if (contact.connectedOn) {
       const parsed = Date.parse(contact.connectedOn)
       if (!isNaN(parsed)) {
@@ -160,7 +197,6 @@ export default function LinkedInImport() {
     setImporting(true)
     setError('')
     try {
-      // fetch target companies from onboarding to flag hot contacts
       const { data: onboarding } = await supabase.from('onboarding').select('target_companies').eq('user_id', user.id).single()
       const targetCompanies = (onboarding?.target_companies || []).map(t => t.toLowerCase())
 
@@ -202,26 +238,9 @@ export default function LinkedInImport() {
     navigate('/dashboard')
   }
 
-  if (done) {
-    return (
-      <div className="min-h-screen bg-navy flex flex-col items-center justify-center px-4 py-12">
-        <div className="bg-white rounded-2xl p-8 shadow-2xl w-full max-w-md text-center">
-          <div className="w-14 h-14 rounded-full bg-yellow-50 border-2 border-gold flex items-center justify-center mx-auto mb-4">
-            <span className="text-2xl">✓</span>
-          </div>
-          <h2 className="text-2xl font-bold text-navy mb-2">You're all set</h2>
-          <p className="text-gray-500 text-sm mb-6">
-            Annie imported <span className="font-semibold text-navy">{done.imported} contacts</span>
-            {done.targets > 0 && <> — <span className="font-semibold text-gold">{done.targets} at your target companies</span></>}.
-            She's now monitoring all of them for BD signals.
-          </p>
-          <button onClick={() => navigate('/dashboard')} className="btn-primary w-full">Go to my dashboard</button>
-        </div>
-      </div>
-    )
-  }
-
-  return (
+  const Wrapper = ({ children }) => embedded ? (
+    <div className="p-8 max-w-2xl">{children}</div>
+  ) : (
     <div className="min-h-screen bg-navy flex flex-col items-center justify-center px-4 py-12">
       <div className="flex items-center gap-3 mb-8">
         <svg width="40" height="40" viewBox="0 0 68 68" fill="none">
@@ -233,120 +252,142 @@ export default function LinkedInImport() {
           <div className="text-gold text-xs font-semibold tracking-widest uppercase">BD Intelligence</div>
         </div>
       </div>
+      <div className="bg-white rounded-2xl p-8 shadow-2xl w-full max-w-2xl">{children}</div>
+    </div>
+  )
 
-      <div className="bg-white rounded-2xl p-8 shadow-2xl w-full max-w-2xl">
-        <h2 className="text-2xl font-bold text-navy mb-1">Import your LinkedIn connections</h2>
-        <p className="text-gray-500 text-sm mb-6">
-          Annie will only import contacts that match your BD focus — then monitor every one of them for signals that create a reason to reach out.
-        </p>
+  if (done) {
+    return (
+      <Wrapper>
+        <div className="text-center">
+          <div className="w-14 h-14 rounded-full bg-yellow-50 border-2 border-gold flex items-center justify-center mx-auto mb-4">
+            <span className="text-2xl">✓</span>
+          </div>
+          <h2 className="text-2xl font-bold text-navy mb-2">You're all set</h2>
+          <p className="text-gray-500 text-sm mb-6">
+            Annie imported <span className="font-semibold text-navy">{done.imported} contacts</span>
+            {done.targets > 0 && <> — <span className="font-semibold text-gold">{done.targets} at your target companies</span></>}.
+            She's now monitoring all of them for BD signals.
+          </p>
+          <button onClick={() => navigate('/dashboard')} className="btn-primary w-full">Go to my dashboard</button>
+        </div>
+      </Wrapper>
+    )
+  }
 
-        {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">{error}</div>}
+  return (
+    <Wrapper>
+      <h2 className="text-2xl font-bold text-navy mb-1">Import your LinkedIn connections</h2>
+      <p className="text-gray-500 text-sm mb-6">
+        Annie will only import contacts that match your BD focus, then monitor every one of them for signals that create a reason to reach out.
+      </p>
 
-        {!rawContacts && (
-          <div className="border-2 border-dashed border-gray-200 rounded-xl p-6 mb-6 text-center">
-            <p className="text-sm text-gray-500 mb-3">
-              Export your connections from LinkedIn: <span className="font-medium text-navy">Settings → Data privacy → Get a copy of your data → Connections</span>
-            </p>
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">{error}</div>}
+
+      {!rawContacts && (
+        <>
+          <ExportWalkthrough />
+          <div className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center">
             <input ref={fileInputRef} type="file" accept=".csv" onChange={handleFile} className="hidden" />
             <button onClick={() => fileInputRef.current?.click()} className="btn-primary">Upload Connections.csv</button>
             {fileName && <p className="text-xs text-gray-400 mt-2">{fileName}</p>}
           </div>
-        )}
+        </>
+      )}
 
-        {rawContacts && (
-          <>
-            <div className="mb-1">
-              <div className="label mb-2">Sectors</div>
-              <div className="flex flex-wrap gap-1.5">
-                {SECTOR_OPTIONS.map(s => (
-                  <button key={s} onClick={() => toggle(sectors, setSectors, s)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-all
-                      ${sectors.includes(s) ? 'border-gold bg-yellow-50 text-navy' : 'border-gray-200 text-gray-500'}`}>
-                    {s}
-                  </button>
-                ))}
-              </div>
+      {rawContacts && (
+        <>
+          <div className="mb-1">
+            <div className="label mb-2">Sectors</div>
+            <div className="flex flex-wrap gap-1.5">
+              {SECTOR_OPTIONS.map(s => (
+                <button key={s} onClick={() => toggle(sectors, setSectors, s)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-all
+                    ${sectors.includes(s) ? 'border-gold bg-yellow-50 text-navy' : 'border-gray-200 text-gray-500'}`}>
+                  {s}
+                </button>
+              ))}
             </div>
+          </div>
 
-            <div className="mt-4 mb-1">
-              <div className="label mb-2">Markets</div>
-              <div className="flex flex-wrap gap-1.5">
-                {MARKET_OPTIONS.map(m => (
-                  <button key={m} onClick={() => toggle(markets, setMarkets, m)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-all
-                      ${markets.includes(m) ? 'border-gold bg-yellow-50 text-navy' : 'border-gray-200 text-gray-500'}`}>
-                    {m}
-                  </button>
-                ))}
-              </div>
+          <div className="mt-4 mb-1">
+            <div className="label mb-2">Markets</div>
+            <div className="flex flex-wrap gap-1.5">
+              {MARKET_OPTIONS.map(m => (
+                <button key={m} onClick={() => toggle(markets, setMarkets, m)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-all
+                    ${markets.includes(m) ? 'border-gold bg-yellow-50 text-navy' : 'border-gray-200 text-gray-500'}`}>
+                  {m}
+                </button>
+              ))}
             </div>
+          </div>
 
-            <div className="mt-4 mb-1">
-              <div className="label mb-2">Functions</div>
-              <div className="flex flex-wrap gap-1.5">
-                {FUNCTION_OPTIONS.map(f => (
-                  <button key={f.label} onClick={() => toggle(functions, setFunctions, f.label)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-all
-                      ${functions.includes(f.label) ? 'border-gold bg-yellow-50 text-navy' : 'border-gray-200 text-gray-500'}`}>
-                    {f.label}
-                  </button>
-                ))}
-              </div>
+          <div className="mt-4 mb-1">
+            <div className="label mb-2">Functions</div>
+            <div className="flex flex-wrap gap-1.5">
+              {FUNCTION_OPTIONS.map(f => (
+                <button key={f.label} onClick={() => toggle(functions, setFunctions, f.label)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-all
+                    ${functions.includes(f.label) ? 'border-gold bg-yellow-50 text-navy' : 'border-gray-200 text-gray-500'}`}>
+                  {f.label}
+                </button>
+              ))}
             </div>
+          </div>
 
-            <div className="mt-4 mb-1">
-              <div className="label mb-2">Seniority</div>
-              <div className="flex flex-wrap gap-1.5">
-                {SENIORITY_OPTIONS.map(s => (
-                  <button key={s.label} onClick={() => toggle(seniority, setSeniority, s.label)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-all
-                      ${seniority.includes(s.label) ? 'border-gold bg-yellow-50 text-navy' : 'border-gray-200 text-gray-500'}`}>
-                    {s.label}
-                  </button>
-                ))}
-              </div>
+          <div className="mt-4 mb-1">
+            <div className="label mb-2">Seniority</div>
+            <div className="flex flex-wrap gap-1.5">
+              {SENIORITY_OPTIONS.map(s => (
+                <button key={s.label} onClick={() => toggle(seniority, setSeniority, s.label)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-all
+                    ${seniority.includes(s.label) ? 'border-gold bg-yellow-50 text-navy' : 'border-gray-200 text-gray-500'}`}>
+                  {s.label}
+                </button>
+              ))}
             </div>
+          </div>
 
-            <div className="flex items-center gap-3 mt-5">
-              <label className="text-sm text-gray-700 min-w-[130px]">Connected in last</label>
-              <input type="range" min="1" max="10" value={years} onChange={e => setYears(Number(e.target.value))} className="flex-1 accent-gold" />
-              <span className="text-sm font-semibold text-navy min-w-[70px] text-right">{years} year{years === 1 ? '' : 's'}</span>
+          <div className="flex items-center gap-3 mt-5">
+            <label className="text-sm text-gray-700 min-w-[130px]">Connected in last</label>
+            <input type="range" min="1" max="10" value={years} onChange={e => setYears(Number(e.target.value))} className="flex-1 accent-gold" />
+            <span className="text-sm font-semibold text-navy min-w-[70px] text-right">{years} year{years === 1 ? '' : 's'}</span>
+          </div>
+
+          <div className="bg-page-bg rounded-lg px-4 py-3 mt-5">
+            <div className="flex justify-between text-sm mb-1">
+              <span className="text-gray-500">Your total connections</span>
+              <span className="font-semibold text-navy">{rawContacts.length.toLocaleString()}</span>
             </div>
-
-            <div className="bg-page-bg rounded-lg px-4 py-3 mt-5">
-              <div className="flex justify-between text-sm mb-1">
-                <span className="text-gray-500">Your total connections</span>
-                <span className="font-semibold text-navy">{rawContacts.length.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-500">Matching your filters</span>
-                <span className="font-semibold text-gold">{filtered.length.toLocaleString()}</span>
-              </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Matching your filters</span>
+              <span className="font-semibold text-gold">{filtered.length.toLocaleString()}</span>
             </div>
+          </div>
 
-            <div className="bg-navy rounded-lg px-5 py-4 mt-4">
-              <div className="text-gold text-xs font-semibold uppercase tracking-wider mb-3">Annie will monitor all imported contacts for</div>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-                {SIGNAL_TYPES.map(s => (
-                  <div key={s} className="flex items-start gap-2">
-                    <div className="w-1.5 h-1.5 rounded-full bg-gold mt-1.5 flex-shrink-0" />
-                    <span className="text-xs text-gray-300">{s}</span>
-                  </div>
-                ))}
-              </div>
-              <p className="text-xs text-gray-500 mt-3">When a signal fires, Annie drafts a personalised outreach so you always have a reason to reach out at the right moment.</p>
+          <div className="bg-navy rounded-lg px-5 py-4 mt-4">
+            <div className="text-gold text-xs font-semibold uppercase tracking-wider mb-3">Annie will monitor all imported contacts for</div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+              {SIGNAL_TYPES.map(s => (
+                <div key={s} className="flex items-start gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-gold mt-1.5 flex-shrink-0" />
+                  <span className="text-xs text-gray-300">{s}</span>
+                </div>
+              ))}
             </div>
+            <p className="text-xs text-gray-500 mt-3">When a signal fires, Annie drafts a personalised outreach so you always have a reason to reach out at the right moment.</p>
+          </div>
 
-            <button onClick={handleImport} disabled={importing || !filtered.length} className="btn-primary w-full mt-5">
-              {importing ? 'Importing...' : `Import ${filtered.length.toLocaleString()} contacts into Annie`}
-            </button>
-          </>
-        )}
+          <button onClick={handleImport} disabled={importing || !filtered.length} className="btn-primary w-full mt-5">
+            {importing ? 'Importing...' : `Import ${filtered.length.toLocaleString()} contacts into Annie`}
+          </button>
+        </>
+      )}
 
-        <button onClick={handleSkip} className="w-full mt-2 text-xs text-gray-400 hover:text-gray-600 py-1">
-          Skip for now — I'll add contacts manually
-        </button>
-      </div>
-    </div>
+      <button onClick={handleSkip} className="w-full mt-2 text-xs text-gray-400 hover:text-gray-600 py-1">
+        {embedded ? 'Cancel' : "Skip for now, I'll add contacts manually"}
+      </button>
+    </Wrapper>
   )
 }
