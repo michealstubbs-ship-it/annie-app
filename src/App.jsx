@@ -5,6 +5,8 @@ import Login from './pages/Login'
 import Onboarding from './pages/Onboarding'
 import LinkedInImport from './pages/LinkedInImport'
 import Dashboard from './pages/Dashboard'
+import ResetPassword from './pages/ResetPassword'
+import SupportWidget from './components/SupportWidget'
 
 function ProtectedRoute({ children }) {
   const { user, profile, loading } = useAuth()
@@ -78,13 +80,17 @@ function AppRoutes() {
   }
 
   return (
-    <Routes>
-      <Route path="/login" element={user ? <Navigate to={routeForUser(user, profile)} replace /> : <Login />} />
-      <Route path="/onboarding" element={<OnboardingRoute><Onboarding /></OnboardingRoute>} />
-      <Route path="/import" element={<ImportRoute><LinkedInImport /></ImportRoute>} />
-      <Route path="/dashboard/*" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-      <Route path="/" element={<Navigate to={routeForUser(user, profile)} replace />} />
-    </Routes>
+    <>
+      <Routes>
+        <Route path="/login" element={user ? <Navigate to={routeForUser(user, profile)} replace /> : <Login />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/onboarding" element={<OnboardingRoute><Onboarding /></OnboardingRoute>} />
+        <Route path="/import" element={<ImportRoute><LinkedInImport /></ImportRoute>} />
+        <Route path="/dashboard/*" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+        <Route path="/" element={<Navigate to={routeForUser(user, profile)} replace />} />
+      </Routes>
+      {user && <SupportWidget />}
+    </>
   )
 }
 

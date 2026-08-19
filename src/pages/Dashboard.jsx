@@ -9,6 +9,7 @@ const Signals = lazy(() => import('../components/Signals'))
 const Chat = lazy(() => import('../components/Chat'))
 const Settings = lazy(() => import('../components/Settings'))
 const LinkedInImport = lazy(() => import('./LinkedInImport'))
+const Insights = lazy(() => import('../components/Insights'))
 
 function PageLoader() {
   return (
@@ -32,6 +33,7 @@ export default function Dashboard() {
             <Route path="chat" element={<Chat />} />
             <Route path="settings" element={<Settings />} />
             <Route path="import-linkedin" element={<LinkedInImport embedded />} />
+            <Route path="insights" element={<Insights />} />
           </Routes>
         </Suspense>
       </main>

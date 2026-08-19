@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import InfoTip from './InfoTip'
 
 const STATUSES = ['hot', 'warm', 'cold', 'client', 'inactive']
 const STATUS_COLORS = {
@@ -71,7 +72,10 @@ export default function Contacts() {
     <div className="p-8">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-3xl font-bold text-navy">Contacts</h1>
+          <h1 className="text-3xl font-bold text-navy flex items-center">
+            Contacts
+            <InfoTip text="Hot means at one of your target companies, warm means in your focus sectors, cold means low priority for now. Annie monitors hot and warm contacts for signals." />
+          </h1>
           <p className="text-gray-500 mt-1">{contacts.length} contacts in your network</p>
         </div>
         <div className="flex items-center gap-2">
@@ -90,8 +94,11 @@ export default function Contacts() {
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">👥</div>
           <h3 className="font-bold text-navy mb-1">No contacts yet</h3>
-          <p className="text-gray-500 text-sm mb-4">Add your first contact to start tracking relationships.</p>
-          <button onClick={openAdd} className="btn-primary">Add your first contact</button>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Import your LinkedIn connections to bring in your whole network at once, or add contacts one at a time.</p>
+          <div className="flex items-center justify-center gap-2">
+            <button onClick={() => navigate('/dashboard/import-linkedin')} className="btn-ghost">Import from LinkedIn</button>
+            <button onClick={openAdd} className="btn-primary">Add a contact</button>
+          </div>
         </div>
       ) : (
         <div className="card overflow-hidden">

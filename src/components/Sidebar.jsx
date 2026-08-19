@@ -38,6 +38,18 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-0.5">
+        {profile?.is_admin && (
+          <NavLink
+            to="/dashboard/insights"
+            className={({ isActive }) =>
+              `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all mb-1
+              ${isActive ? 'bg-gold text-navy' : 'text-white/70 hover:text-white hover:bg-white/10'}`
+            }
+          >
+            <span className="text-base">📊</span>
+            Insights
+          </NavLink>
+        )}
         {NAV.map(item => (
           <NavLink
             key={item.to}

@@ -2,11 +2,12 @@ import React, { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 
 export default function Login() {
-  const { signIn, signUp } = useAuth()
-  const [mode, setMode] = useState('login') // 'login' | 'signup'
+  const { signIn, signUp, resetPassword, resendConfirmation } = useAuth()
+  const [mode, setMode] = useState('login') // 'login' | 'signup' | 'forgot'
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [showResend, setShowResend] = useState(false)
 
   const [form, setForm] = useState({
     email: '', password: '', fullName: '', firmName: '',
@@ -15,6 +16,8 @@ export default function Login() {
   function update(field, value) {
     setForm(prev => ({ ...prev, [field]: value }))
     setError('')
+    setSuccess('')
+    setShowResend(false)
   }
 
   async function handleSubmit(e) {
@@ -22,22 +25,47 @@ export default function Login() {
     setLoading(true)
     setError('')
     setSuccess('')
+    setShowResend(false)
 
     try {
       if (mode === 'login') {
         const { error } = await signIn(form.email, form.password)
-        if (error) setError(error.message)
-      } else {
+        if (error) {
+          if (error.message?.toLowerCase().includes('email not confirmed')) {
+            setError("Your email hasn't been confirmed yet.")
+            setShowResend(true)
+          } else {
+            setError(error.message)
+          }
+        }
+      } else if (mode === 'signup') {
         if (!form.fullName.trim()) return setError('Please enter your full name')
         if (!form.firmName.trim()) return setError('Please enter your firm name')
         if (form.password.length < 8) return setError('Password must be at least 8 characters')
 
         const { error } = await signUp(form.email, form.password, form.fullName, form.firmName)
         if (error) setError(error.message)
-        else setSuccess('Account created! Check your email to verify, then sign in.')
+        else setSuccess("Account created. Check your email to confirm it, then sign in below. If it doesn't arrive in a couple of minutes, check spam.")
+      } else if (mode === 'forgot') {
+        if (!form.email.trim()) return setError('Enter your email first')
+        const { error } = await resetPassword(form.email)
+        if (error) setError(error.message)
+        else setSuccess("If that email has an account, we've sent a password reset link.")
       }
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleResend() {
+    if (!form.email.trim()) return setError('Enter your email first')
+    setLoading(true)
+    const { error } = await resendConfirmation(form.email)
+    setLoading(false)
+    if (error) setError(error.message)
+    else {
+      setSuccess('Confirmation email sent again. Check your inbox, and spam if it takes a minute.')
+      setShowResend(false)
     }
   }
 
@@ -60,15 +88,20 @@ export default function Login() {
         {/* Card */}
         <div className="bg-white rounded-2xl p-8 shadow-2xl">
           <h1 className="text-2xl font-bold text-navy mb-1">
-            {mode === 'login' ? 'Welcome back' : 'Create your account'}
+            {mode === 'login' ? 'Welcome back' : mode === 'signup' ? 'Create your account' : 'Reset your password'}
           </h1>
           <p className="text-gray-500 text-sm mb-6">
-            {mode === 'login' ? 'Sign in to your Annie dashboard' : 'Start your free trial — no credit card needed'}
+            {mode === 'login' ? 'Sign in to your Annie dashboard' : mode === 'signup' ? 'Start your free trial, no credit card needed' : "We'll email you a link to set a new password"}
           </p>
 
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">
               {error}
+              {showResend && (
+                <button type="button" onClick={handleResend} className="block mt-2 text-gold font-semibold hover:underline">
+                  Resend confirmation email
+                </button>
+              )}
             </div>
           )}
           {success && (
@@ -96,25 +129,38 @@ export default function Login() {
               <input className="input" type="email" placeholder="you@yourfirm.com" value={form.email} onChange={e => update('email', e.target.value)} required />
             </div>
 
-            <div>
-              <label className="label">Password</label>
-              <input className="input" type="password" placeholder={mode === 'signup' ? 'Min. 8 characters' : '••••••••'} value={form.password} onChange={e => update('password', e.target.value)} required />
-            </div>
+            {mode !== 'forgot' && (
+              <div>
+                <div className="flex items-center justify-between">
+                  <label className="label">Password</label>
+                  {mode === 'login' && (
+                    <button type="button" onClick={() => { setMode('forgot'); setError(''); setSuccess('') }} className="text-xs text-gold font-semibold hover:underline mb-1.5">
+                      Forgot password?
+                    </button>
+                  )}
+                </div>
+                <input className="input" type="password" placeholder={mode === 'signup' ? 'Min. 8 characters' : '••••••••'} value={form.password} onChange={e => update('password', e.target.value)} required />
+              </div>
+            )}
 
             <button type="submit" disabled={loading} className="btn-primary w-full mt-2">
-              {loading ? 'Please wait...' : mode === 'login' ? 'Sign in' : 'Create account'}
+              {loading ? 'Please wait...' : mode === 'login' ? 'Sign in' : mode === 'signup' ? 'Create account' : 'Send reset link'}
             </button>
           </form>
 
           <div className="mt-6 text-center text-sm text-gray-500">
-            {mode === 'login' ? (
+            {mode === 'login' && (
               <>Don't have an account?{' '}
-                <button onClick={() => { setMode('signup'); setError(''); }} className="text-gold font-semibold hover:underline">Sign up free</button>
+                <button onClick={() => { setMode('signup'); setError(''); setSuccess('') }} className="text-gold font-semibold hover:underline">Sign up free</button>
               </>
-            ) : (
+            )}
+            {mode === 'signup' && (
               <>Already have an account?{' '}
-                <button onClick={() => { setMode('login'); setError(''); }} className="text-gold font-semibold hover:underline">Sign in</button>
+                <button onClick={() => { setMode('login'); setError(''); setSuccess('') }} className="text-gold font-semibold hover:underline">Sign in</button>
               </>
+            )}
+            {mode === 'forgot' && (
+              <button onClick={() => { setMode('login'); setError(''); setSuccess('') }} className="text-gold font-semibold hover:underline">Back to sign in</button>
             )}
           </div>
         </div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import InfoTip from './InfoTip'
 
 const TYPE_ICONS = { job_move: '🚀', funding: '💰', news: '📰', expansion: '🌍', leadership: '👔', other: '📌' }
 const TYPE_LABELS = { job_move: 'Job Move', funding: 'Funding', news: 'News', expansion: 'Expansion', leadership: 'Leadership Change', other: 'Other' }
@@ -30,7 +31,10 @@ export default function Signals() {
   return (
     <div className="p-8">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold text-navy">Signals</h1>
+        <h1 className="text-3xl font-bold text-navy flex items-center">
+          Signals
+          <InfoTip text="A signal is a BD trigger Annie has spotted, like a job move, funding round, or leadership change at one of your contacts or target companies. She generates outreach ideas from these." />
+        </h1>
         <p className="text-gray-500 mt-1">{active.length} active triggers waiting for action</p>
       </div>
 
@@ -40,7 +44,8 @@ export default function Signals() {
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">🔔</div>
           <h3 className="font-bold text-navy mb-1">No signals yet</h3>
-          <p className="text-gray-500 text-sm max-w-sm mx-auto">Signals will appear here as Annie detects BD triggers — job moves, funding rounds, leadership changes and more.</p>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-1">Signals appear here automatically once Annie has contacts to monitor, things like job moves, funding rounds, leadership changes and expansions.</p>
+          <p className="text-gray-400 text-xs max-w-sm mx-auto">Haven't imported your contacts yet? Head to Contacts to bring in your LinkedIn connections so Annie has something to watch.</p>
         </div>
       ) : (
         <div className="space-y-6">

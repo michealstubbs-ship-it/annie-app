@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import InfoTip from './InfoTip'
 
 const STAGES = ['prospect', 'approached', 'meeting_booked', 'pitch_sent', 'negotiating', 'won', 'lost']
 const STAGE_LABELS = { prospect: 'Prospect', approached: 'Approached', meeting_booked: 'Meeting Booked', pitch_sent: 'Pitch Sent', negotiating: 'Negotiating', won: 'Won', lost: 'Lost' }
@@ -51,7 +52,10 @@ export default function Pipeline() {
     <div className="p-8">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-3xl font-bold text-navy">BD Pipeline</h1>
+          <h1 className="text-3xl font-bold text-navy flex items-center">
+            BD Pipeline
+            <InfoTip text="Track every deal from first contact to signed client here. Move deals through stages as conversations progress, and set a probability to estimate what's likely to close." />
+          </h1>
           <p className="text-gray-500 mt-1">{deals.length} deals tracked</p>
         </div>
         <button onClick={openAdd} className="btn-primary">+ Add Deal</button>
@@ -77,7 +81,7 @@ export default function Pipeline() {
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">📈</div>
           <h3 className="font-bold text-navy mb-1">No deals yet</h3>
-          <p className="text-gray-500 text-sm mb-4">Start tracking your BD pipeline.</p>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">When a conversation with a contact turns into a real opportunity, add it here to track it through to close.</p>
           <button onClick={openAdd} className="btn-primary">Add your first deal</button>
         </div>
       ) : (
