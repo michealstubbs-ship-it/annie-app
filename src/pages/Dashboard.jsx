@@ -10,6 +10,7 @@ const Chat = lazy(() => import('../components/Chat'))
 const Settings = lazy(() => import('../components/Settings'))
 const LinkedInImport = lazy(() => import('./LinkedInImport'))
 const Insights = lazy(() => import('../components/Insights'))
+const IntelligenceFeed = lazy(() => import('../components/IntelligenceFeed'))
 
 function PageLoader() {
   return (
@@ -27,6 +28,7 @@ export default function Dashboard() {
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route index element={<TodaysActions />} />
+            <Route path="intelligence-feed" element={<IntelligenceFeed />} />
             <Route path="contacts" element={<Contacts />} />
             <Route path="pipeline" element={<Pipeline />} />
             <Route path="signals" element={<Signals />} />

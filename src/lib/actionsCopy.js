@@ -17,7 +17,7 @@ function describeItem(item) {
     return { ...base, company: item.deal.company, role: item.deal.role, contactName: item.contact?.name }
   }
   if (item.category === 'relationship') {
-    return { ...base, company: item.signal.company, signalTitle: item.signal.title, contactName: item.contact?.name }
+    return { ...base, company: item.signal.company_name, signalTitle: item.signal.headline, contactName: item.contact?.name }
   }
   if (item.category === 'new_client') {
     return { ...base, name: item.contact.name, company: item.contact.company, title: item.contact.title }
@@ -47,34 +47,11 @@ Only return the JSON array, nothing else.`
   return context
 }
 
-export function buildSourcingPrompt(onboarding, existingCompanies) {
-  return `You are Annie, an expert BD researcher for a recruitment firm.
-Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
-Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
-Communication tone: ${onboarding?.tone || 'professional'}.
-Companies already in their CRM, do not resource these: ${existingCompanies.join(', ') || 'None'}.
-
-Use web search to find 2-3 genuine, timely BD opportunities for this recruiter, companies or people they don't already know about. Bias strongly AGAINST obvious, oversaturated, famous names everyone already targets, unless that famous company has a genuinely fresh, non-public timing signal attached (like an internal recruiter departure). Prefer quiet signals that took real digging to find: a specific person posting about scaling their team, a company that just got licensed or funded without major press coverage, multiple simultaneous niche job postings suggesting a new function being built.
-
-Every lead must have a real, citable source you actually found via search, do not invent anything. If you cannot find genuinely good non-obvious leads, return fewer than 3, do not pad with weak ones.
-
-For each lead, also work out:
-- whoToApproach: the specific person or role to approach, and why, bypass generic HR/Head of Talent unless they are genuinely the right door. If you found an actual named person via search, use their name here.
-- titleKeywords: an array of 2-4 likely job title strings for the right decision-maker at this company, used afterwards to look up the real verified person, e.g. ["Head of Talent", "VP People", "Talent Acquisition Manager"]
-- candidateAngle: a specific, credible candidate profile to lead with (background, seniority, source companies), not a generic pitch, written in the recruiter's communication tone above
-
-Return a JSON array, each object:
-{
-  "company": "...",
-  "headline": "max 8 words",
-  "whatAnnieFound": "1-2 sentences on the specific signal",
-  "sourceUrl": "the real URL you found this from",
-  "sourceLabel": "short label for the source, e.g. techcrunch.com",
-  "whoToApproach": "...",
-  "titleKeywords": ["...", "..."],
-  "candidateAngle": "..."
-}
-Only return the JSON array, nothing else. If nothing genuinely good was found, return an empty array.`
-}
+// Sourcing/discovery no longer happens here, or anywhere in the client. The
+// scheduled intelligence-scan Netlify function is the one place research happens,
+// running every 4 hours per customer and writing into intelligence_signals. Today's
+// Actions and the Intelligence Feed page both just read what it already found, so
+// research is never paid for twice and the two views can never disagree with each
+// other about the same fact.
 
 export { CATEGORY_LABEL }

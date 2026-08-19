@@ -40,7 +40,7 @@ export default async (req, context) => {
     const keys = names.map(normalize)
     const { data: cached } = await supabase
       .from('company_enrichment')
-      .select('company_name_key, company_name, industry, city, state, country, domain, matched')
+      .select('company_name_key, company_name, industry, city, state, country, domain, logo_url, matched')
       .in('company_name_key', keys)
 
     const cacheMap = new Map((cached || []).map(row => [row.company_name_key, row]))
@@ -70,6 +70,7 @@ export default async (req, context) => {
             city: org.city || null,
             state: org.state || null,
             country: org.country || null,
+            logo_url: org.logo_url || null,
             matched: true,
           }
         } catch {

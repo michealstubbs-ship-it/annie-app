@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 
 export default function Chat() {
   const { user, profile } = useAuth()
+  const location = useLocation()
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -11,6 +13,12 @@ export default function Chat() {
   const bottomRef = useRef(null)
 
   useEffect(() => { loadHistory(); loadOnboarding() }, [user])
+
+  // Arriving from Intelligence Feed's "Draft outreach" button, prefill the input
+  // with context so the recruiter doesn't retype what Annie already knows.
+  useEffect(() => {
+    if (location.state?.prefill) setInput(location.state.prefill)
+  }, [location.state])
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
   async function loadOnboarding() {

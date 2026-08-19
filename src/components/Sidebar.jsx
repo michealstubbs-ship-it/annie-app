@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 
 const NAV = [
   { to: '/dashboard', label: "Today's Actions", icon: '⚡', exact: true },
+  { to: '/dashboard/intelligence-feed', label: 'Intelligence Feed', icon: '🧠' },
   { to: '/dashboard/contacts', label: 'Contacts', icon: '👥' },
   { to: '/dashboard/pipeline', label: 'BD Pipeline', icon: '📈' },
   { to: '/dashboard/signals', label: 'Signals', icon: '🔔' },
