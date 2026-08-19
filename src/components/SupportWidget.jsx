@@ -53,8 +53,8 @@ export default function SupportWidget() {
           maxTokens: 20,
         }),
       })
-      const text = await resp.text()
-      return text.trim().replace(/["'.]/g, '').slice(0, 60)
+      const { text } = await resp.json()
+      return (text || '').trim().replace(/["'.]/g, '').slice(0, 60)
     } catch {
       return null
     }
@@ -86,7 +86,7 @@ export default function SupportWidget() {
           maxTokens: 600,
         }),
       })
-      const text = await resp.text()
+      const { text } = await resp.json()
       const assistantMsg = { role: 'assistant', content: text }
       setMessages(prev => [...prev, assistantMsg])
       await supabase.from('support_messages').insert({ user_id: user.id, role: 'assistant', content: text })

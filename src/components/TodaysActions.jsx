@@ -1,6 +1,32 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool, selectDailyItems } from '../lib/actionsEngine'
+import { buildEnrichmentPrompt, buildSourcingPrompt } from '../lib/actionsCopy'
+
+const BADGE = {
+  dormant: { label: 're-engage', className: 'bg-amber-100 text-amber-700' },
+  meeting: { label: 'meeting', className: 'bg-green-100 text-green-700' },
+  relationship: { label: 'relationship', className: 'bg-purple-100 text-purple-700' },
+  new_client: { label: 'new client', className: 'bg-blue-100 text-blue-700' },
+  sourced: { label: 'sourced by annie', className: 'bg-navy text-gold' },
+}
+
+async function callChat({ messages, systemOverride, maxTokens, model, webSearch }) {
+  const resp = await fetch('/.netlify/functions/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages, systemOverride, maxTokens, model, webSearch }),
+  })
+  if (!resp.ok) throw new Error('Request failed')
+  const { text } = await resp.json()
+  return text
+}
+
+function extractJson(text) {
+  const match = text.match(/\[[\s\S]*\]/)
+  return JSON.parse(match ? match[0] : text)
+}
 
 export default function TodaysActions() {
   const { user, profile } = useAuth()
@@ -9,6 +35,7 @@ export default function TodaysActions() {
   const [generated, setGenerated] = useState(false)
   const [error, setError] = useState('')
   const [onboarding, setOnboarding] = useState(null)
+  const [openIndex, setOpenIndex] = useState(null)
 
   useEffect(() => {
     loadCachedActions()
@@ -30,7 +57,7 @@ export default function TodaysActions() {
       .limit(1)
       .single()
 
-    if (data?.actions) {
+    if (data?.actions?.length) {
       setActions(data.actions)
       setGenerated(true)
     }
@@ -40,75 +67,90 @@ export default function TodaysActions() {
     setLoading(true)
     setError('')
     try {
-      const { data: contacts } = await supabase
-        .from('contacts')
-        .select('name, company, title, status, last_contacted, notes')
-        .eq('user_id', user.id)
-        .limit(50)
+      const [{ data: contacts }, { data: deals }, { data: signals }, { data: freshOnboarding }] = await Promise.all([
+        supabase.from('contacts').select('*').eq('user_id', user.id).limit(500),
+        supabase.from('deals').select('*').eq('user_id', user.id).limit(200),
+        supabase.from('signals').select('*').eq('user_id', user.id).limit(200),
+        supabase.from('onboarding').select('*').eq('user_id', user.id).single(),
+      ])
 
-      const { data: deals } = await supabase
-        .from('deals')
-        .select('company, stage, value, next_action, next_action_date')
-        .eq('user_id', user.id)
-        .limit(20)
+      const ob = freshOnboarding || onboarding
+      const targetCompanies = ob?.target_companies || []
 
-      const systemPrompt = `You are Annie, a BD intelligence engine for recruitment firms.
-The user is ${profile?.full_name} at ${profile?.firm_name || onboarding?.firm_name || 'their recruitment firm'}.
-Their sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
-Their target markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
-Their BD goals: ${onboarding?.bd_goals || 'Win new clients and grow the business'}.
-Their communication tone: ${onboarding?.tone || 'professional'}.
-Target companies: ${onboarding?.target_companies?.join(', ') || 'Various'}.
+      // Step 1: deterministic pool building, no AI involved
+      const pools = {
+        dormant: buildDormantPool(contacts || [], targetCompanies),
+        meeting: buildMeetingPool(deals || [], contacts || []),
+        relationship: buildRelationshipPool(signals || [], contacts || [], targetCompanies),
+        new_client: buildNewClientPool(contacts || [], deals || [], targetCompanies),
+      }
+      const selected = selectDailyItems(pools)
 
-Today is ${new Date().toLocaleDateString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.
-
-Contacts in their CRM: ${JSON.stringify(contacts || [])}
-Active deals: ${JSON.stringify(deals || [])}
-
-Generate exactly 5 high-priority BD actions for today. Each action should be specific, actionable, and focused on winning new business or progressing existing deals.
-
-Return a JSON array of exactly 5 objects with this structure:
-[{
-  "priority": 1,
-  "type": "outreach|follow_up|research|meeting|proposal",
-  "headline": "Short action headline (max 8 words)",
-  "detail": "Specific detail about what to do and why (2-3 sentences)",
-  "company": "Company name if applicable",
-  "contact": "Contact name if applicable",
-  "why_now": "Why this matters today specifically (1 sentence)"
-}]
-
-Only return the JSON array, nothing else.`
-
-      const resp = await fetch('/.netlify/functions/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [{ role: 'user', content: 'Generate my top 5 BD actions for today.' }],
-          systemOverride: systemPrompt,
-          maxTokens: 2000,
+      // Step 2: AI writes copy for the already-selected CRM items (batched, one call)
+      let enriched = []
+      if (selected.length) {
+        const prompt = buildEnrichmentPrompt(selected, ob, profile)
+        const text = await callChat({
+          messages: [{ role: 'user', content: 'Write the copy for these items.' }],
+          systemOverride: prompt,
+          maxTokens: 2500,
           model: 'claude-haiku-4-5-20251001',
-        }),
-      })
-
-      if (!resp.ok) throw new Error('Failed to generate actions')
-
-      const text = await resp.text()
-      let parsed
-      try {
-        const match = text.match(/\[[\s\S]*\]/)
-        parsed = JSON.parse(match ? match[0] : text)
-      } catch {
-        throw new Error('Could not parse AI response')
+        })
+        try {
+          enriched = extractJson(text)
+        } catch {
+          enriched = selected.map(() => null)
+        }
       }
 
-      setActions(parsed)
+      const crmActions = selected.map((item, i) => ({
+        source: 'crm',
+        category: item.category,
+        headline: enriched[i]?.headline || 'Follow up',
+        detail: enriched[i]?.detail || '',
+        moveForward: enriched[i]?.moveForward || [],
+        signals: item.signals,
+        company: item.contact?.company || item.deal?.company || item.signal?.company,
+        contact: item.contact?.name || item.deal?.contact_name || '',
+        title: item.contact?.title || '',
+      }))
+
+      // Step 3: sourced leads, real web search, only for companies not already known
+      const existingCompanies = (contacts || []).map(c => c.company).filter(Boolean)
+      let sourcedActions = []
+      try {
+        const sourcingPrompt = buildSourcingPrompt(ob, existingCompanies)
+        const sourcingText = await callChat({
+          messages: [{ role: 'user', content: 'Find genuine BD opportunities for today.' }],
+          systemOverride: sourcingPrompt,
+          maxTokens: 2000,
+          model: 'claude-haiku-4-5-20251001',
+          webSearch: true,
+        })
+        const sourcedRaw = extractJson(sourcingText)
+        sourcedActions = (sourcedRaw || []).map(s => ({
+          source: 'sourced',
+          category: 'sourced',
+          headline: s.headline,
+          detail: s.whatAnnieFound,
+          company: s.company,
+          sourceUrl: s.sourceUrl,
+          sourceLabel: s.sourceLabel,
+          whoToApproach: s.whoToApproach,
+          candidateAngle: s.candidateAngle,
+        }))
+      } catch {
+        sourcedActions = []
+      }
+
+      const combined = [...crmActions, ...sourcedActions]
+
+      setActions(combined)
       setGenerated(true)
 
-      // Cache for 24 hours
       await supabase.from('actions_cache').upsert({
         user_id: user.id,
-        actions: parsed,
+        actions: combined,
         generated_at: new Date().toISOString(),
         expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       }, { onConflict: 'user_id' })
@@ -120,17 +162,9 @@ Only return the JSON array, nothing else.`
     }
   }
 
-  const typeColors = {
-    outreach: 'bg-blue-100 text-blue-700',
-    follow_up: 'bg-amber-100 text-amber-700',
-    research: 'bg-purple-100 text-purple-700',
-    meeting: 'bg-green-100 text-green-700',
-    proposal: 'bg-red-100 text-red-700',
-  }
-
   return (
     <div className="p-8 max-w-4xl">
-      <div className="mb-8">
+      <div className="mb-6">
         <h1 className="text-3xl font-bold text-navy">Good morning, {profile?.full_name?.split(' ')[0] || 'there'}</h1>
         <p className="text-gray-500 mt-1">
           {new Date().toLocaleDateString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
@@ -141,7 +175,7 @@ Only return the JSON array, nothing else.`
         <div className="card p-10 text-center">
           <div className="text-5xl mb-4">⚡</div>
           <h2 className="text-xl font-bold text-navy mb-2">Ready to generate your actions?</h2>
-          <p className="text-gray-500 mb-6 max-w-sm mx-auto">Annie will analyse your contacts, deals and BD goals to give you today's top 5 priorities.</p>
+          <p className="text-gray-500 mb-6 max-w-sm mx-auto">Annie will analyse your contacts, pipeline, and the wider market to give you everything genuinely worth acting on today, sized by real opportunity, not a fixed number.</p>
           <button onClick={generate} className="btn-primary">Generate Today's Actions</button>
         </div>
       )}
@@ -150,7 +184,7 @@ Only return the JSON array, nothing else.`
         <div className="card p-10 text-center">
           <div className="w-12 h-12 border-4 border-gold border-t-transparent rounded-full animate-spin mx-auto mb-4" />
           <p className="text-navy font-semibold">Annie is thinking...</p>
-          <p className="text-gray-500 text-sm mt-1">Analysing your contacts and pipeline</p>
+          <p className="text-gray-500 text-sm mt-1">Analysing your pipeline and researching the market, this can take a moment</p>
         </div>
       )}
 
@@ -159,37 +193,92 @@ Only return the JSON array, nothing else.`
       )}
 
       {generated && actions.length > 0 && (
-        <div className="space-y-4">
-          {actions.map((action, i) => (
-            <div key={i} className="card p-5 hover:shadow-md transition-shadow">
-              <div className="flex items-start gap-4">
-                <div className="w-8 h-8 rounded-full bg-navy text-gold flex items-center justify-center font-bold text-sm flex-shrink-0 mt-0.5">
-                  {action.priority}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <h3 className="font-bold text-navy">{action.headline}</h3>
-                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${typeColors[action.type] || 'bg-gray-100 text-gray-600'}`}>
-                      {action.type?.replace('_', ' ')}
-                    </span>
+        <div className="space-y-3">
+          <p className="text-sm text-gray-500 mb-2">Annie found <span className="font-semibold text-navy">{actions.length} thing{actions.length === 1 ? '' : 's'} worth your attention today</span>, sized by what's genuinely urgent, not a fixed number.</p>
+
+          {actions.map((action, i) => {
+            const badge = BADGE[action.category] || BADGE.new_client
+            const isOpen = openIndex === i
+            const isSourced = action.source === 'sourced'
+            return (
+              <div
+                key={i}
+                onClick={() => setOpenIndex(isOpen ? null : i)}
+                className={`card p-4 cursor-pointer hover:shadow-md transition-shadow ${isSourced ? 'border-2 border-gold/40 bg-yellow-50/30' : ''}`}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="w-7 h-7 rounded-full bg-navy text-gold flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5">
+                    {i + 1}
                   </div>
-                  {(action.company || action.contact) && (
-                    <p className="text-xs text-gold font-semibold mb-1.5">
-                      {[action.contact, action.company].filter(Boolean).join(' · ')}
-                    </p>
-                  )}
-                  <p className="text-gray-600 text-sm mb-2">{action.detail}</p>
-                  <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 text-xs text-amber-700 font-medium">
-                    Why now: {action.why_now}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-bold text-navy text-sm">{action.headline}</h3>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${badge.className}`}>{badge.label}</span>
+                    </div>
+                    {(action.contact || action.company) && (
+                      <p className="text-xs text-gold font-semibold mt-1">
+                        {[action.contact, action.title, action.company].filter(Boolean).join(' · ')}
+                      </p>
+                    )}
+                    <p className="text-gray-600 text-sm mt-1.5">{action.detail}</p>
+
+                    {isOpen && (
+                      <div className="mt-3 pt-3 border-t border-gray-100" onClick={e => e.stopPropagation()}>
+                        {isSourced ? (
+                          <>
+                            <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">What Annie found</div>
+                            {action.sourceUrl && (
+                              <a href={action.sourceUrl} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline block mb-3">
+                                🔗 {action.sourceLabel || action.sourceUrl}
+                              </a>
+                            )}
+                            <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Who to approach, and why</div>
+                            <p className="text-xs text-gray-600 mb-3">{action.whoToApproach}</p>
+                            <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Candidate angle</div>
+                            <p className="text-xs text-navy italic border-l-2 border-gold pl-3">{action.candidateAngle}</p>
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Why this made the list</div>
+                            <div className="space-y-1 mb-3">
+                              {Object.entries(action.signals || {}).map(([k, v]) => (
+                                <div key={k} className="flex justify-between text-xs">
+                                  <span className="text-gray-400">{k}</span>
+                                  <span className="text-navy font-semibold">{v}</span>
+                                </div>
+                              ))}
+                            </div>
+                            {action.moveForward?.length > 0 && (
+                              <>
+                                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Ways to move this forward</div>
+                                <div className="space-y-1.5">
+                                  {action.moveForward.map((m, mi) => (
+                                    <div key={mi} className="bg-page-bg rounded-lg px-3 py-2 text-xs text-gray-600">{m}</div>
+                                  ))}
+                                </div>
+                              </>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
 
           <button onClick={generate} disabled={loading} className="btn-ghost text-sm mt-2">
             Regenerate actions
           </button>
+        </div>
+      )}
+
+      {generated && actions.length === 0 && !loading && (
+        <div className="card p-10 text-center">
+          <div className="text-4xl mb-3">🔍</div>
+          <h3 className="font-bold text-navy mb-1">Nothing urgent today</h3>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto">Your pipeline is quiet and Annie couldn't find a genuinely strong sourced lead right now. Check back tomorrow, or import more LinkedIn contacts to give Annie more to work with.</p>
         </div>
       )}
     </div>

@@ -10,13 +10,16 @@ export default async (req, context) => {
 
   try {
     const body = await req.json()
-    const { messages, systemOverride, maxTokens = 1024, model = 'claude-haiku-4-5-20251001' } = body
+    const { messages, systemOverride, maxTokens = 1024, model = 'claude-haiku-4-5-20251001', webSearch = false, maxSearchUses = 4 } = body
 
     const payload = {
       model,
       max_tokens: maxTokens,
       messages,
       ...(systemOverride && { system: systemOverride }),
+      ...(webSearch && {
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxSearchUses }],
+      }),
     }
 
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -35,11 +38,24 @@ export default async (req, context) => {
     }
 
     const data = await resp.json()
-    const text = data.content?.[0]?.text || ''
 
-    return new Response(text, {
+    // Collect every text block (web search runs interleave tool_use / tool_result / text blocks)
+    const textBlocks = (data.content || []).filter(b => b.type === 'text').map(b => b.text)
+    const text = textBlocks.join('\n')
+
+    // Collect citations if the model cited web search results, so the frontend can show real sources
+    const citations = []
+    for (const block of data.content || []) {
+      if (block.type === 'text' && Array.isArray(block.citations)) {
+        for (const c of block.citations) {
+          if (c.url) citations.push({ url: c.url, title: c.title || c.url })
+        }
+      }
+    }
+
+    return new Response(JSON.stringify({ text, citations }), {
       status: 200,
-      headers: { 'Content-Type': 'text/plain' },
+      headers: { 'Content-Type': 'application/json' },
     })
   } catch (err) {
     return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } })

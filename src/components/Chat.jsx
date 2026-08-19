@@ -53,7 +53,7 @@ Be specific, actionable and concise. No waffle.`
         }),
       })
 
-      const text = await resp.text()
+      const { text } = await resp.json()
       const assistantMsg = { role: 'assistant', content: text }
       setMessages(prev => [...prev, assistantMsg])
       await supabase.from('chat_messages').insert({ user_id: user.id, role: 'assistant', content: text })
