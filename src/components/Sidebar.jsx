@@ -9,6 +9,13 @@ const NAV = [
   { to: '/dashboard/pipeline', label: 'BD Pipeline', icon: '📈' },
   { to: '/dashboard/signals', label: 'Signals', icon: '🔔' },
   { to: '/dashboard/chat', label: 'Ask Annie', icon: '💬' },
+]
+
+const RECRUITMENT_NAV = [
+  { to: '/dashboard/candidates', label: 'Candidates', icon: '🧑‍💼' },
+]
+
+const SETTINGS_NAV = [
   { to: '/dashboard/settings', label: 'Settings', icon: '⚙️' },
 ]
 
@@ -58,6 +65,35 @@ export default function Sidebar() {
             end={item.exact}
             className={({ isActive }) =>
               `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all
+              ${isActive ? 'bg-gold text-navy' : 'text-white/70 hover:text-white hover:bg-white/10'}`
+            }
+          >
+            <span className="text-base">{item.icon}</span>
+            {item.label}
+          </NavLink>
+        ))}
+
+        <div className="text-[10px] font-bold text-white/30 uppercase tracking-wider px-3 pt-4 pb-1">Recruitment</div>
+        {RECRUITMENT_NAV.map(item => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            className={({ isActive }) =>
+              `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all
+              ${isActive ? 'bg-gold text-navy' : 'text-white/70 hover:text-white hover:bg-white/10'}`
+            }
+          >
+            <span className="text-base">{item.icon}</span>
+            {item.label}
+          </NavLink>
+        ))}
+
+        {SETTINGS_NAV.map(item => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            className={({ isActive }) =>
+              `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all mt-4
               ${isActive ? 'bg-gold text-navy' : 'text-white/70 hover:text-white hover:bg-white/10'}`
             }
           >
