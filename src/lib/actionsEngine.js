@@ -14,31 +14,24 @@ function daysSince(dateStr) {
   return Math.floor(diff / DAY_MS)
 }
 
-function isTargetCompany(company, targetCompanies) {
-  if (!company || !targetCompanies?.length) return false
-  const c = company.toLowerCase()
-  return targetCompanies.some(t => c.includes(t.toLowerCase()) || t.toLowerCase().includes(c))
-}
-
 function statusWeight(status) {
   return { hot: 30, warm: 18, cold: 8, client: 0, inactive: 0 }[status] ?? 10
 }
 
-export function buildDormantPool(contacts, targetCompanies) {
+export function buildDormantPool(contacts) {
   return contacts
     .filter(c => !['client', 'inactive'].includes(c.status))
     .map(c => {
       const days = daysSince(c.last_contacted) ?? daysSince(c.created_at) ?? 999
       if (days < DORMANT_THRESHOLD_DAYS) return null
-      const targetMatch = isTargetCompany(c.company, targetCompanies)
-      const score = Math.min(100, (days - DORMANT_THRESHOLD_DAYS) * 0.4 + statusWeight(c.status) + (targetMatch ? 25 : 0))
+      const score = Math.min(100, (days - DORMANT_THRESHOLD_DAYS) * 0.4 + statusWeight(c.status))
       return {
         category: 'dormant',
         score,
         contact: c,
         signals: {
           'Last contacted': c.last_contacted ? `${days} days ago` : 'Never logged, added ' + days + ' days ago',
-          'Target company match': targetMatch ? `Yes, ${c.company}` : 'No',
+          'Company': c.company || 'Not set',
           'Status': c.status,
         },
       }
@@ -71,15 +64,16 @@ export function buildMeetingPool(deals, contacts) {
     .filter(Boolean)
 }
 
-export function buildRelationshipPool(signals, contacts, targetCompanies) {
+// Fresh, unactioned signals against any contact already in the CRM.
+// No longer gated on a target company list, sectors and markets already
+// shape which contacts and signals exist in the first place.
+export function buildRelationshipPool(signals, contacts) {
   const contactById = new Map(contacts.map(c => [c.id, c]))
   return signals
     .filter(s => !s.is_actioned)
     .map(s => {
       const days = daysSince(s.created_at) ?? 999
       if (days > SIGNAL_FRESH_DAYS) return null
-      const targetMatch = isTargetCompany(s.company, targetCompanies)
-      if (!targetMatch) return null
       const linkedContact = s.contact_id ? contactById.get(s.contact_id) : null
       const score = Math.min(100, (SIGNAL_FRESH_DAYS - days) * 4 + 25)
       return {
@@ -97,25 +91,26 @@ export function buildRelationshipPool(signals, contacts, targetCompanies) {
     .filter(Boolean)
 }
 
-export function buildNewClientPool(contacts, deals, targetCompanies) {
+// Promising contacts, hot or warm, who don't have an active deal open yet.
+// No longer gated on a target company list, status already reflects how
+// promising a contact is, set manually or via the LinkedIn import scoring.
+export function buildNewClientPool(contacts, deals) {
   const activeDealCompanies = new Set(
     deals.filter(d => !['won', 'lost'].includes(d.stage)).map(d => (d.company || '').toLowerCase())
   )
   return contacts
-    .filter(c => !['client', 'inactive'].includes(c.status))
+    .filter(c => ['hot', 'warm'].includes(c.status))
     .map(c => {
-      const targetMatch = isTargetCompany(c.company, targetCompanies)
-      if (!targetMatch) return null
       if (activeDealCompanies.has((c.company || '').toLowerCase())) return null
-      const score = Math.min(100, statusWeight(c.status) + 30)
+      const score = Math.min(100, statusWeight(c.status) * 1.6)
       return {
         category: 'new_client',
         score,
         contact: c,
         signals: {
-          'Target company match': `Yes, ${c.company}`,
-          'Active deal': 'None yet',
           'Status': c.status,
+          'Company': c.company || 'Not set',
+          'Active deal': 'None yet',
         },
       }
     })

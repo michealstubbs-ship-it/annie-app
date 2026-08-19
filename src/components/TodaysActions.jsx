@@ -75,14 +75,13 @@ export default function TodaysActions() {
       ])
 
       const ob = freshOnboarding || onboarding
-      const targetCompanies = ob?.target_companies || []
 
       // Step 1: deterministic pool building, no AI involved
       const pools = {
-        dormant: buildDormantPool(contacts || [], targetCompanies),
+        dormant: buildDormantPool(contacts || []),
         meeting: buildMeetingPool(deals || [], contacts || []),
-        relationship: buildRelationshipPool(signals || [], contacts || [], targetCompanies),
-        new_client: buildNewClientPool(contacts || [], deals || [], targetCompanies),
+        relationship: buildRelationshipPool(signals || [], contacts || []),
+        new_client: buildNewClientPool(contacts || [], deals || []),
       }
       const selected = selectDailyItems(pools)
 
@@ -128,16 +127,37 @@ export default function TodaysActions() {
           webSearch: true,
         })
         const sourcedRaw = extractJson(sourcingText)
-        sourcedActions = (sourcedRaw || []).map(s => ({
-          source: 'sourced',
-          category: 'sourced',
-          headline: s.headline,
-          detail: s.whatAnnieFound,
-          company: s.company,
-          sourceUrl: s.sourceUrl,
-          sourceLabel: s.sourceLabel,
-          whoToApproach: s.whoToApproach,
-          candidateAngle: s.candidateAngle,
+
+        // For each sourced lead, try to find a real, verified contact via Apollo.
+        // If Apollo isn't configured or finds nothing, the reasoning-based whoToApproach still stands.
+        sourcedActions = await Promise.all((sourcedRaw || []).map(async s => {
+          let verifiedContact = null
+          try {
+            const apolloResp = await fetch('/.netlify/functions/apollo-search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ company: s.company, titleKeywords: s.titleKeywords }),
+            })
+            if (apolloResp.ok) {
+              const { matches } = await apolloResp.json()
+              if (matches?.length) verifiedContact = matches[0]
+            }
+          } catch {
+            verifiedContact = null
+          }
+
+          return {
+            source: 'sourced',
+            category: 'sourced',
+            headline: s.headline,
+            detail: s.whatAnnieFound,
+            company: s.company,
+            sourceUrl: s.sourceUrl,
+            sourceLabel: s.sourceLabel,
+            whoToApproach: s.whoToApproach,
+            candidateAngle: s.candidateAngle,
+            verifiedContact,
+          }
         }))
       } catch {
         sourcedActions = []
@@ -233,7 +253,20 @@ export default function TodaysActions() {
                               </a>
                             )}
                             <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Who to approach, and why</div>
-                            <p className="text-xs text-gray-600 mb-3">{action.whoToApproach}</p>
+                            {action.verifiedContact ? (
+                              <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 mb-3">
+                                <div className="flex items-center gap-1.5 mb-1">
+                                  <span className="text-[9px] font-bold text-green-700 uppercase tracking-wider">Verified contact</span>
+                                </div>
+                                <p className="text-xs font-semibold text-navy">{action.verifiedContact.name}{action.verifiedContact.title ? `, ${action.verifiedContact.title}` : ''}</p>
+                                {action.verifiedContact.linkedin_url && (
+                                  <a href={action.verifiedContact.linkedin_url} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline">View LinkedIn profile</a>
+                                )}
+                                <p className="text-xs text-gray-600 mt-1.5">{action.whoToApproach}</p>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-gray-600 mb-3">{action.whoToApproach} <span className="text-gray-400">(no verified contact found yet, approach by role)</span></p>
+                            )}
                             <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Candidate angle</div>
                             <p className="text-xs text-navy italic border-l-2 border-gold pl-3">{action.candidateAngle}</p>
                           </>

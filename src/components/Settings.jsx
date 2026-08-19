@@ -67,12 +67,6 @@ export default function Settings() {
             <div><span className="font-semibold text-gray-600">Sectors:</span> <span className="text-gray-700">{onboarding.sectors?.join(', ') || 'Not set'}</span></div>
             <div><span className="font-semibold text-gray-600">Markets:</span> <span className="text-gray-700">{onboarding.locations?.join(', ') || 'Not set'}</span></div>
             <div><span className="font-semibold text-gray-600">Tone:</span> <span className="text-gray-700 capitalize">{onboarding.tone || 'Professional'}</span></div>
-            <div><span className="font-semibold text-gray-600">BD Goals:</span> <p className="text-gray-700 mt-1">{onboarding.bd_goals || 'Not set'}</p></div>
-            <div><span className="font-semibold text-gray-600">Target Companies:</span>
-              <div className="flex flex-wrap gap-1.5 mt-1.5">
-                {onboarding.target_companies?.map(c => <span key={c} className="bg-navy/10 text-navy px-2 py-0.5 rounded text-xs font-medium">{c}</span>) || <span className="text-gray-500">None set</span>}
-              </div>
-            </div>
           </div>
           <p className="text-xs text-gray-400 mt-4">To update your BD configuration, contact support or re-run the onboarding flow.</p>
         </div>

@@ -197,11 +197,13 @@ export default function LinkedInImport({ embedded = false }) {
     setImporting(true)
     setError('')
     try {
-      const { data: onboarding } = await supabase.from('onboarding').select('target_companies').eq('user_id', user.id).single()
-      const targetCompanies = (onboarding?.target_companies || []).map(t => t.toLowerCase())
+      // No target company list anymore, sectors and markets already shaped who got
+      // imported. Within that, the most senior decision-makers get tagged hot.
+      const seniorKeywords = SENIORITY_OPTIONS.find(s => s.label === 'C-Suite / Partner / MD').keywords
 
       const toInsert = filtered.slice(0, 1000).map(c => {
-        const isTarget = targetCompanies.some(t => c.company.toLowerCase().includes(t) || t.includes(c.company.toLowerCase()))
+        const text = `${c.title || ''}`.toLowerCase()
+        const isSenior = seniorKeywords.some(k => text.includes(k))
         return {
           user_id: user.id,
           name: c.name,
@@ -209,7 +211,7 @@ export default function LinkedInImport({ embedded = false }) {
           company: c.company || null,
           title: c.title || null,
           linkedin_url: c.linkedin_url || null,
-          status: isTarget ? 'hot' : 'warm',
+          status: isSenior ? 'hot' : 'warm',
           tags: ['linkedin-import'],
         }
       })
