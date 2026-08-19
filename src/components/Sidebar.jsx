@@ -6,6 +6,7 @@ const NAV = [
   { to: '/dashboard', label: "Today's Actions", icon: '⚡', exact: true },
   { to: '/dashboard/intelligence-feed', label: 'Intelligence Feed', icon: '🧠' },
   { to: '/dashboard/contacts', label: 'Contacts', icon: '👥' },
+  { to: '/dashboard/companies', label: 'Companies', icon: '🏢' },
   { to: '/dashboard/pipeline', label: 'BD Pipeline', icon: '📈' },
   { to: '/dashboard/signals', label: 'Signals', icon: '🔔' },
   { to: '/dashboard/meetings', label: 'Meetings', icon: '📅' },
@@ -14,6 +15,7 @@ const NAV = [
 ]
 
 const RECRUITMENT_NAV = [
+  { to: '/dashboard/jobs', label: 'Jobs & Mandates', icon: '💼' },
   { to: '/dashboard/candidates', label: 'Candidates', icon: '🧑‍💼' },
 ]
 

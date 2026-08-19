@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
+import ContactFormModal from './ContactFormModal'
 
-const STATUSES = ['hot', 'warm', 'cold', 'client', 'inactive']
 const STATUS_COLORS = {
   hot: 'bg-red-100 text-red-700',
   warm: 'bg-amber-100 text-amber-700',
@@ -13,8 +13,6 @@ const STATUS_COLORS = {
   inactive: 'bg-gray-100 text-gray-500',
 }
 
-const EMPTY = { name: '', email: '', phone: '', company: '', title: '', linkedin_url: '', status: 'warm', notes: '' }
-
 export default function Contacts() {
   const navigate = useNavigate()
   const { user } = useAuth()
@@ -22,10 +20,7 @@ export default function Contacts() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [showModal, setShowModal] = useState(false)
-  const [form, setForm] = useState(EMPTY)
-  const [editId, setEditId] = useState(null)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const [editContact, setEditContact] = useState(null)
 
   useEffect(() => { loadContacts() }, [user])
 
@@ -36,27 +31,8 @@ export default function Contacts() {
     setLoading(false)
   }
 
-  function openAdd() { setForm(EMPTY); setEditId(null); setShowModal(true); setError('') }
-  function openEdit(c) { setForm({ name: c.name, email: c.email || '', phone: c.phone || '', company: c.company || '', title: c.title || '', linkedin_url: c.linkedin_url || '', status: c.status || 'warm', notes: c.notes || '' }); setEditId(c.id); setShowModal(true); setError('') }
-
-  async function save() {
-    if (!form.name.trim()) return setError('Name is required')
-    setSaving(true)
-    setError('')
-    try {
-      if (editId) {
-        await supabase.from('contacts').update({ ...form, updated_at: new Date().toISOString() }).eq('id', editId)
-      } else {
-        await supabase.from('contacts').insert({ ...form, user_id: user.id })
-      }
-      await loadContacts()
-      setShowModal(false)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setSaving(false)
-    }
-  }
+  function openAdd() { setEditContact(null); setShowModal(true) }
+  function openEdit(c) { setEditContact(c); setShowModal(true) }
 
   async function del(id) {
     if (!confirm('Delete this contact?')) return
@@ -137,37 +113,12 @@ export default function Contacts() {
         </div>
       )}
 
-      {/* Modal */}
-      {showModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
-            <h2 className="text-xl font-bold text-navy mb-4">{editId ? 'Edit Contact' : 'Add Contact'}</h2>
-            {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{error}</div>}
-            <div className="space-y-3">
-              {[['name','Name *','text'],['email','Email','email'],['phone','Phone','tel'],['company','Company','text'],['title','Job Title','text'],['linkedin_url','LinkedIn URL','url']].map(([field, label, type]) => (
-                <div key={field}>
-                  <label className="label">{label}</label>
-                  <input className="input" type={type} value={form[field]} onChange={e => setForm(p => ({ ...p, [field]: e.target.value }))} />
-                </div>
-              ))}
-              <div>
-                <label className="label">Status</label>
-                <select className="input" value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}>
-                  {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="label">Notes</label>
-                <textarea className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
-              </div>
-            </div>
-            <div className="flex gap-3 justify-end mt-5">
-              <button onClick={() => setShowModal(false)} className="btn-ghost">Cancel</button>
-              <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ContactFormModal
+        open={showModal}
+        editContact={editContact}
+        onClose={() => setShowModal(false)}
+        onSaved={() => loadContacts()}
+      />
     </div>
   )
 }

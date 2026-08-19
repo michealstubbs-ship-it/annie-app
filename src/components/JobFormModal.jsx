@@ -1,0 +1,165 @@
+import React, { useState, useEffect } from 'react'
+import { useAuth } from '../contexts/AuthContext'
+import { supabase } from '../lib/supabase'
+import CompanySelect from './CompanySelect'
+
+const LIKELIHOOD_OPTIONS = [
+  { value: '5', label: '★★★★★ Very likely (90%+)' },
+  { value: '4', label: '★★★★☆ Likely (70–90%)' },
+  { value: '3', label: '★★★☆☆ Possible (50–70%)' },
+  { value: '2', label: '★★☆☆☆ Unlikely (25–50%)' },
+  { value: '1', label: '★☆☆☆☆ Long shot (<25%)' },
+]
+
+function today() { return new Date().toISOString().slice(0, 10) }
+
+const EMPTY = {
+  title: '', company_id: '', company_name: '', industry: '', salary_num: '', fee_pct: '',
+  likelihood: '3', job_type: 'permanent', status: 'active', received: today(), deadline: '', notes: '',
+}
+
+function calcFee(salary, pct) {
+  const s = parseFloat(salary) || 0
+  const p = parseFloat(pct) || 0
+  return s && p ? Math.round(s * (p / 100)) : 0
+}
+
+// Ported faithfully from the personal dashboard's Add Job form, with the
+// company field now a real dropdown (CompanySelect) instead of free text, so
+// a mandate always attaches to one real client record. When lockedCompanyId
+// is passed (added from inside a company's own page), the company is fixed.
+export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCompanyName, onClose, onSaved }) {
+  const { user } = useAuth()
+  const [form, setForm] = useState(EMPTY)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    if (editJob) {
+      setForm({
+        title: editJob.title || '',
+        company_id: editJob.company_id || lockedCompanyId || '',
+        company_name: editJob.companies?.name || lockedCompanyName || '',
+        industry: editJob.industry || '',
+        salary_num: editJob.salary_num ?? '',
+        fee_pct: editJob.fee_pct ?? '',
+        likelihood: String(editJob.likelihood || 3),
+        job_type: editJob.job_type || 'permanent',
+        status: editJob.status || 'active',
+        received: editJob.received || today(),
+        deadline: editJob.deadline || '',
+        notes: editJob.notes || '',
+      })
+    } else {
+      setForm({ ...EMPTY, company_id: lockedCompanyId || '', company_name: lockedCompanyName || '' })
+    }
+    setError('')
+  }, [open, editJob, lockedCompanyId, lockedCompanyName])
+
+  if (!open) return null
+
+  const feeValue = calcFee(form.salary_num, form.fee_pct)
+
+  function handleCompanyChange(id, name, industry) {
+    setForm(p => ({ ...p, company_id: id, company_name: name, industry: p.industry || industry || '' }))
+  }
+
+  async function save() {
+    if (!form.title.trim()) return setError('Job title is required')
+    if (!form.company_id) return setError('Select a company')
+    setSaving(true)
+    setError('')
+    try {
+      const row = {
+        title: form.title.trim(),
+        company_id: form.company_id,
+        industry: form.industry.trim() || null,
+        salary_num: form.salary_num ? parseFloat(form.salary_num) : null,
+        fee_pct: form.fee_pct ? parseFloat(form.fee_pct) : null,
+        fee_value: feeValue || null,
+        likelihood: parseInt(form.likelihood) || 3,
+        job_type: form.job_type,
+        status: form.status,
+        received: form.received || today(),
+        deadline: form.deadline || null,
+        notes: form.notes.trim() || null,
+        updated_at: new Date().toISOString(),
+      }
+      let result
+      if (editJob) {
+        const { data, error: err } = await supabase.from('jobs').update(row).eq('id', editJob.id).select().single()
+        if (err) throw err
+        result = data
+      } else {
+        const { data, error: err } = await supabase.from('jobs').insert({ ...row, user_id: user.id }).select().single()
+        if (err) throw err
+        result = data
+      }
+      onSaved?.(result)
+      onClose()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4 py-8">
+      <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
+        <h2 className="text-xl font-bold text-navy mb-4">{editJob ? 'Edit job' : 'Add job'}</h2>
+        {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{error}</div>}
+        <div className="space-y-3">
+          <div><label className="label">Job title *</label><input className="input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Senior Software Engineer" autoFocus /></div>
+
+          {lockedCompanyId ? (
+            <div>
+              <label className="label">Client / company</label>
+              <div className="input bg-gray-50 text-gray-600 flex items-center">{lockedCompanyName}</div>
+            </div>
+          ) : (
+            <CompanySelect label="Client / company" required value={form.company_id} onChange={handleCompanyChange} />
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="label">Industry</label><input className="input" value={form.industry} onChange={e => setForm(p => ({ ...p, industry: e.target.value }))} placeholder="e.g. SaaS" /></div>
+            <div><label className="label">Annual salary (AED)</label><input type="number" className="input" value={form.salary_num} onChange={e => setForm(p => ({ ...p, salary_num: e.target.value }))} placeholder="e.g. 300000" /></div>
+            <div><label className="label">Fee % (your %)</label><input type="number" min="1" max="50" className="input" value={form.fee_pct} onChange={e => setForm(p => ({ ...p, fee_pct: e.target.value }))} placeholder="e.g. 20" /></div>
+            <div><label className="label">Calculated fee</label><div className="input bg-gray-50 font-bold text-navy flex items-center">{feeValue ? `AED ${feeValue.toLocaleString()}` : '-'}</div></div>
+            <div>
+              <label className="label">Likelihood to fill</label>
+              <select className="input" value={form.likelihood} onChange={e => setForm(p => ({ ...p, likelihood: e.target.value }))}>
+                {LIKELIHOOD_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="label">Job type</label>
+              <select className="input" value={form.job_type} onChange={e => setForm(p => ({ ...p, job_type: e.target.value }))}>
+                <option value="permanent">Permanent</option>
+                <option value="contract">Contract</option>
+                <option value="interim">Interim</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Status</label>
+              <select className="input" value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}>
+                <option value="active">Active</option>
+                <option value="onhold">On hold</option>
+                <option value="filled">Filled</option>
+                <option value="lost">Lost</option>
+              </select>
+            </div>
+            <div><label className="label">Date received</label><input type="date" className="input" value={form.received} onChange={e => setForm(p => ({ ...p, received: e.target.value }))} /></div>
+            <div><label className="label">Deadline / start date</label><input type="date" className="input" value={form.deadline} onChange={e => setForm(p => ({ ...p, deadline: e.target.value }))} /></div>
+          </div>
+          <div><label className="label">Brief / job description</label><textarea className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Key requirements, must-haves, skills needed, context about the role..." /></div>
+        </div>
+        <div className="flex gap-3 justify-end mt-5">
+          <button onClick={onClose} className="btn-ghost">Cancel</button>
+          <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save job'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}

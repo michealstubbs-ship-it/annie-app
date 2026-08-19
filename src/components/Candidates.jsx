@@ -21,7 +21,7 @@ const STAGE_COLOR = {
 const EMPTY = {
   name: '', role: '', company: '', location: '', industry: '', email: '', phone: '',
   curr_sal: '', want_sal: '', notice_period: '', availability: '', linkedin_url: '',
-  status: 'sourced', source: '', follow_up_date: '', notes: '',
+  status: 'sourced', source: '', follow_up_date: '', notes: '', job_id: '',
 }
 
 function initials(name) {
@@ -32,6 +32,7 @@ export default function Candidates() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const [candidates, setCandidates] = useState([])
+  const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [showModal, setShowModal] = useState(false)
@@ -46,8 +47,12 @@ export default function Candidates() {
 
   async function load() {
     setLoading(true)
-    const { data } = await supabase.from('candidates').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
+    const [{ data }, { data: j }] = await Promise.all([
+      supabase.from('candidates').select('*, jobs(title, companies(name))').eq('user_id', user.id).order('created_at', { ascending: false }),
+      supabase.from('jobs').select('id, title, companies(name)').eq('user_id', user.id).in('status', ['active', 'onhold']).order('title'),
+    ])
     setCandidates(data || [])
+    setJobs(j || [])
     setLoading(false)
   }
 
@@ -66,7 +71,7 @@ export default function Candidates() {
       name: c.name || '', role: c.role || '', company: c.company || '', location: c.location || '', industry: c.industry || '',
       email: c.email || '', phone: c.phone || '', curr_sal: c.curr_sal || '', want_sal: c.want_sal || '',
       notice_period: c.notice_period || '', availability: c.availability || '', linkedin_url: c.linkedin_url || '',
-      status: c.status || 'sourced', source: c.source || '', follow_up_date: c.follow_up_date || '', notes: c.notes || '',
+      status: c.status || 'sourced', source: c.source || '', follow_up_date: c.follow_up_date || '', notes: c.notes || '', job_id: c.job_id || '',
     })
     setEditId(c.id)
     setCvFile(null)
@@ -94,6 +99,7 @@ export default function Candidates() {
         curr_sal: form.curr_sal ? parseInt(form.curr_sal) : null,
         want_sal: form.want_sal ? parseInt(form.want_sal) : null,
         follow_up_date: form.follow_up_date || null,
+        job_id: form.job_id || null,
         cv_path: cvPath,
         updated_at: new Date().toISOString(),
       }
@@ -205,6 +211,7 @@ export default function Candidates() {
                   </div>
 
                   {c.notes && <p className="text-xs text-gray-600 mt-1.5 line-clamp-2">{c.notes}</p>}
+                  {c.jobs?.title && <p className="text-[11px] text-gold font-semibold mt-1">💼 {c.jobs.title}{c.jobs.companies?.name ? ` @ ${c.jobs.companies.name}` : ''}</p>}
 
                   <div className="flex items-center gap-2 flex-wrap mt-2.5">
                     {c.location && <span className="text-[10px] bg-page-bg text-gray-500 px-2 py-1 rounded-md">📍 {c.location}</span>}
@@ -293,6 +300,13 @@ export default function Candidates() {
               <div>
                 <label className="label">Follow-up date</label>
                 <input className="input" type="date" value={form.follow_up_date} onChange={e => setForm(p => ({ ...p, follow_up_date: e.target.value }))} />
+              </div>
+              <div className="col-span-2">
+                <label className="label">Job / mandate they're being considered for</label>
+                <select className="input" value={form.job_id} onChange={e => setForm(p => ({ ...p, job_id: e.target.value }))}>
+                  <option value="">Not tied to a specific job</option>
+                  {jobs.map(j => <option key={j.id} value={j.id}>{j.title}{j.companies?.name ? ` @ ${j.companies.name}` : ''}</option>)}
+                </select>
               </div>
               <div className="col-span-2">
                 <label className="label">Notes</label>

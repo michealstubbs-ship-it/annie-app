@@ -14,6 +14,8 @@ const IntelligenceFeed = lazy(() => import('../components/IntelligenceFeed'))
 const Candidates = lazy(() => import('../components/Candidates'))
 const Meetings = lazy(() => import('../components/Meetings'))
 const Tasks = lazy(() => import('../components/Tasks'))
+const Companies = lazy(() => import('../components/Companies'))
+const Jobs = lazy(() => import('../components/Jobs'))
 
 function PageLoader() {
   return (
@@ -35,6 +37,8 @@ export default function Dashboard() {
             <Route path="candidates" element={<Candidates />} />
             <Route path="meetings" element={<Meetings />} />
             <Route path="tasks" element={<Tasks />} />
+            <Route path="companies" element={<Companies />} />
+            <Route path="jobs" element={<Jobs />} />
             <Route path="contacts" element={<Contacts />} />
             <Route path="pipeline" element={<Pipeline />} />
             <Route path="signals" element={<Signals />} />

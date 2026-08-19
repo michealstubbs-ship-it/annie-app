@@ -310,8 +310,47 @@ export default function LinkedInImport({ embedded = false }) {
       // No target company list anymore, sectors and markets already shaped who got
       // imported. Within that, the most senior decision-makers get tagged hot.
       const seniorKeywords = SENIORITY_OPTIONS.find(s => s.label === 'C-Suite / Partner / MD').keywords
+      const toImport = filtered.slice(0, 1000)
 
-      const toInsert = filtered.slice(0, 1000).map(c => {
+      // Every contact's company becomes, or reuses, a real Company record. Same
+      // matching a company already gets in Companies.jsx (case-insensitive name),
+      // so contacts imported here show up under that company's tab automatically
+      // instead of just carrying a free-text name. Where Apollo enrichment already
+      // verified the company (from the filter step above), the new record is
+      // seeded with its real industry, location and domain, not left blank.
+      const uniqueNames = [...new Set(toImport.map(c => c.company).filter(Boolean))]
+      const companyMap = {} // normalized name -> company id
+      let newCompanyCount = 0
+
+      if (uniqueNames.length) {
+        const { data: existing } = await supabase.from('companies').select('id, name').eq('user_id', user.id)
+        for (const co of existing || []) companyMap[normalizeCompany(co.name)] = co.id
+
+        const toCreate = uniqueNames
+          .filter(name => !companyMap[normalizeCompany(name)])
+          .map(name => {
+            const enrichment = companyData[normalizeCompany(name)]
+            const location = enrichment?.matched
+              ? [enrichment.city, enrichment.state, enrichment.country].filter(Boolean).join(', ')
+              : null
+            return {
+              user_id: user.id,
+              name,
+              industry: enrichment?.matched ? (enrichment.industry || null) : null,
+              location: location || null,
+              website: enrichment?.matched ? (enrichment.domain || null) : null,
+            }
+          })
+
+        if (toCreate.length) {
+          const { data: created, error: coErr } = await supabase.from('companies').insert(toCreate).select('id, name')
+          if (coErr) throw coErr
+          for (const co of created || []) companyMap[normalizeCompany(co.name)] = co.id
+          newCompanyCount = created?.length || 0
+        }
+      }
+
+      const toInsert = toImport.map(c => {
         const text = `${c.title || ''}`.toLowerCase()
         const isSenior = seniorKeywords.some(k => text.includes(k))
         return {
@@ -319,6 +358,7 @@ export default function LinkedInImport({ embedded = false }) {
           name: c.name,
           email: c.email || null,
           company: c.company || null,
+          company_id: c.company ? (companyMap[normalizeCompany(c.company)] || null) : null,
           title: c.title || null,
           linkedin_url: c.linkedin_url || null,
           status: isSenior ? 'hot' : 'warm',
@@ -336,7 +376,7 @@ export default function LinkedInImport({ embedded = false }) {
       await supabase.from('profiles').update({ linkedin_import_completed: true }).eq('id', user.id)
       await refreshProfile()
 
-      setDone({ imported: toInsert.length, targets: targetCount })
+      setDone({ imported: toInsert.length, targets: targetCount, newCompanies: newCompanyCount })
     } catch (err) {
       setError(err.message || 'Something went wrong during import.')
     } finally {
@@ -379,7 +419,8 @@ export default function LinkedInImport({ embedded = false }) {
           <p className="text-gray-500 text-sm mb-6">
             Annie imported <span className="font-semibold text-navy">{done.imported} contacts</span>
             {done.targets > 0 && <> — <span className="font-semibold text-gold">{done.targets} at your target companies</span></>}.
-            She's now monitoring all of them for BD signals.
+            {done.newCompanies > 0 && <> She also created <span className="font-semibold text-navy">{done.newCompanies} new compan{done.newCompanies === 1 ? 'y' : 'ies'}</span> in your Companies list, linked to their contacts.</>}
+            {' '}She's now monitoring all of them for BD signals.
           </p>
           <button onClick={() => navigate('/dashboard')} className="btn-primary w-full">Go to my dashboard</button>
         </div>
