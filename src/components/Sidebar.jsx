@@ -8,6 +8,8 @@ const NAV = [
   { to: '/dashboard/contacts', label: 'Contacts', icon: '👥' },
   { to: '/dashboard/pipeline', label: 'BD Pipeline', icon: '📈' },
   { to: '/dashboard/signals', label: 'Signals', icon: '🔔' },
+  { to: '/dashboard/meetings', label: 'Meetings', icon: '📅' },
+  { to: '/dashboard/tasks', label: 'Tasks', icon: '✅' },
   { to: '/dashboard/chat', label: 'Ask Annie', icon: '💬' },
 ]
 

@@ -16,7 +16,7 @@ function buildScanPrompt(onboarding, recentCompanies) {
 Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
 Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Communication tone: ${onboarding?.tone || 'professional'}.
-
+${onboarding?.writing_style ? `The recruiter's real writing style, follow this closely when writing the candidateAngle text:\n${onboarding.writing_style}\n` : ''}
 Use web search to find genuine, timely BD-relevant signals in these sectors and markets right now: funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity.
 
 Bias strongly AGAINST obvious, oversaturated, famous names everyone already targets, unless there is a genuinely fresh, non-public timing signal attached. Prefer quiet signals that took real digging to find.
@@ -122,7 +122,7 @@ export default async (req, context) => {
 
   const supabase = createClient(supabaseUrl, serviceKey)
 
-  const { data: onboardingRows } = await supabase.from('onboarding').select('user_id, sectors, locations, tone, firm_name')
+  const { data: onboardingRows } = await supabase.from('onboarding').select('user_id, sectors, locations, tone, firm_name, writing_style')
   if (!onboardingRows?.length) return new Response('No customers to scan', { status: 200 })
 
   for (const ob of onboardingRows) {

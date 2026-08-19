@@ -45,7 +45,7 @@ export default function Chat() {
 Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
 Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Communication tone: ${onboarding?.tone || 'professional'}.
-
+${onboarding?.writing_style ? `\nWhen drafting any message, email, or LinkedIn copy on the recruiter's behalf, follow their real writing style closely:\n${onboarding.writing_style}\n` : ''}
 You help with: BD strategy, outreach messages, market intelligence, interview prep, candidate pitches, objection handling, and anything recruitment business development related.
 Be specific, actionable and concise. No waffle.`
 

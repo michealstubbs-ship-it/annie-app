@@ -12,6 +12,8 @@ const LinkedInImport = lazy(() => import('./LinkedInImport'))
 const Insights = lazy(() => import('../components/Insights'))
 const IntelligenceFeed = lazy(() => import('../components/IntelligenceFeed'))
 const Candidates = lazy(() => import('../components/Candidates'))
+const Meetings = lazy(() => import('../components/Meetings'))
+const Tasks = lazy(() => import('../components/Tasks'))
 
 function PageLoader() {
   return (
@@ -31,6 +33,8 @@ export default function Dashboard() {
             <Route index element={<TodaysActions />} />
             <Route path="intelligence-feed" element={<IntelligenceFeed />} />
             <Route path="candidates" element={<Candidates />} />
+            <Route path="meetings" element={<Meetings />} />
+            <Route path="tasks" element={<Tasks />} />
             <Route path="contacts" element={<Contacts />} />
             <Route path="pipeline" element={<Pipeline />} />
             <Route path="signals" element={<Signals />} />

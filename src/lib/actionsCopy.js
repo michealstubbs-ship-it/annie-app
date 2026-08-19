@@ -31,7 +31,7 @@ Recruiter: ${profile?.full_name || 'the user'} at ${profile?.firm_name || onboar
 Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
 Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Tone: ${onboarding?.tone || 'professional'}.
-
+${onboarding?.writing_style ? `\nThe recruiter's real writing style, follow this closely for any drafted copy:\n${onboarding.writing_style}\n` : ''}
 Below is a list of BD items that have ALREADY been selected by a scoring system, based on real data like days since contact, target company match, and pipeline stage. Your only job is to write good, specific copy for each one. Do not invent facts, only use what's given in the signals.
 
 For every item, write:
