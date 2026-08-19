@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
+import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
@@ -17,6 +18,7 @@ function toLocalInput(dateStr) {
 
 export default function Meetings() {
   const { user } = useAuth()
+  const location = useLocation()
   const [meetings, setMeetings] = useState([])
   const [contacts, setContacts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -27,6 +29,7 @@ export default function Meetings() {
   const [error, setError] = useState('')
 
   useEffect(() => { load() }, [user])
+  useEffect(() => { if (location.state?.autoOpenAdd) openAdd() }, [location.state])
 
   async function load() {
     setLoading(true)

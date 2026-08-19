@@ -16,6 +16,7 @@ const Meetings = lazy(() => import('../components/Meetings'))
 const Tasks = lazy(() => import('../components/Tasks'))
 const Companies = lazy(() => import('../components/Companies'))
 const Jobs = lazy(() => import('../components/Jobs'))
+const Overview = lazy(() => import('../components/Overview'))
 
 function PageLoader() {
   return (
@@ -32,7 +33,8 @@ export default function Dashboard() {
       <main className="flex-1 overflow-auto">
         <Suspense fallback={<PageLoader />}>
           <Routes>
-            <Route index element={<TodaysActions />} />
+            <Route index element={<Overview />} />
+            <Route path="actions" element={<TodaysActions />} />
             <Route path="intelligence-feed" element={<IntelligenceFeed />} />
             <Route path="candidates" element={<Candidates />} />
             <Route path="meetings" element={<Meetings />} />

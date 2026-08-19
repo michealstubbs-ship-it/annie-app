@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
+import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
@@ -19,6 +20,7 @@ function color(name) {
 
 export default function Companies() {
   const { user } = useAuth()
+  const location = useLocation()
   const [companies, setCompanies] = useState([])
   const [contacts, setContacts] = useState([])
   const [jobs, setJobs] = useState([])
@@ -37,6 +39,7 @@ export default function Companies() {
   const [showJobModal, setShowJobModal] = useState(false)
 
   useEffect(() => { load() }, [user])
+  useEffect(() => { if (location.state?.autoOpenAdd) openAddCo() }, [location.state])
 
   async function load() {
     setLoading(true)

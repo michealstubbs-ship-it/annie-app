@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
@@ -15,6 +15,7 @@ const STATUS_COLORS = {
 
 export default function Contacts() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { user } = useAuth()
   const [contacts, setContacts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -23,6 +24,7 @@ export default function Contacts() {
   const [editContact, setEditContact] = useState(null)
 
   useEffect(() => { loadContacts() }, [user])
+  useEffect(() => { if (location.state?.autoOpenAdd) openAdd() }, [location.state])
 
   async function loadContacts() {
     setLoading(true)

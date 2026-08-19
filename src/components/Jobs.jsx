@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
+import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
@@ -17,6 +18,7 @@ function stars(n) { return '★'.repeat(n) + '☆'.repeat(5 - n) }
 
 export default function Jobs() {
   const { user } = useAuth()
+  const location = useLocation()
   const [jobs, setJobs] = useState([])
   const [candCounts, setCandCounts] = useState({})
   const [loading, setLoading] = useState(true)
@@ -25,6 +27,7 @@ export default function Jobs() {
   const [showClosed, setShowClosed] = useState(false)
 
   useEffect(() => { load() }, [user])
+  useEffect(() => { if (location.state?.autoOpenAdd) openAdd() }, [location.state])
 
   async function load() {
     setLoading(true)

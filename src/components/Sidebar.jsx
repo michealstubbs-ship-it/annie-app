@@ -1,26 +1,28 @@
 import React from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { IconHome, IconZap, IconRadio, IconUsers, IconBuilding, IconTrendingUp, IconBell, IconCalendar, IconCheckSquare, IconMessageCircle, IconBriefcase, IconUser, IconSettings } from './icons'
 
 const NAV = [
-  { to: '/dashboard', label: "Today's Actions", icon: '⚡', exact: true },
-  { to: '/dashboard/intelligence-feed', label: 'Intelligence Feed', icon: '🧠' },
-  { to: '/dashboard/contacts', label: 'Contacts', icon: '👥' },
-  { to: '/dashboard/companies', label: 'Companies', icon: '🏢' },
-  { to: '/dashboard/pipeline', label: 'BD Pipeline', icon: '📈' },
-  { to: '/dashboard/signals', label: 'Signals', icon: '🔔' },
-  { to: '/dashboard/meetings', label: 'Meetings', icon: '📅' },
-  { to: '/dashboard/tasks', label: 'Tasks', icon: '✅' },
-  { to: '/dashboard/chat', label: 'Ask Annie', icon: '💬' },
+  { to: '/dashboard', label: 'Overview', Icon: IconHome, exact: true },
+  { to: '/dashboard/actions', label: "Today's Actions", Icon: IconZap },
+  { to: '/dashboard/intelligence-feed', label: 'Intelligence Feed', Icon: IconRadio },
+  { to: '/dashboard/contacts', label: 'Contacts', Icon: IconUsers },
+  { to: '/dashboard/companies', label: 'Companies', Icon: IconBuilding },
+  { to: '/dashboard/pipeline', label: 'BD Pipeline', Icon: IconTrendingUp },
+  { to: '/dashboard/signals', label: 'Signals', Icon: IconBell },
+  { to: '/dashboard/meetings', label: 'Meetings', Icon: IconCalendar },
+  { to: '/dashboard/tasks', label: 'Tasks', Icon: IconCheckSquare },
+  { to: '/dashboard/chat', label: 'Ask Annie', Icon: IconMessageCircle },
 ]
 
 const RECRUITMENT_NAV = [
-  { to: '/dashboard/jobs', label: 'Jobs & Mandates', icon: '💼' },
-  { to: '/dashboard/candidates', label: 'Candidates', icon: '🧑‍💼' },
+  { to: '/dashboard/jobs', label: 'Jobs & Mandates', Icon: IconBriefcase },
+  { to: '/dashboard/candidates', label: 'Candidates', Icon: IconUser },
 ]
 
 const SETTINGS_NAV = [
-  { to: '/dashboard/settings', label: 'Settings', icon: '⚙️' },
+  { to: '/dashboard/settings', label: 'Settings', Icon: IconSettings },
 ]
 
 export default function Sidebar() {
@@ -37,9 +39,10 @@ export default function Sidebar() {
       {/* Logo */}
       <div className="px-5 py-6 border-b border-white/10">
         <div className="flex items-center gap-2.5">
-          <svg width="36" height="36" viewBox="0 0 68 68" fill="none">
-            <rect width="68" height="68" rx="16" fill="#c9a84c"/>
-            <path d="M34 14 L50 54 H44 L40 44 H28 L24 54 H18 L34 14Z M34 24 L30 38 H38 L34 24Z" fill="#0d1b3e"/>
+          <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+            <rect width="36" height="36" rx="8" fill="#c9a84c"/>
+            <path d="M18 3L29 33H25L18 13L11 33H7L18 3Z" fill="#0d1b3e"/>
+            <rect x="10" y="22" width="16" height="3.2" rx="1.6" fill="#c9a84c"/>
           </svg>
           <div>
             <div className="text-white font-bold text-lg leading-none">annie</div>
@@ -58,7 +61,7 @@ export default function Sidebar() {
               ${isActive ? 'bg-gold text-navy' : 'text-white/70 hover:text-white hover:bg-white/10'}`
             }
           >
-            <span className="text-base">📊</span>
+            <IconTrendingUp className="w-[17px] h-[17px]" />
             Insights
           </NavLink>
         )}
@@ -72,7 +75,7 @@ export default function Sidebar() {
               ${isActive ? 'bg-gold text-navy' : 'text-white/70 hover:text-white hover:bg-white/10'}`
             }
           >
-            <span className="text-base">{item.icon}</span>
+            <item.Icon className="w-[17px] h-[17px] flex-shrink-0" />
             {item.label}
           </NavLink>
         ))}
@@ -87,7 +90,7 @@ export default function Sidebar() {
               ${isActive ? 'bg-gold text-navy' : 'text-white/70 hover:text-white hover:bg-white/10'}`
             }
           >
-            <span className="text-base">{item.icon}</span>
+            <item.Icon className="w-[17px] h-[17px] flex-shrink-0" />
             {item.label}
           </NavLink>
         ))}
@@ -101,7 +104,7 @@ export default function Sidebar() {
               ${isActive ? 'bg-gold text-navy' : 'text-white/70 hover:text-white hover:bg-white/10'}`
             }
           >
-            <span className="text-base">{item.icon}</span>
+            <item.Icon className="w-[17px] h-[17px] flex-shrink-0" />
             {item.label}
           </NavLink>
         ))}

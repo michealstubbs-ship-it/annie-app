@@ -106,9 +106,10 @@ export default function Onboarding() {
     <div className="min-h-screen bg-navy flex flex-col items-center justify-center px-4 py-12">
 
       <div className="flex items-center gap-3 mb-10">
-        <svg width="40" height="40" viewBox="0 0 68 68" fill="none">
-          <rect width="68" height="68" rx="16" fill="#c9a84c"/>
-          <path d="M34 14 L50 54 H44 L40 44 H28 L24 54 H18 L34 14Z M34 24 L30 38 H38 L34 24Z" fill="#0d1b3e"/>
+        <svg width="40" height="40" viewBox="0 0 36 36" fill="none">
+          <rect width="36" height="36" rx="8" fill="#c9a84c"/>
+          <path d="M18 3L29 33H25L18 13L11 33H7L18 3Z" fill="#0d1b3e"/>
+          <rect x="10" y="22" width="16" height="3.2" rx="1.6" fill="#c9a84c"/>
         </svg>
         <div>
           <div className="text-white font-bold text-xl leading-none">annie</div>
