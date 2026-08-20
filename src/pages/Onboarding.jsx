@@ -71,26 +71,33 @@ export default function Onboarding() {
     setLoading(true)
     setError('')
     try {
-      const { error: onboardErr } = await withTimeout(
-        supabase.from('onboarding').upsert({
-          user_id: user.id,
-          firm_name: form.firmName,
-          sectors: form.sectors,
-          functions: form.functions,
-          locations: form.locations,
-          tone: form.tone,
-        }, { onConflict: 'user_id' }),
-        12000,
+      // Routed through our own domain (netlify/functions/save-onboarding.js)
+      // rather than calling supabase.co directly from the browser. Some
+      // antivirus "web protection" / corporate network filters silently
+      // block background API writes to third-party domains even while the
+      // site itself loads fine — that was the actual cause of onboarding
+      // never completing. A same-origin POST to app.meetannie.ai isn't
+      // filtered the same way.
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) throw new Error('Your session has expired. Please log in again.')
+
+      const resp = await withTimeout(
+        fetch('/.netlify/functions/save-onboarding', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({
+            firmName: form.firmName,
+            sectors: form.sectors,
+            functions: form.functions,
+            locations: form.locations,
+            tone: form.tone,
+          }),
+        }),
+        15000,
         'onboarding-save',
       )
-      if (onboardErr) throw onboardErr
-
-      const { error: profileErr } = await withTimeout(
-        supabase.from('profiles').update({ onboarding_completed: true, firm_name: form.firmName }).eq('id', user.id),
-        12000,
-        'profile-update',
-      )
-      if (profileErr) throw profileErr
+      const result = await resp.json().catch(() => ({}))
+      if (!resp.ok) throw new Error(result.error || 'Could not save your answers. Please try again.')
 
       await refreshProfile()
       navigate('/import')
