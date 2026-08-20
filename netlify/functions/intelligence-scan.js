@@ -1,11 +1,25 @@
-// Runs every 4 hours, for every customer. This is the ONE place research happens,
-// Today's Actions no longer runs its own search, it reads what this function writes
-// here. Real web search grounds every signal, contact verification only ever comes
-// from Apollo (never an AI guess treated as fact), and everything is deduplicated so
-// the same event never gets logged twice across scans.
+// Runs twice a day (every 12 hours), for every customer. This is the ONE
+// place recurring research happens for existing customers, Today's Actions
+// no longer runs its own search, it reads what this function writes here.
+// Real web search grounds every signal, contact verification only ever comes
+// from Apollo (never an AI guess treated as fact), and everything is
+// deduplicated BEFORE any Apollo credit is spent on it, not just at the DB
+// write, so a signal re-surfaced on a later run never costs credits twice.
+//
+// Was every 4 hours; dropped to every 12 to cut Apollo/Anthropic spend
+// roughly 3x. Existing customers already have a populated dashboard, a
+// signal sitting a few extra hours before showing up doesn't cost them
+// anything the way an empty first scan would for a brand new signup (see
+// scan-now-background.js, which is deliberately the more expensive one).
 import { createClient } from '@supabase/supabase-js'
 
 const SIGNAL_TYPES = ['funding', 'leadership_change', 'hiring_activity', 'expansion', 'team_building', 'public_commentary', 'job_posting_unclaimed', 'm_and_a', 'regulatory']
+
+// Hard ceiling on how many NEW (never-seen-before) signals get enriched via
+// Apollo per customer per run. The prompt also asks for "up to" this many,
+// but this is the real, code-enforced cap, since Apollo credits are a
+// limited monthly budget and this cron runs across every customer.
+const MAX_SIGNALS_PER_RUN = 5
 
 function normalizeKey(company, headline) {
   return `${(company || '').trim().toLowerCase()}::${(headline || '').trim().toLowerCase().slice(0, 80)}`
@@ -27,7 +41,7 @@ Bias against obvious, oversaturated, famous names everyone already targets when 
 
 Companies already surfaced recently, don't re-report the same event for these unless there is a brand new development: ${recentCompanies.join(', ') || 'None yet'}.
 
-Every signal must have a real, citable source you actually found via search. Do not invent anything. Return up to 8 signals, fewer if you can't find genuinely good ones after searching thoroughly, never pad with weak filler.
+Every signal must have a real, citable source you actually found via search. Do not invent anything. Return up to 5 signals, fewer if you can't find genuinely good ones after searching thoroughly, never pad with weak filler.
 
 For each signal, determine:
 - company: the company name
@@ -149,10 +163,28 @@ export default async (req, context) => {
         continue
       }
 
-      const rows = []
-      for (const s of found) {
-        if (!s.company || !s.headline) continue
+      // Dedupe against this customer's full signal history BEFORE spending
+      // any Apollo credit, not after. Previously this ran enrichment on
+      // every signal the AI returned, including ones that turned out to be
+      // duplicates only discarded later at the DB write, quietly burning 2
+      // Apollo credits per re-surfaced story on every run it came up again.
+      const { data: existingRows } = await supabase
+        .from('intelligence_signals')
+        .select('dedup_key')
+        .eq('user_id', ob.user_id)
+      const existingKeys = new Set((existingRows || []).map(r => r.dedup_key))
 
+      const newSignals = found
+        .filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline)))
+        .slice(0, MAX_SIGNALS_PER_RUN)
+
+      if (!newSignals.length) {
+        console.log('[intelligence-scan] only duplicates found for', ob.user_id, ', skipping enrichment')
+        continue
+      }
+
+      const rows = []
+      for (const s of newSignals) {
         const [contact, companyInfo] = await Promise.all([
           verifyContact(apolloKey, s.company, s.titleKeywords),
           enrichCompany(apolloKey, s.company),
@@ -196,4 +228,4 @@ export default async (req, context) => {
   return new Response('Scan complete', { status: 200 })
 }
 
-export const config = { schedule: '0 */4 * * *' }
+export const config = { schedule: '0 */12 * * *' }

@@ -34,6 +34,11 @@ const MAX_SECTOR_GROUPS = 4
 const MIN_SIGNAL_TARGET = 3
 const MAX_TOTAL_SIGNALS = 12
 
+// How far back Apollo's own job-posting data counts as "actively hiring right
+// now" for the discovery pass below. Kept in sync with the AI prompt's own
+// 5-day window so both sources agree on what "recent" means.
+const APOLLO_DISCOVERY_LOOKBACK_DAYS = 5
+
 // A brand new customer landing on an empty dashboard for the full 6-minute
 // "researching" window even when the scan genuinely finished in 11 seconds
 // (found nothing worth reporting, or hit an error) reads as broken, not
@@ -85,6 +90,64 @@ function mergeSignals(lists) {
   return [...seen.values()]
 }
 
+// Turns a compound label like "Strategy & Corporate Development" or
+// "Policy & Government Affairs" into loose keyword fragments ("strategy",
+// "corporate development") without needing to import the full sector/function
+// taxonomy into this function (this file stays deliberately self-contained,
+// see the file header). Good enough for Apollo's fuzzy keyword/title
+// matching, not meant to be exact.
+function splitToKeywords(label) {
+  return (label || '')
+    .split(/&|\//)
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+
+function isoDateDaysAgo(days) {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+}
+
+// Apollo tracks real job postings and funding events directly, it isn't
+// guessing from news the way web search has to. Querying it BEFORE the AI
+// call gives Annie a list of companies Apollo has independently confirmed
+// are actively hiring in this sector/function/location combo right now, so
+// the AI's own search has real leads to investigate and write up rather than
+// relying purely on whatever general news it happens to surface. This is a
+// discovery input, not a replacement for the AI's narrative writeup (why it
+// matters, who to approach, etc still needs real reasoning over real
+// sources), so it deliberately asks for a short list, not a final answer.
+async function discoverHotCompanies(apolloKey, { sectors, functions, locations }) {
+  if (!apolloKey) return []
+  try {
+    const body = { per_page: 8, organization_num_jobs_range: { min: 1 } }
+    body.organization_job_posted_at_range = { min: isoDateDaysAgo(APOLLO_DISCOVERY_LOOKBACK_DAYS) }
+
+    const sectorKeywords = (sectors || []).flatMap(splitToKeywords)
+    if (sectorKeywords.length) body.q_organization_keyword_tags = sectorKeywords.slice(0, 20)
+
+    const titleKeywords = (functions || []).flatMap(splitToKeywords)
+    if (titleKeywords.length) body.q_organization_job_titles = titleKeywords.slice(0, 20)
+
+    if (locations?.length) body.organization_locations = locations.slice(0, 10)
+
+    const resp = await fetch('https://api.apollo.io/v1/mixed_companies/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
+      body: JSON.stringify(body),
+    })
+    if (!resp.ok) return []
+    const data = await resp.json()
+    const orgs = [...(data.organizations || []), ...(data.accounts || [])]
+    return orgs
+      .map(o => ({ name: o.name, industry: o.industry || null, employees: o.estimated_num_employees || null }))
+      .filter(o => o.name)
+      .slice(0, 8)
+  } catch (err) {
+    console.error('[scan-now] apollo discovery failed:', err.message)
+    return []
+  }
+}
+
 function buildScanPrompt(onboarding, recentCompanies, opts = {}) {
   const functions = onboarding?.functions?.length ? onboarding.functions.join(', ') : null
   const sectorsForPrompt = opts.sectorsOverride?.length ? opts.sectorsOverride : onboarding?.sectors
@@ -98,6 +161,7 @@ Use web search to find genuine, timely BD-relevant signals in these sectors and 
 Search thoroughly before concluding there is nothing. Run multiple distinct searches, try each sector and each function by name, try combinations of sector + "funding" / "hiring" / "appoints" / "expansion" / "acquires", try the specified markets by name, and try recent news generally in these sectors before narrowing. Do not stop after one or two searches, a real, live-news industry genuinely has more happening in it than that.
 ${functions ? `This recruiter places into the functions listed above. When you find a strong, genuine signal, connect it to whichever of those functions it most plausibly affects, even if the reasoning takes a small logical step (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring, a new market launch signals Government/Regulatory Affairs hiring, an M&A deal signals Corporate Development or Legal hiring). Make your best reasonable case for the closest function rather than discarding a real, well-sourced signal purely because the function match isn't perfect. Only leave a strong signal out entirely if you genuinely cannot connect it to any of the functions listed, even loosely.` : ''}
 ${opts.broaden ? `\nIMPORTANT: an earlier, narrower search pass came up thin. For this pass, widen your net further: look back up to the last 4 weeks (not just the last 5 days), consider the parent industry category as well as the exact sub-sector, and count a signal even if the function connection takes a slightly longer logical chain, as long as it is still genuinely defensible. The bar is "real and sourced", not "perfect fit". Still never invent anything, and still cite a real source for every signal.\n` : ''}
+${opts.apolloLeads?.length ? `\nApollo's own hiring database has independently confirmed these companies are actively posting jobs matching this recruiter's functions, within the last ${APOLLO_DISCOVERY_LOOKBACK_DAYS} days, in these sectors and markets: ${opts.apolloLeads.map(l => `${l.name}${l.industry ? ` (${l.industry})` : ''}`).join(', ')}. Treat these as strong, confirmed leads, actively search for the real story behind each one (why they're hiring, any funding or expansion tied to it, the right person to approach, a real citable source) before deciding whether to include it. You are not limited to only these companies, keep searching broadly too, but do not ignore this list, Apollo already did real work to surface it.\n` : ''}
 
 This is a brand new account with no history yet, so there is nothing to avoid repeating: ${recentCompanies.join(', ') || 'None yet'}.
 
@@ -256,11 +320,19 @@ export default async (req) => {
 
     // Pass 1: research each sector group in parallel, each with its own
     // full search budget, instead of one call rationing searches across
-    // everything the customer picked.
+    // everything the customer picked. Each group first asks Apollo which
+    // companies it can independently confirm are hiring right now in that
+    // slice, then hands that list to the AI as a head start (1 Apollo credit
+    // per group, up to MAX_SECTOR_GROUPS credits total for this whole pass).
     const groups = chunkSectors(ob.sectors, MAX_SECTOR_GROUPS)
     const groupResults = await Promise.all(groups.map(async (sectorGroup) => {
+      const apolloLeads = await discoverHotCompanies(apolloKey, {
+        sectors: sectorGroup?.length ? sectorGroup : ob.sectors,
+        functions: ob.functions,
+        locations: ob.locations,
+      })
       try {
-        const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { sectorsOverride: sectorGroup }))
+        const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { sectorsOverride: sectorGroup, apolloLeads }))
         return { sectorGroup, found: extractJson(text), rawText: text }
       } catch (err) {
         console.error('[scan-now] group call failed for', userId, sectorGroup?.join('/') || 'general', err.message)
@@ -314,9 +386,21 @@ export default async (req) => {
       return
     }
 
+    // Dedupe against this customer's existing signals BEFORE spending Apollo
+    // credits, not after. For a brand new account this set is normally
+    // empty, but it's a cheap, free guard against a retried request or a
+    // second concurrent trigger burning enrichment credits on a signal
+    // that would just get discarded as a duplicate on write anyway.
+    const { data: existingRows } = await supabase
+      .from('intelligence_signals')
+      .select('dedup_key')
+      .eq('user_id', userId)
+    const existingKeys = new Set((existingRows || []).map(r => r.dedup_key))
+
     const rows = []
     for (const s of capped) {
       if (!s.company || !s.headline) continue
+      if (existingKeys.has(normalizeKey(s.company, s.headline))) continue
 
       const [contact, companyInfo] = await Promise.all([
         verifyContact(apolloKey, s.company, s.titleKeywords),
