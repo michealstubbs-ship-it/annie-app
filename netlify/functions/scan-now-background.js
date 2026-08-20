@@ -6,6 +6,16 @@
 // customer moves straight on to the LinkedIn import step while this keeps
 // running server-side, and is very often done before they get through it.
 //
+// This is THE first-impression moment for a brand new customer, so unlike
+// the 4-hourly all-customer cron this one is deliberately over-resourced:
+// instead of one AI call trying to cover every sector and function a
+// customer picked with a shared search budget, it runs several calls in
+// parallel (one per sector group), each with its own generous search
+// budget, then merges the results. If that still comes up thin, it runs one
+// more, deliberately broader pass before giving up. It only runs once per
+// signup, never on a schedule, so the extra Anthropic/Apollo spend here is
+// small in absolute terms.
+//
 // Deliberately self-contained rather than sharing code with
 // intelligence-scan.js: this is a background function (different runtime
 // contract, 15-minute wall clock budget, no response body), and keeping it
@@ -16,6 +26,13 @@ import { createClient } from '@supabase/supabase-js'
 import { getStore } from '@netlify/blobs'
 
 const SIGNAL_TYPES = ['funding', 'leadership_change', 'hiring_activity', 'expansion', 'team_building', 'public_commentary', 'job_posting_unclaimed', 'm_and_a', 'regulatory']
+
+// How many sector groups to research in parallel, and the minimum number of
+// unique signals we want back before we're willing to show a brand new
+// customer their first dashboard without trying harder first.
+const MAX_SECTOR_GROUPS = 4
+const MIN_SIGNAL_TARGET = 3
+const MAX_TOTAL_SIGNALS = 12
 
 // A brand new customer landing on an empty dashboard for the full 6-minute
 // "researching" window even when the scan genuinely finished in 11 seconds
@@ -39,17 +56,48 @@ function normalizeKey(company, headline) {
   return `${(company || '').trim().toLowerCase()}::${(headline || '').trim().toLowerCase().slice(0, 80)}`
 }
 
-function buildScanPrompt(onboarding, recentCompanies) {
+// Splits a customer's selected sectors into up to maxGroups buckets so each
+// AI call researches a narrower slice with its own full search budget,
+// instead of one call rationing searches across everything the customer
+// picked. A customer with 1-4 sectors gets one call per sector; more than
+// that and sectors are distributed round-robin across the group cap so
+// total cost stays bounded regardless of how many a customer selects.
+function chunkSectors(sectors, maxGroups) {
+  if (!sectors?.length) return [null]
+  const groupCount = Math.min(maxGroups, sectors.length)
+  const buckets = Array.from({ length: groupCount }, () => [])
+  sectors.forEach((s, i) => buckets[i % groupCount].push(s))
+  return buckets
+}
+
+// Merges signal lists from multiple AI calls (per-sector-group, plus
+// optionally a broaden pass), deduplicating by company+headline so the same
+// real event found via two different searches doesn't get written twice.
+function mergeSignals(lists) {
+  const seen = new Map()
+  for (const list of lists) {
+    for (const s of list || []) {
+      if (!s?.company || !s?.headline) continue
+      const key = normalizeKey(s.company, s.headline)
+      if (!seen.has(key)) seen.set(key, s)
+    }
+  }
+  return [...seen.values()]
+}
+
+function buildScanPrompt(onboarding, recentCompanies, opts = {}) {
   const functions = onboarding?.functions?.length ? onboarding.functions.join(', ') : null
+  const sectorsForPrompt = opts.sectorsOverride?.length ? opts.sectorsOverride : onboarding?.sectors
   return `You are Annie, an expert BD researcher for a recruitment firm.
-Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
+Sectors: ${sectorsForPrompt?.join(', ') || 'General recruitment'}.
 Functions this recruiter places candidates into: ${functions || 'All functions, no specific focus given'}.
 Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Communication tone: ${onboarding?.tone || 'professional'}.
 ${onboarding?.writing_style ? `The recruiter's real writing style, follow this closely when writing the candidateAngle text:\n${onboarding.writing_style}\n` : ''}
-Use web search to find genuine, timely BD-relevant signals in these sectors and markets right now: funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity.
+Use web search to find genuine, timely BD-relevant signals in these sectors and markets from the last 5 days: funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity. A signal from any point in the last 5 days counts as timely, it does not need to have happened today or this specific hour.
 Search thoroughly before concluding there is nothing. Run multiple distinct searches, try each sector and each function by name, try combinations of sector + "funding" / "hiring" / "appoints" / "expansion" / "acquires", try the specified markets by name, and try recent news generally in these sectors before narrowing. Do not stop after one or two searches, a real, live-news industry genuinely has more happening in it than that.
 ${functions ? `This recruiter places into the functions listed above. When you find a strong, genuine signal, connect it to whichever of those functions it most plausibly affects, even if the reasoning takes a small logical step (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring, a new market launch signals Government/Regulatory Affairs hiring, an M&A deal signals Corporate Development or Legal hiring). Make your best reasonable case for the closest function rather than discarding a real, well-sourced signal purely because the function match isn't perfect. Only leave a strong signal out entirely if you genuinely cannot connect it to any of the functions listed, even loosely.` : ''}
+${opts.broaden ? `\nIMPORTANT: an earlier, narrower search pass came up thin. For this pass, widen your net further: look back up to the last 4 weeks (not just the last 5 days), consider the parent industry category as well as the exact sub-sector, and count a signal even if the function connection takes a slightly longer logical chain, as long as it is still genuinely defensible. The bar is "real and sourced", not "perfect fit". Still never invent anything, and still cite a real source for every signal.\n` : ''}
 
 This is a brand new account with no history yet, so there is nothing to avoid repeating: ${recentCompanies.join(', ') || 'None yet'}.
 
@@ -71,23 +119,23 @@ Return a JSON array, each object with exactly these fields: company, signalType,
 Only return the JSON array, nothing else. If nothing genuinely good was found, return an empty array.`
 }
 
-async function callAnthropic(apiKey, systemPrompt) {
+async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 4096 } = {}) {
   // A brand new customer's first scan is the moment that makes or breaks
   // their first impression of the whole product, so this one uses the
-  // stronger model and a bigger search/token budget even though it costs
-  // more per call. It only runs once per signup, not on a recurring
-  // schedule, so the extra cost here is small in absolute terms. The
-  // 4-hourly all-customer cron (intelligence-scan.js) stays on the cheaper
-  // model to control cost at scale.
+  // stronger model even though it costs more per call. It only runs once
+  // per signup, not on a recurring schedule, so the extra cost here is
+  // small in absolute terms. The 4-hourly all-customer cron
+  // (intelligence-scan.js) stays on the cheaper model to control cost at
+  // scale.
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 4096,
+      max_tokens: maxTokens,
       system: systemPrompt,
       messages: [{ role: 'user', content: 'Scan for signals now.' }],
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 10 }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxUses }],
     }),
   })
   if (!resp.ok) throw new Error(`Anthropic ${resp.status}`)
@@ -206,22 +254,68 @@ export default async (req) => {
       return
     }
 
-    const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, []))
-    const found = extractJson(text)
-    if (!found.length) {
-      // Distinguish "the AI genuinely searched and found nothing" from
-      // "the AI found things but we failed to parse its response" (e.g. it
-      // wrapped the JSON in prose, or got cut off). Logging a preview of
-      // the raw response here means the next zero-result scan is provable
-      // from the function log instead of guessed at.
-      const preview = (text || '').trim().slice(0, 600)
-      console.log('[scan-now] nothing found for', userId, '| raw response preview:', preview || '(empty response)')
-      await setStatus(userId, { status: 'done', reason: 'no_results', signalsFound: 0, startedAt, finishedAt: Date.now(), rawPreview: preview || null })
+    // Pass 1: research each sector group in parallel, each with its own
+    // full search budget, instead of one call rationing searches across
+    // everything the customer picked.
+    const groups = chunkSectors(ob.sectors, MAX_SECTOR_GROUPS)
+    const groupResults = await Promise.all(groups.map(async (sectorGroup) => {
+      try {
+        const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { sectorsOverride: sectorGroup }))
+        return { sectorGroup, found: extractJson(text), rawText: text }
+      } catch (err) {
+        console.error('[scan-now] group call failed for', userId, sectorGroup?.join('/') || 'general', err.message)
+        return { sectorGroup, found: [], rawText: '', error: err.message }
+      }
+    }))
+
+    groupResults.forEach(g => {
+      if (!g.found.length) {
+        const preview = (g.rawText || '').trim().slice(0, 300)
+        console.log('[scan-now] group came back empty for', userId, '| sectors:', g.sectorGroup?.join('/') || 'general', '| preview:', preview || g.error || '(empty response)')
+      }
+    })
+
+    let merged = mergeSignals(groupResults.map(g => g.found))
+    let broadened = false
+    let broadenPreview = null
+
+    // Safety net: a brand new customer should not land on an empty first
+    // dashboard just because the narrower per-sector passes came up thin.
+    // Run one more deliberately broader pass before accepting that.
+    if (merged.length < MIN_SIGNAL_TARGET) {
+      try {
+        const broadenText = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { broaden: true }), { maxUses: 10 })
+        const broadenFound = extractJson(broadenText)
+        broadened = true
+        if (!broadenFound.length) broadenPreview = (broadenText || '').trim().slice(0, 400)
+        merged = mergeSignals([merged, broadenFound])
+      } catch (err) {
+        console.error('[scan-now] broaden pass failed for', userId, err.message)
+        broadened = true
+        broadenPreview = `broaden pass error: ${err.message}`
+      }
+    }
+
+    const capped = merged.slice(0, MAX_TOTAL_SIGNALS)
+
+    if (!capped.length) {
+      console.log('[scan-now] nothing found for', userId, '| sectors scanned:', groups.map(g => g?.join('/') || 'general').join(' | '), '| broadened:', broadened, '| broaden preview:', broadenPreview || '(n/a)')
+      await setStatus(userId, {
+        status: 'done',
+        reason: 'no_results',
+        signalsFound: 0,
+        startedAt,
+        finishedAt: Date.now(),
+        sectorsScanned: ob.sectors || [],
+        groupsRun: groups.length,
+        broadened,
+        rawPreview: broadenPreview || null,
+      })
       return
     }
 
     const rows = []
-    for (const s of found) {
+    for (const s of capped) {
       if (!s.company || !s.headline) continue
 
       const [contact, companyInfo] = await Promise.all([
@@ -257,9 +351,18 @@ export default async (req) => {
 
     if (rows.length) {
       await supabase.from('intelligence_signals').upsert(rows, { onConflict: 'user_id,dedup_key', ignoreDuplicates: true })
-      console.log(`[scan-now] wrote ${rows.length} signals for`, userId)
+      console.log(`[scan-now] wrote ${rows.length} signals for`, userId, '| groups:', groups.length, '| broadened:', broadened)
     }
-    await setStatus(userId, { status: 'done', reason: rows.length ? 'ok' : 'no_results', signalsFound: rows.length, startedAt, finishedAt: Date.now() })
+    await setStatus(userId, {
+      status: 'done',
+      reason: rows.length ? 'ok' : 'no_results',
+      signalsFound: rows.length,
+      startedAt,
+      finishedAt: Date.now(),
+      sectorsScanned: ob.sectors || [],
+      groupsRun: groups.length,
+      broadened,
+    })
   } catch (err) {
     console.error('[scan-now] failed for', userId, err.message)
     await setStatus(userId, { status: 'done', reason: 'error', errorMessage: err.message, signalsFound: 0, startedAt, finishedAt: Date.now() })
