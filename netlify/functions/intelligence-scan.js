@@ -20,13 +20,14 @@ Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Communication tone: ${onboarding?.tone || 'professional'}.
 ${onboarding?.writing_style ? `The recruiter's real writing style, follow this closely when writing the candidateAngle text:\n${onboarding.writing_style}\n` : ''}
 Use web search to find genuine, timely BD-relevant signals in these sectors and markets right now: funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity.
-${functions ? `This recruiter only places into the functions listed above (e.g. a Finance recruiter doesn't want a Marketing hiring signal, even at a company in their target sector). Every signal you surface must point to a genuine opening or need in one of those functions specifically, whether that's the role itself, or the function most likely to be affected by the news (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring). Reject anything where you can't draw that connection.` : ''}
+Search thoroughly before concluding there is nothing. Run multiple distinct searches, try each sector and each function by name, try combinations of sector + "funding" / "hiring" / "appoints" / "expansion" / "acquires", try the specified markets by name, and try recent news generally in these sectors before narrowing. Do not stop after one or two searches, a real, live-news industry genuinely has more happening in it than that.
+${functions ? `This recruiter places into the functions listed above. When you find a strong, genuine signal, connect it to whichever of those functions it most plausibly affects, even if the reasoning takes a small logical step (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring, a new market launch signals Government/Regulatory Affairs hiring, an M&A deal signals Corporate Development or Legal hiring). Make your best reasonable case for the closest function rather than discarding a real, well-sourced signal purely because the function match isn't perfect. Only leave a strong signal out entirely if you genuinely cannot connect it to any of the functions listed, even loosely.` : ''}
 
-Bias strongly AGAINST obvious, oversaturated, famous names everyone already targets, unless there is a genuinely fresh, non-public timing signal attached. Prefer quiet signals that took real digging to find.
+Bias against obvious, oversaturated, famous names everyone already targets when a quieter, equally strong alternative exists, but do not discard a genuinely strong, well-sourced signal just because the company is well known, a real opportunity is better than an artificially obscure one.
 
 Companies already surfaced recently, don't re-report the same event for these unless there is a brand new development: ${recentCompanies.join(', ') || 'None yet'}.
 
-Every signal must have a real, citable source you actually found via search. Do not invent anything. Return up to 8 signals, fewer if you can't find genuinely good ones, never pad with weak filler.
+Every signal must have a real, citable source you actually found via search. Do not invent anything. Return up to 8 signals, fewer if you can't find genuinely good ones after searching thoroughly, never pad with weak filler.
 
 For each signal, determine:
 - company: the company name
@@ -50,10 +51,10 @@ async function callAnthropic(apiKey, systemPrompt) {
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2500,
+      max_tokens: 4096,
       system: systemPrompt,
       messages: [{ role: 'user', content: 'Scan for signals now.' }],
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
     }),
   })
   if (!resp.ok) throw new Error(`Anthropic ${resp.status}`)
@@ -140,7 +141,13 @@ export default async (req, context) => {
 
       const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies))
       const found = extractJson(text)
-      if (!found.length) continue
+      if (!found.length) {
+        // Same reasoning as scan-now-background.js: log a preview so a
+        // zero-result customer is diagnosable from the log, not guessed at.
+        const preview = (text || '').trim().slice(0, 400)
+        console.log('[intelligence-scan] nothing found for', ob.user_id, '| raw response preview:', preview || '(empty response)')
+        continue
+      }
 
       const rows = []
       for (const s of found) {
