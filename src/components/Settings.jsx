@@ -96,7 +96,7 @@ Only return the style profile text, nothing else.`
           </div>
           <div><label className="label">Firm name</label><input className="input" value={form.firm_name} onChange={e => setForm(p => ({ ...p, firm_name: e.target.value }))} /></div>
           <div><label className="label">Phone</label><input className="input" type="tel" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
-          <div><label className="label">Email</label><input className="input" value={user?.email || ''} disabled className="input opacity-60 cursor-not-allowed" /></div>
+          <div><label className="label">Email</label><input className="input opacity-60 cursor-not-allowed" value={user?.email || ''} disabled /></div>
         </div>
         <div className="flex items-center gap-3 mt-5">
           <button onClick={saveProfile} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save changes'}</button>
@@ -144,6 +144,7 @@ Only return the style profile text, nothing else.`
           <h2 className="text-lg font-bold text-navy mb-4">BD Configuration</h2>
           <div className="space-y-4 text-sm">
             <div><span className="font-semibold text-gray-600">Sectors:</span> <span className="text-gray-700">{onboarding.sectors?.join(', ') || 'Not set'}</span></div>
+            <div><span className="font-semibold text-gray-600">Functions:</span> <span className="text-gray-700">{onboarding.functions?.join(', ') || 'Not set'}</span></div>
             <div><span className="font-semibold text-gray-600">Markets:</span> <span className="text-gray-700">{onboarding.locations?.join(', ') || 'Not set'}</span></div>
             <div><span className="font-semibold text-gray-600">Tone:</span> <span className="text-gray-700 capitalize">{onboarding.tone || 'Professional'}</span></div>
           </div>

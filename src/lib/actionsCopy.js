@@ -29,6 +29,7 @@ export function buildEnrichmentPrompt(items, onboarding, profile) {
   const context = `You are Annie, a BD intelligence engine for recruitment firms.
 Recruiter: ${profile?.full_name || 'the user'} at ${profile?.firm_name || onboarding?.firm_name || 'their firm'}.
 Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
+Functions this recruiter places candidates into: ${onboarding?.functions?.join(', ') || 'All functions, no specific focus given'}.
 Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Tone: ${onboarding?.tone || 'professional'}.
 ${onboarding?.writing_style ? `\nThe recruiter's real writing style, follow this closely for any drafted copy:\n${onboarding.writing_style}\n` : ''}

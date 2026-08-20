@@ -12,12 +12,15 @@ function normalizeKey(company, headline) {
 }
 
 function buildScanPrompt(onboarding, recentCompanies) {
+  const functions = onboarding?.functions?.length ? onboarding.functions.join(', ') : null
   return `You are Annie, an expert BD researcher for a recruitment firm.
 Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
+Functions this recruiter places candidates into: ${functions || 'All functions, no specific focus given'}.
 Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Communication tone: ${onboarding?.tone || 'professional'}.
 ${onboarding?.writing_style ? `The recruiter's real writing style, follow this closely when writing the candidateAngle text:\n${onboarding.writing_style}\n` : ''}
 Use web search to find genuine, timely BD-relevant signals in these sectors and markets right now: funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity.
+${functions ? `This recruiter only places into the functions listed above (e.g. a Finance recruiter doesn't want a Marketing hiring signal, even at a company in their target sector). Every signal you surface must point to a genuine opening or need in one of those functions specifically, whether that's the role itself, or the function most likely to be affected by the news (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring). Reject anything where you can't draw that connection.` : ''}
 
 Bias strongly AGAINST obvious, oversaturated, famous names everyone already targets, unless there is a genuinely fresh, non-public timing signal attached. Prefer quiet signals that took real digging to find.
 
@@ -33,9 +36,9 @@ For each signal, determine:
 - sourceUrl: the real URL you found this from
 - sourceLabel: short label, e.g. techcrunch.com
 - eventDate: your best estimate of when this actually happened or was posted, as YYYY-MM-DD, based on the source
-- whoToApproach: the specific person or role to approach and why, bypass generic HR/Head of Talent unless they're genuinely the right door
+- whoToApproach: the specific person or role to approach and why, bypass generic HR/Head of Talent unless they're genuinely the right door, and keep them within this recruiter's target functions above
 - titleKeywords: 2-4 likely job title strings for the right decision-maker, used afterwards to look up a real verified contact
-- candidateAngle: a specific, credible candidate profile to lead with (background, seniority, source companies), not a generic pitch, written in the recruiter's communication tone above. Leave blank if this signal isn't the kind that calls for a candidate pitch (e.g. a pure leadership-change or funding note with no obvious opening).
+- candidateAngle: a specific, credible candidate profile to lead with (background, seniority, source companies), matching the target functions above, not a generic pitch, written in the recruiter's communication tone above. Leave blank if this signal isn't the kind that calls for a candidate pitch (e.g. a pure leadership-change or funding note with no obvious opening).
 
 Return a JSON array, each object with exactly these fields: company, signalType, headline, whyItMatters, sourceUrl, sourceLabel, eventDate, whoToApproach, titleKeywords, candidateAngle.
 Only return the JSON array, nothing else. If nothing genuinely good was found, return an empty array.`
@@ -122,7 +125,7 @@ export default async (req, context) => {
 
   const supabase = createClient(supabaseUrl, serviceKey)
 
-  const { data: onboardingRows } = await supabase.from('onboarding').select('user_id, sectors, locations, tone, firm_name, writing_style')
+  const { data: onboardingRows } = await supabase.from('onboarding').select('user_id, sectors, functions, locations, tone, firm_name, writing_style')
   if (!onboardingRows?.length) return new Response('No customers to scan', { status: 200 })
 
   for (const ob of onboardingRows) {

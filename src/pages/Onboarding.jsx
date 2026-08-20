@@ -2,12 +2,10 @@ import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { SECTOR_TAXONOMY } from '../lib/sectorTaxonomy'
+import { FUNCTION_TAXONOMY } from '../lib/functionTaxonomy'
+import SectorPicker from '../components/SectorPicker'
 
-const SECTORS = [
-  'Executive Search', 'Technology', 'Financial Services', 'Legal',
-  'Healthcare', 'Energy & Utilities', 'Real Estate', 'Consumer & Retail',
-  'Industrial', 'Professional Services', 'Private Equity', 'Government & Public Sector',
-]
 const LOCATIONS = ['United Kingdom', 'UAE / GCC', 'Europe', 'United States', 'Asia Pacific', 'Global']
 
 const SCENARIO_NOTE = 'Same scenario in every tone, reaching out to a Head of Payments Ops who just posted about scaling her team.'
@@ -49,6 +47,7 @@ export default function Onboarding() {
   const [form, setForm] = useState({
     firmName: profile?.firm_name || '',
     sectors: [],
+    functions: [],
     locations: [],
     tone: 'professional',
   })
@@ -75,6 +74,7 @@ export default function Onboarding() {
         user_id: user.id,
         firm_name: form.firmName,
         sectors: form.sectors,
+        functions: form.functions,
         locations: form.locations,
         tone: form.tone,
       }, { onConflict: 'user_id' })
@@ -98,8 +98,9 @@ export default function Onboarding() {
   const steps = [
     { num: 1, label: 'Your Firm' },
     { num: 2, label: 'Sectors' },
-    { num: 3, label: 'Markets' },
-    { num: 4, label: 'Your Style' },
+    { num: 3, label: 'Functions' },
+    { num: 4, label: 'Markets' },
+    { num: 5, label: 'Your Style' },
   ]
 
   return (
@@ -132,7 +133,7 @@ export default function Onboarding() {
         ))}
       </div>
 
-      <div className={`bg-white rounded-2xl p-8 shadow-2xl w-full ${step === 4 ? 'max-w-xl' : 'max-w-lg'}`}>
+      <div className={`bg-white rounded-2xl p-8 shadow-2xl w-full ${step === 5 ? 'max-w-xl' : 'max-w-lg'}`}>
 
         {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">{error}</div>}
 
@@ -150,20 +151,20 @@ export default function Onboarding() {
         {step === 2 && (
           <div>
             <h2 className="text-2xl font-bold text-navy mb-1">Which sectors do you recruit in?</h2>
-            <p className="text-gray-500 text-sm mb-6">Select all that apply. This drives everything Annie researches for you.</p>
-            <div className="grid grid-cols-2 gap-2">
-              {SECTORS.map(s => (
-                <button key={s} onClick={() => toggleItem('sectors', s)}
-                  className={`px-3 py-2.5 rounded-lg text-sm font-medium border-2 text-left transition-all
-                    ${form.sectors.includes(s) ? 'border-gold bg-yellow-50 text-navy' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>
-                  {s}
-                </button>
-              ))}
-            </div>
+            <p className="text-gray-500 text-sm mb-6">Select all that apply, click "Narrow down" on any of them to pick specific sub-sectors instead of the whole category. This drives everything Annie researches for you.</p>
+            <SectorPicker taxonomy={SECTOR_TAXONOMY} value={form.sectors} onChange={v => update('sectors', v)} />
           </div>
         )}
 
         {step === 3 && (
+          <div>
+            <h2 className="text-2xl font-bold text-navy mb-1">Which functions do you place people into?</h2>
+            <p className="text-gray-500 text-sm mb-6">This is the discipline a candidate works in (Finance, HSE, Construction, Healthcare, etc.), separate from the sector their employer sits in. Select all that apply, narrow down where useful.</p>
+            <SectorPicker taxonomy={FUNCTION_TAXONOMY} value={form.functions} onChange={v => update('functions', v)} />
+          </div>
+        )}
+
+        {step === 4 && (
           <div>
             <h2 className="text-2xl font-bold text-navy mb-1">Where are your target markets?</h2>
             <p className="text-gray-500 text-sm mb-6">Select all that apply.</p>
@@ -179,7 +180,7 @@ export default function Onboarding() {
           </div>
         )}
 
-        {step === 4 && (
+        {step === 5 && (
           <div>
             <h2 className="text-2xl font-bold text-navy mb-1">How do you communicate?</h2>
             <p className="text-gray-500 text-sm mb-1">Annie will match your outreach style.</p>
@@ -205,7 +206,7 @@ export default function Onboarding() {
             <button onClick={() => setStep(s => s - 1)} className="btn-ghost">Back</button>
           ) : <div />}
 
-          {step < 4 ? (
+          {step < 5 ? (
             <button onClick={() => setStep(s => s + 1)} className="btn-primary">Continue</button>
           ) : (
             <button onClick={handleFinish} disabled={loading} className="btn-primary">

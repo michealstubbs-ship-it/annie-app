@@ -2,26 +2,16 @@ import React, { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { SECTOR_TAXONOMY, FLAT_SECTOR_OPTIONS } from '../lib/sectorTaxonomy'
+import { FUNCTION_TAXONOMY, FLAT_FUNCTION_OPTIONS } from '../lib/functionTaxonomy'
+import SectorPicker from '../components/SectorPicker'
 
 // Sector and market keywords serve two purposes: (1) matched against a company's real
 // Apollo industry/country data when we have it, confidently excluding a confirmed
 // mismatch, and (2) matched against company NAME text as a fallback for companies
 // Apollo has no data on, where a match is weak evidence so absence of a match is never
-// treated as a mismatch (see softGroupMatch below).
-const SECTOR_OPTIONS = [
-  { label: 'Financial Services', keywords: ['bank', 'banking', 'financial', 'finance', 'capital', 'asset management', 'wealth', 'insurance', 'fintech', 'payments'] },
-  { label: 'Technology', keywords: ['technolog', 'software', 'saas', 'digital', 'systems', 'data', 'cloud', 'internet', 'computer'] },
-  { label: 'Real Estate', keywords: ['real estate', 'realty', 'properties', 'property', 'developer', 'development'] },
-  { label: 'Legal', keywords: ['law firm', 'law practice', 'legal', 'llp', 'advocates', 'attorneys'] },
-  { label: 'Healthcare', keywords: ['health', 'healthcare', 'medical', 'pharma', 'hospital', 'clinic'] },
-  { label: 'Energy & Utilities', keywords: ['energy', 'utilities', 'oil', 'gas', 'power', 'renewable', 'solar'] },
-  { label: 'Professional Services', keywords: ['consulting', 'advisory', 'professional services'] },
-  { label: 'Private Equity', keywords: ['private equity', 'venture capital', 'growth equity'] },
-  { label: 'Consumer & Retail', keywords: ['retail', 'consumer', 'fmcg', 'brands'] },
-  { label: 'Industrial', keywords: ['industrial', 'manufacturing', 'engineering', 'construction'] },
-  { label: 'Government & Public Sector', keywords: ['government', 'ministry', 'authority', 'public sector'] },
-  { label: 'Executive Search', keywords: ['executive search', 'staffing', 'recruitment', 'recruiting', 'headhunt'] },
-]
+// treated as a mismatch (see softGroupMatch below). Sectors themselves live in
+// sectorTaxonomy.js, shared with onboarding so the two can never drift apart again.
 const MARKET_OPTIONS = [
   { label: 'UAE / GCC', keywords: ['dubai', 'abu dhabi', 'sharjah', 'uae', 'united arab emirates', 'emirates', 'gulf', 'gcc', 'qatar', 'doha', 'saudi arabia', 'saudi', 'ksa', 'riyadh', 'jeddah', 'bahrain', 'kuwait', 'oman', 'difc', 'adgm'] },
   { label: 'United Kingdom', keywords: ['uk', 'london', 'britain', 'united kingdom', 'england', 'scotland', 'manchester', 'edinburgh'] },
@@ -30,19 +20,8 @@ const MARKET_OPTIONS = [
   { label: 'Asia Pacific', keywords: ['singapore', 'hong kong', 'japan', 'australia', 'china', 'south korea', 'indonesia', 'malaysia', 'thailand', 'vietnam', 'philippines', 'india', 'tokyo', 'sydney', 'shanghai', 'apac'] },
   { label: 'Global', keywords: [] },
 ]
-const FUNCTION_OPTIONS = [
-  { label: 'Finance & Accounting', keywords: ['finance', 'accounting', 'cfo', 'controller', 'treasury', 'fp&a'] },
-  { label: 'Technology & Engineering', keywords: ['engineer', 'developer', 'cto', 'technology', 'software', 'it director', 'data'] },
-  { label: 'HR & People', keywords: ['hr', 'human resources', 'people', 'talent', 'chro', 'recruit'] },
-  { label: 'Strategy & Corporate Dev', keywords: ['strategy', 'corporate development', 'business development', 'chief of staff'] },
-  { label: 'Sales & BD', keywords: ['sales', 'business development', 'revenue', 'account executive', 'partnerships'] },
-  { label: 'Legal & Compliance', keywords: ['legal', 'counsel', 'compliance', 'regulatory'] },
-  { label: 'Operations', keywords: ['operations', 'coo', 'operational'] },
-  { label: 'Risk & Audit', keywords: ['risk', 'audit', 'internal audit'] },
-  { label: 'Marketing', keywords: ['marketing', 'cmo', 'brand', 'communications'] },
-  { label: 'Investment Management', keywords: ['investment', 'portfolio manager', 'asset management', 'fund manager'] },
-  { label: 'General Management', keywords: ['ceo', 'managing director', 'general manager', 'president', 'founder'] },
-]
+// Functions themselves live in functionTaxonomy.js, shared with onboarding, same
+// reasoning as sectors above.
 const SENIORITY_OPTIONS = [
   { label: 'Any level', keywords: [] },
   { label: 'Manager+', keywords: ['manager', 'lead', 'head'] },
@@ -52,7 +31,7 @@ const SENIORITY_OPTIONS = [
 
 const DEFAULT_SECTORS = ['Financial Services', 'Technology', 'Real Estate']
 const DEFAULT_MARKETS = ['UAE / GCC', 'United Kingdom']
-const DEFAULT_FUNCTIONS = ['Finance & Accounting', 'Technology & Engineering', 'HR & People', 'Strategy & Corporate Dev']
+const DEFAULT_FUNCTIONS = ['Finance & Accounting', 'Technology, Data & Engineering', 'HR & People', 'Strategy & Corporate Development']
 const DEFAULT_SENIORITY = ['Manager+', 'Director / VP+', 'C-Suite / Partner / MD']
 
 const SIGNAL_TYPES = [
@@ -152,6 +131,19 @@ export default function LinkedInImport({ embedded = false }) {
   const [companyData, setCompanyData] = useState({}) // normalized company name -> { industry, city, state, country, matched }
   const [apolloConfigured, setApolloConfigured] = useState(true)
 
+  // Pre-fill from what they already told Annie in onboarding, so they're not
+  // re-picking the same sectors/functions/markets a second time on this screen.
+  React.useEffect(() => {
+    if (!user) return
+    supabase.from('onboarding').select('sectors, functions, locations').eq('user_id', user.id).maybeSingle()
+      .then(({ data }) => {
+        if (!data) return
+        if (data.sectors?.length) setSectors(data.sectors)
+        if (data.functions?.length) setFunctions(data.functions)
+        if (data.locations?.length) setMarkets(data.locations.filter(l => l !== 'Global'))
+      })
+  }, [user])
+
   function toggle(arr, setArr, value) {
     setArr(prev => prev.includes(value) ? prev.filter(v => v !== value) : [...prev, value])
   }
@@ -165,7 +157,7 @@ export default function LinkedInImport({ embedded = false }) {
     const titleText = `${contact.title} ${contact.company}`.toLowerCase()
 
     if (functions.length) {
-      const selectedFns = FUNCTION_OPTIONS.filter(f => functions.includes(f.label))
+      const selectedFns = FLAT_FUNCTION_OPTIONS.filter(f => functions.includes(f.label))
       if (!selectedFns.some(f => f.keywords.some(k => titleText.includes(k)))) return false
     }
 
@@ -210,8 +202,8 @@ export default function LinkedInImport({ embedded = false }) {
     const enrichment = companyData[normalizeCompany(contact.company)]
 
     if (enrichment?.matched && enrichment.industry) {
-      if (!realGroupMatch(enrichment.industry.toLowerCase(), SECTOR_OPTIONS, sectors)) return false
-    } else if (!softGroupMatch(companyText, SECTOR_OPTIONS, sectors)) {
+      if (!realGroupMatch(enrichment.industry.toLowerCase(), FLAT_SECTOR_OPTIONS, sectors)) return false
+    } else if (!softGroupMatch(companyText, FLAT_SECTOR_OPTIONS, sectors)) {
       return false
     }
 
@@ -446,15 +438,7 @@ export default function LinkedInImport({ embedded = false }) {
 
             <div className="mb-1">
               <div className="label mb-2">Sectors</div>
-              <div className="flex flex-wrap gap-1.5">
-                {SECTOR_OPTIONS.map(s => (
-                  <button key={s.label} onClick={() => toggle(sectors, setSectors, s.label)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-all bg-white
-                      ${sectors.includes(s.label) ? 'border-gold text-navy' : 'border-gray-200 text-gray-500'}`}>
-                    {s.label}
-                  </button>
-                ))}
-              </div>
+              <SectorPicker taxonomy={SECTOR_TAXONOMY} value={sectors} onChange={setSectors} />
             </div>
 
             <div className="mt-4 mb-1">
@@ -473,15 +457,7 @@ export default function LinkedInImport({ embedded = false }) {
 
             <div className="mt-4 mb-1">
               <div className="label mb-2">Functions</div>
-              <div className="flex flex-wrap gap-1.5">
-                {FUNCTION_OPTIONS.map(f => (
-                  <button key={f.label} onClick={() => toggle(functions, setFunctions, f.label)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border-2 transition-all bg-white
-                      ${functions.includes(f.label) ? 'border-gold text-navy' : 'border-gray-200 text-gray-500'}`}>
-                    {f.label}
-                  </button>
-                ))}
-              </div>
+              <SectorPicker taxonomy={FUNCTION_TAXONOMY} value={functions} onChange={setFunctions} />
             </div>
 
             <div className="mt-4 mb-1">

@@ -8,6 +8,7 @@ export default function Login() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [showResend, setShowResend] = useState(false)
+  const [showExistingAccount, setShowExistingAccount] = useState(false)
 
   const [form, setForm] = useState({
     email: '', password: '', fullName: '', firmName: '',
@@ -18,6 +19,7 @@ export default function Login() {
     setError('')
     setSuccess('')
     setShowResend(false)
+    setShowExistingAccount(false)
   }
 
   async function handleSubmit(e) {
@@ -26,6 +28,7 @@ export default function Login() {
     setError('')
     setSuccess('')
     setShowResend(false)
+    setShowExistingAccount(false)
 
     try {
       if (mode === 'login') {
@@ -43,9 +46,19 @@ export default function Login() {
         if (!form.firmName.trim()) return setError('Please enter your firm name')
         if (form.password.length < 8) return setError('Password must be at least 8 characters')
 
-        const { error } = await signUp(form.email, form.password, form.fullName, form.firmName)
-        if (error) setError(error.message)
-        else setSuccess("Account created. Check your email to confirm it, then sign in below. If it doesn't arrive in a couple of minutes, check spam.")
+        const { data, error } = await signUp(form.email, form.password, form.fullName, form.firmName)
+        if (error) {
+          setError(error.message)
+        } else if (data?.user && data.user.identities?.length === 0) {
+          // Supabase returns a "successful" signUp with no identities when the email
+          // already belongs to a confirmed account, to avoid leaking which emails are
+          // registered. Show the real situation instead of a misleading "check your
+          // email" message that no email will ever back up.
+          setError('An account with this email already exists.')
+          setShowExistingAccount(true)
+        } else {
+          setSuccess("Account created. Check your email to confirm it, then sign in below. If it doesn't arrive in a couple of minutes, check spam.")
+        }
       } else if (mode === 'forgot') {
         if (!form.email.trim()) return setError('Enter your email first')
         const { error } = await resetPassword(form.email)
@@ -101,6 +114,11 @@ export default function Login() {
               {showResend && (
                 <button type="button" onClick={handleResend} className="block mt-2 text-gold font-semibold hover:underline">
                   Resend confirmation email
+                </button>
+              )}
+              {showExistingAccount && (
+                <button type="button" onClick={() => { setMode('login'); setError(''); setSuccess(''); setShowExistingAccount(false) }} className="block mt-2 text-gold font-semibold hover:underline">
+                  Sign in instead
                 </button>
               )}
             </div>
