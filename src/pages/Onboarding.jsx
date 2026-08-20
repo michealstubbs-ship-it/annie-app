@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
@@ -8,6 +8,47 @@ import SectorPicker from '../components/SectorPicker'
 import { withTimeout, TIMEOUT_MESSAGE } from '../lib/withTimeout'
 
 const LOCATIONS = ['United Kingdom', 'UAE / GCC', 'Europe', 'United States', 'Asia Pacific', 'Global']
+
+// Onboarding answers are saved to localStorage as the user goes, keyed per
+// user id, so a refresh/crash mid-form (e.g. on question 3) resumes exactly
+// where they left off instead of forcing them to start over. Cleared once
+// the form is actually submitted, or after 7 days so a very stale draft
+// doesn't reappear and silently override taxonomy changes.
+const DRAFT_KEY_PREFIX = 'annie_onboarding_draft_'
+const DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+function loadDraft(userId) {
+  if (!userId) return null
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY_PREFIX + userId)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    if (!parsed.savedAt || Date.now() - parsed.savedAt > DRAFT_MAX_AGE_MS) {
+      localStorage.removeItem(DRAFT_KEY_PREFIX + userId)
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function saveDraft(userId, step, form) {
+  if (!userId) return
+  try {
+    localStorage.setItem(DRAFT_KEY_PREFIX + userId, JSON.stringify({ step, form, savedAt: Date.now() }))
+  } catch {
+    // Private/incognito mode or storage full — draft resume just won't work, not fatal.
+  }
+}
+
+function clearDraft(userId) {
+  if (!userId) return
+  try {
+    localStorage.removeItem(DRAFT_KEY_PREFIX + userId)
+  } catch {}
+}
 
 const SCENARIO_NOTE = 'Same scenario in every tone, reaching out to a Head of Payments Ops who just posted about scaling her team.'
 
@@ -41,17 +82,31 @@ const TONES = [
 export default function Onboarding() {
   const { user, profile, refreshProfile } = useAuth()
   const navigate = useNavigate()
-  const [step, setStep] = useState(1)
+
+  const [step, setStep] = useState(() => {
+    const draft = loadDraft(user?.id)
+    const n = Number(draft?.step)
+    return n >= 1 && n <= 5 ? n : 1
+  })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [resumed, setResumed] = useState(() => !!loadDraft(user?.id))
 
-  const [form, setForm] = useState({
-    firmName: profile?.firm_name || '',
-    sectors: [],
-    functions: [],
-    locations: [],
-    tone: 'professional',
+  const [form, setForm] = useState(() => {
+    const draft = loadDraft(user?.id)
+    return {
+      firmName: draft?.form?.firmName ?? (profile?.firm_name || ''),
+      sectors: draft?.form?.sectors ?? [],
+      functions: draft?.form?.functions ?? [],
+      locations: draft?.form?.locations ?? [],
+      tone: draft?.form?.tone ?? 'professional',
+    }
   })
+
+  // Persist on every change so a refresh (even mid-question) can resume.
+  useEffect(() => {
+    saveDraft(user?.id, step, form)
+  }, [user?.id, step, form])
 
   function toggleItem(field, value) {
     setForm(prev => ({
@@ -99,6 +154,7 @@ export default function Onboarding() {
       const result = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(result.error || 'Could not save your answers. Please try again.')
 
+      clearDraft(user?.id)
       await refreshProfile()
       navigate('/import')
     } catch (err) {
@@ -152,6 +208,13 @@ export default function Onboarding() {
       </div>
 
       <div className={`bg-white rounded-2xl p-8 shadow-2xl w-full ${step === 5 ? 'max-w-xl' : 'max-w-lg'}`}>
+
+        {resumed && !error && (
+          <div className="bg-blue-50 border border-blue-100 text-blue-700 rounded-lg px-4 py-2.5 text-xs mb-4 flex items-center justify-between gap-3">
+            <span>Picked up where you left off — your earlier answers are still here.</span>
+            <button onClick={() => setResumed(false)} className="text-blue-400 hover:text-blue-600 font-bold flex-shrink-0">✕</button>
+          </div>
+        )}
 
         {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">{error}</div>}
 
