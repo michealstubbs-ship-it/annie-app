@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { withTimeout } from '../lib/withTimeout'
 
 const AuthContext = createContext({})
 
@@ -50,11 +51,17 @@ export function AuthProvider({ children }) {
 
   async function fetchProfile(userId) {
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single()
+      // Timeout-guarded like save-onboarding: this still calls supabase.co
+      // directly (a GET, so there's nothing to proxy through our own domain
+      // for), but without a timeout a silently-blocked request here hangs
+      // this call forever with no error and no way for the caller to move
+      // on — that's what left "Setting up Annie..." stuck indefinitely
+      // after a successful save, since handleFinish awaits refreshProfile().
+      const { data, error } = await withTimeout(
+        supabase.from('profiles').select('*').eq('id', userId).single(),
+        10000,
+        'fetch-profile',
+      )
 
       if (!error && data) setProfile(data)
     } catch (err) {

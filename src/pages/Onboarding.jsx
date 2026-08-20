@@ -154,8 +154,18 @@ export default function Onboarding() {
       const result = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(result.error || 'Could not save your answers. Please try again.')
 
+      // The save already succeeded at this point — that's the part that
+      // matters. refreshProfile() just re-pulls the profile row so the rest
+      // of the app immediately knows onboarding is done; if it's slow or
+      // gets blocked (same class of issue the save itself used to hit) we
+      // still move the user on rather than leaving them stuck on this
+      // screen. The next page load re-fetches the profile anyway.
       clearDraft(user?.id)
-      await refreshProfile()
+      try {
+        await withTimeout(refreshProfile(), 8000, 'post-onboarding-profile-refresh')
+      } catch (refreshErr) {
+        console.warn('[Onboarding] profile refresh after save was slow/blocked, continuing anyway:', refreshErr)
+      }
       navigate('/import')
     } catch (err) {
       console.error('[Onboarding] handleFinish failed:', err)
