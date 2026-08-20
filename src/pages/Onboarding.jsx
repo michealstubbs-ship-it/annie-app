@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase'
 import { SECTOR_TAXONOMY } from '../lib/sectorTaxonomy'
 import { FUNCTION_TAXONOMY } from '../lib/functionTaxonomy'
 import SectorPicker from '../components/SectorPicker'
+import { withTimeout, TIMEOUT_MESSAGE } from '../lib/withTimeout'
 
 const LOCATIONS = ['United Kingdom', 'UAE / GCC', 'Europe', 'United States', 'Asia Pacific', 'Global']
 
@@ -70,26 +71,36 @@ export default function Onboarding() {
     setLoading(true)
     setError('')
     try {
-      const { error: onboardErr } = await supabase.from('onboarding').upsert({
-        user_id: user.id,
-        firm_name: form.firmName,
-        sectors: form.sectors,
-        functions: form.functions,
-        locations: form.locations,
-        tone: form.tone,
-      }, { onConflict: 'user_id' })
+      const { error: onboardErr } = await withTimeout(
+        supabase.from('onboarding').upsert({
+          user_id: user.id,
+          firm_name: form.firmName,
+          sectors: form.sectors,
+          functions: form.functions,
+          locations: form.locations,
+          tone: form.tone,
+        }, { onConflict: 'user_id' }),
+        12000,
+        'onboarding-save',
+      )
       if (onboardErr) throw onboardErr
 
-      const { error: profileErr } = await supabase
-        .from('profiles')
-        .update({ onboarding_completed: true, firm_name: form.firmName })
-        .eq('id', user.id)
+      const { error: profileErr } = await withTimeout(
+        supabase.from('profiles').update({ onboarding_completed: true, firm_name: form.firmName }).eq('id', user.id),
+        12000,
+        'profile-update',
+      )
       if (profileErr) throw profileErr
 
       await refreshProfile()
       navigate('/import')
     } catch (err) {
-      setError(err.message || 'Something went wrong. Please try again.')
+      console.error('[Onboarding] handleFinish failed:', err)
+      if (err.message?.startsWith('TIMEOUT:')) {
+        setError(TIMEOUT_MESSAGE)
+      } else {
+        setError(err.message || 'Something went wrong. Please try again.')
+      }
     } finally {
       setLoading(false)
     }

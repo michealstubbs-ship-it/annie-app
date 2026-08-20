@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase'
 import { SECTOR_TAXONOMY, FLAT_SECTOR_OPTIONS } from '../lib/sectorTaxonomy'
 import { FUNCTION_TAXONOMY, FLAT_FUNCTION_OPTIONS } from '../lib/functionTaxonomy'
 import SectorPicker from '../components/SectorPicker'
+import { withTimeout, TIMEOUT_MESSAGE } from '../lib/withTimeout'
 
 // Sector and market keywords serve two purposes: (1) matched against a company's real
 // Apollo industry/country data when we have it, confidently excluding a confirmed
@@ -299,6 +300,20 @@ export default function LinkedInImport({ embedded = false }) {
     setImporting(true)
     setError('')
     try {
+      await withTimeout(runImport(), 30000, 'linkedin-import')
+    } catch (err) {
+      console.error('[LinkedInImport] handleImport failed:', err)
+      setError(err.message?.startsWith('TIMEOUT:') ? TIMEOUT_MESSAGE : (err.message || 'Something went wrong during import.'))
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  // Everything Supabase-dependent lives here, as one sequential unit, so a
+  // single 30s timeout around the whole thing covers every step (company
+  // lookup/insert, contact insert, marking the account done) rather than
+  // needing a separate guard on each call.
+  async function runImport() {
       // No target company list anymore, sectors and markets already shaped who got
       // imported. Within that, the most senior decision-makers get tagged hot.
       const seniorKeywords = SENIORITY_OPTIONS.find(s => s.label === 'C-Suite / Partner / MD').keywords
@@ -369,17 +384,21 @@ export default function LinkedInImport({ embedded = false }) {
       await refreshProfile()
 
       setDone({ imported: toInsert.length, targets: targetCount, newCompanies: newCompanyCount })
-    } catch (err) {
-      setError(err.message || 'Something went wrong during import.')
-    } finally {
-      setImporting(false)
-    }
   }
 
   async function handleSkip() {
-    await supabase.from('profiles').update({ linkedin_import_completed: true }).eq('id', user.id)
-    await refreshProfile()
-    navigate('/dashboard')
+    try {
+      await withTimeout(
+        supabase.from('profiles').update({ linkedin_import_completed: true }).eq('id', user.id),
+        12000,
+        'linkedin-skip',
+      )
+      await refreshProfile()
+      navigate('/dashboard')
+    } catch (err) {
+      console.error('[LinkedInImport] handleSkip failed:', err)
+      setError(err.message?.startsWith('TIMEOUT:') ? TIMEOUT_MESSAGE : (err.message || 'Something went wrong. Please try again.'))
+    }
   }
 
   const Wrapper = ({ children }) => embedded ? (
