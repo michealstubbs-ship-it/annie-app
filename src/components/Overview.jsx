@@ -195,6 +195,19 @@ export default function Overview() {
         <p className="text-[13.5px] text-gray-200 leading-relaxed">{briefing} <span className="text-gold font-semibold">Here's the shape of your day.</span></p>
       </div>
 
+      {researching && (
+        <div className="rounded-2xl px-5 py-4 mb-5 flex items-center gap-3.5 border-2 border-gold bg-gradient-to-r from-navy to-[#1a2d5c]">
+          <div className="relative w-10 h-10 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
+            <span className="absolute inset-0 rounded-full bg-gold/30 animate-ping" />
+            <div className="relative w-4 h-4 border-2 border-gold border-t-transparent rounded-full animate-spin" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold text-white">Annie is researching your market right now</p>
+            <p className="text-[12.5px] text-gray-300 mt-0.5 leading-relaxed">Live funding rounds, leadership changes and hiring signals in your sectors — first results usually land within a couple of minutes. This page updates itself, no need to refresh.</p>
+          </div>
+        </div>
+      )}
+
       {!loading && contactsCount === 0 && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-5 py-4 mb-5 flex items-center gap-3.5">
           <div className="w-9 h-9 rounded-full bg-white flex items-center justify-center flex-shrink-0">
@@ -307,17 +320,7 @@ export default function Overview() {
               <p className="text-[15px] font-bold text-navy">Latest intelligence</p>
             </div>
             {signals.length === 0 ? (
-              researching ? (
-                <div className="py-1">
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <div className="w-3.5 h-3.5 border-2 border-gold border-t-transparent rounded-full animate-spin flex-shrink-0" />
-                    <p className="text-sm text-gray-600 font-medium">Annie is researching your market now...</p>
-                  </div>
-                  <p className="text-xs text-gray-400">First signals usually land within a couple of minutes — this updates automatically, no need to refresh.</p>
-                </div>
-              ) : (
-                <p className="text-sm text-gray-400">Annie hasn't found anything new yet.</p>
-              )
+              <p className="text-sm text-gray-400">{researching ? "Annie's on it — see the banner above." : "Annie hasn't found anything new yet."}</p>
             ) : (
               <>
                 {signals.map((s, i) => (

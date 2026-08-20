@@ -60,6 +60,13 @@ export default function TodaysActions() {
     if (data?.actions?.length) {
       setActions(data.actions)
       setGenerated(true)
+    } else {
+      // Nothing generated yet today (brand new account, or everything from
+      // today's list was already actioned) — build it automatically instead
+      // of making the person click a button before Annie shows them
+      // anything. Matches the rest of the dashboard: they land straight
+      // into value, not an empty state waiting on a click.
+      generate()
     }
   }
 
