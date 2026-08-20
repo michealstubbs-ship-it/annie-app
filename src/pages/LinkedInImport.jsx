@@ -81,8 +81,8 @@ function ExportWalkthrough() {
         {[
           { n: 1, title: 'Open LinkedIn and go to Settings', path: ['Me ▾', 'Settings & Privacy'] },
           { n: 2, title: 'Go to Data privacy, then request your data', path: ['Data privacy', 'Get a copy of your data'] },
-          { n: 3, title: 'Select "Connections" only, then request the archive', path: ['Want something in particular?', 'Connections'] },
-          { n: 4, title: 'Wait for the email, then download Connections.csv', path: null },
+          { n: 3, title: 'Choose "Download larger data archive", then request the archive', path: ['Download larger data archive'] },
+          { n: 4, title: 'Wait for the email, download the zip, then open Connections.csv from inside it', path: null },
         ].map(step => (
           <div key={step.n} className="bg-white rounded-lg px-4 py-3 flex items-start gap-3 border border-gray-100">
             <div className="w-6 h-6 rounded-full bg-navy text-gold text-xs font-bold flex items-center justify-center flex-shrink-0">{step.n}</div>
@@ -98,7 +98,8 @@ function ExportWalkthrough() {
                   ))}
                 </div>
               )}
-              {step.n === 4 && <p className="text-[11px] text-gray-400 mt-1">LinkedIn usually sends this within ten minutes.</p>}
+              {step.n === 3 && <p className="text-[11px] text-gray-400 mt-1">LinkedIn removed the option to request just your connections on their own — this bundles in more than you need, but it's the only way to get them now. Only Connections.csv matters here.</p>}
+              {step.n === 4 && <p className="text-[11px] text-gray-400 mt-1">LinkedIn usually sends this within ten minutes. The zip has several files in it — Connections.csv is the only one Annie needs.</p>}
             </div>
           </div>
         ))}
