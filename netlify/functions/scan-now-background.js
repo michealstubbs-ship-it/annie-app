@@ -13,8 +13,27 @@
 // already runs reliably in production. Netlify requires the "-background"
 // filename suffix to run it this way.
 import { createClient } from '@supabase/supabase-js'
+import { getStore } from '@netlify/blobs'
 
 const SIGNAL_TYPES = ['funding', 'leadership_change', 'hiring_activity', 'expansion', 'team_building', 'public_commentary', 'job_posting_unclaimed', 'm_and_a', 'regulatory']
+
+// A brand new customer landing on an empty dashboard for the full 6-minute
+// "researching" window even when the scan genuinely finished in 11 seconds
+// (found nothing worth reporting, or hit an error) reads as broken, not
+// slow. This status blob is how the frontend tells "still running" apart
+// from "finished, here's what actually happened" — see scan-status.js
+// (reads it) and Overview.jsx (polls scan-status.js instead of just
+// guessing off a timer).
+async function setStatus(userId, data) {
+  try {
+    const store = getStore({ name: 'annie-scan-status', consistency: 'strong' })
+    await store.setJSON(userId, data)
+  } catch (err) {
+    // Status tracking is a nicety for the loading UI, never let it take the
+    // actual scan down.
+    console.error('[scan-now] failed to write status blob for', userId, err.message)
+  }
+}
 
 function normalizeKey(company, headline) {
   return `${(company || '').trim().toLowerCase()}::${(headline || '').trim().toLowerCase().slice(0, 80)}`
@@ -150,6 +169,9 @@ export default async (req) => {
   // intelligence_signals rightly doesn't grant customers insert access.
   const supabase = createClient(supabaseUrl, serviceKey)
 
+  const startedAt = Date.now()
+  await setStatus(userId, { status: 'running', startedAt })
+
   try {
     // Guard against duplicate triggers (a retried request, a second tab)
     // kicking off an expensive scan twice in quick succession.
@@ -159,18 +181,30 @@ export default async (req) => {
       .eq('user_id', userId)
       .gte('found_at', new Date(Date.now() - 10 * 60 * 1000).toISOString())
       .limit(1)
-    if (recentBatch?.length) { console.log('[scan-now] recent signals already exist for', userId, 'skipping'); return }
+    if (recentBatch?.length) {
+      console.log('[scan-now] recent signals already exist for', userId, 'skipping')
+      await setStatus(userId, { status: 'done', reason: 'recent_signals_exist', signalsFound: recentBatch.length, startedAt, finishedAt: Date.now() })
+      return
+    }
 
     const { data: ob } = await supabase
       .from('onboarding')
       .select('user_id, sectors, functions, locations, tone, firm_name, writing_style')
       .eq('user_id', userId)
       .single()
-    if (!ob) { console.error('[scan-now] no onboarding row yet for', userId); return }
+    if (!ob) {
+      console.error('[scan-now] no onboarding row yet for', userId)
+      await setStatus(userId, { status: 'done', reason: 'no_onboarding', signalsFound: 0, startedAt, finishedAt: Date.now() })
+      return
+    }
 
     const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, []))
     const found = extractJson(text)
-    if (!found.length) { console.log('[scan-now] nothing found for', userId); return }
+    if (!found.length) {
+      console.log('[scan-now] nothing found for', userId)
+      await setStatus(userId, { status: 'done', reason: 'no_results', signalsFound: 0, startedAt, finishedAt: Date.now() })
+      return
+    }
 
     const rows = []
     for (const s of found) {
@@ -211,7 +245,9 @@ export default async (req) => {
       await supabase.from('intelligence_signals').upsert(rows, { onConflict: 'user_id,dedup_key', ignoreDuplicates: true })
       console.log(`[scan-now] wrote ${rows.length} signals for`, userId)
     }
+    await setStatus(userId, { status: 'done', reason: rows.length ? 'ok' : 'no_results', signalsFound: rows.length, startedAt, finishedAt: Date.now() })
   } catch (err) {
     console.error('[scan-now] failed for', userId, err.message)
+    await setStatus(userId, { status: 'done', reason: 'error', errorMessage: err.message, signalsFound: 0, startedAt, finishedAt: Date.now() })
   }
 }

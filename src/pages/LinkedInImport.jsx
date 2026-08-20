@@ -75,7 +75,7 @@ function ExportWalkthrough() {
   return (
     <div className="bg-page-bg rounded-xl p-5 mb-6">
       <h3 className="text-sm font-bold text-navy mb-1">How to export your LinkedIn connections</h3>
-      <p className="text-xs text-gray-500 mb-4">Requesting it takes two minutes, but LinkedIn itself can take up to 24 hours to actually prepare the file — request it now so it's ready when you come back. Nothing leaves your inbox until you upload it here.</p>
+      <p className="text-xs text-gray-500 mb-4">Requesting it takes two minutes, but LinkedIn itself can take up to 24 hours to actually prepare the file, so request it now so it's ready when you come back. Nothing leaves your inbox until you upload it here.</p>
 
       <div className="space-y-2.5">
         {[
@@ -98,8 +98,8 @@ function ExportWalkthrough() {
                   ))}
                 </div>
               )}
-              {step.n === 3 && <p className="text-[11px] text-gray-400 mt-1">LinkedIn removed the option to request just your connections on their own — this bundles in more than you need, but it's the only way to get them now. Only Connections.csv matters here.</p>}
-              {step.n === 4 && <p className="text-[11px] text-gray-400 mt-1">This is the slow part — LinkedIn can take anywhere from a few hours up to 24 hours to email it. Skip below for now, use Annie in the meantime, and come back to Settings → Import LinkedIn contacts once it lands in your inbox.</p>}
+              {step.n === 3 && <p className="text-[11px] text-gray-400 mt-1">LinkedIn removed the option to request just your connections on their own, so this bundles in more than you need, but it's the only way to get them now. Only Connections.csv matters here.</p>}
+              {step.n === 4 && <p className="text-[11px] text-gray-400 mt-1">This is the slow part: LinkedIn can take anywhere from a few hours up to 24 hours to email it. Skip below for now, use Annie in the meantime, and come back to Settings → Import LinkedIn contacts once it lands in your inbox.</p>}
             </div>
           </div>
         ))}
@@ -431,7 +431,7 @@ export default function LinkedInImport({ embedded = false }) {
           <h2 className="text-2xl font-bold text-navy mb-2">You're all set</h2>
           <p className="text-gray-500 text-sm mb-6">
             Annie imported <span className="font-semibold text-navy">{done.imported} contacts</span>
-            {done.targets > 0 && <> — <span className="font-semibold text-gold">{done.targets} at your target companies</span></>}.
+            {done.targets > 0 && <>, <span className="font-semibold text-gold">{done.targets} at your target companies</span></>}.
             {done.newCompanies > 0 && <> She also created <span className="font-semibold text-navy">{done.newCompanies} new compan{done.newCompanies === 1 ? 'y' : 'ies'}</span> in your Companies list, linked to their contacts.</>}
             {' '}She's now monitoring all of them for BD signals.
           </p>
@@ -521,7 +521,7 @@ export default function LinkedInImport({ embedded = false }) {
           )}
 
           <button onClick={handleSkip} className="w-full mt-2 text-xs text-gray-400 hover:text-gray-600 py-1">
-            {embedded ? 'Cancel' : "Skip for now — I'll import once LinkedIn's export is ready"}
+            {embedded ? 'Cancel' : "Skip for now, I'll import once LinkedIn's export is ready"}
           </button>
         </>
       )}
@@ -581,7 +581,7 @@ export default function LinkedInImport({ embedded = false }) {
           </button>
 
           <button onClick={handleSkip} className="w-full mt-2 text-xs text-gray-400 hover:text-gray-600 py-1">
-            {embedded ? 'Cancel' : "Skip for now — I'll import once LinkedIn's export is ready"}
+            {embedded ? 'Cancel' : "Skip for now, I'll import once LinkedIn's export is ready"}
           </button>
         </>
       )}

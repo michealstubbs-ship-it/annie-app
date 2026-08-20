@@ -124,7 +124,7 @@ export default function Login() {
 
           {signedOutNotice && !error && (
             <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg px-4 py-3 text-sm mb-4">
-              You were signed out unexpectedly — this usually happens if Annie was open in more than one browser tab at once (only one tab can hold a valid session at a time). Please log back in; if you were mid-onboarding, just pick up from where you left off.
+              You were signed out unexpectedly. This usually happens if Annie was open in more than one browser tab at once (only one tab can hold a valid session at a time). Please log back in; if you were mid-onboarding, just pick up from where you left off.
             </div>
           )}
           {error && (

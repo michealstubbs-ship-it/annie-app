@@ -234,7 +234,7 @@ export default function Onboarding() {
 
         {resumed && !error && (
           <div className="bg-blue-50 border border-blue-100 text-blue-700 rounded-lg px-4 py-2.5 text-xs mb-4 flex items-center justify-between gap-3">
-            <span>Picked up where you left off — your earlier answers are still here.</span>
+            <span>Picked up where you left off, your earlier answers are still here.</span>
             <button onClick={() => setResumed(false)} className="text-blue-400 hover:text-blue-600 font-bold flex-shrink-0">✕</button>
           </div>
         )}

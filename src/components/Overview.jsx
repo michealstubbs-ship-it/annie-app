@@ -52,13 +52,18 @@ export default function Overview() {
   const [tasks, setTasks] = useState([])
   const [contactsCount, setContactsCount] = useState(null) // null = not checked yet, avoids a flash of the reminder
   const [researching, setResearching] = useState(false)
+  const [scanOutcome, setScanOutcome] = useState(null) // set once scan-status.js reports the scan is actually done, tells us WHY there's nothing (or something) to show
 
   useEffect(() => { load() }, [user])
 
   // Onboarding fires a background research scan for the account and stamps
-  // this flag (see Onboarding.jsx) — if it's still within its window and no
-  // signals have shown up yet, say so instead of a flat "nothing here",
-  // and gently poll until the first real signals land.
+  // this flag (see Onboarding.jsx). Rather than just waiting out a fixed
+  // window and hoping, we poll scan-status.js for the real state — the scan
+  // itself often finishes in well under a minute (sometimes finding
+  // nothing, which is a legitimate outcome, not a failure), and a spinner
+  // that keeps saying "researching" for minutes after it already finished
+  // reads as broken. The fixed window is now only a last-resort cutoff in
+  // case the status check itself never resolves.
   useEffect(() => {
     if (!user) return
     let startedAt = 0
@@ -66,25 +71,44 @@ export default function Overview() {
     if (!startedAt || Date.now() - startedAt > SCAN_WINDOW_MS) return
 
     setResearching(true)
-    const interval = setInterval(() => {
+    let cancelled = false
+    let timer
+
+    async function tick() {
+      const result = await checkScanStatus()
+      if (cancelled) return
+
+      if (result?.status === 'done') {
+        setResearching(false)
+        setScanOutcome(result)
+        try { localStorage.removeItem(SCAN_FLAG_PREFIX + user.id) } catch {}
+        if (result.signalsFound > 0) await pollSignals()
+        return
+      }
+
       if (Date.now() - startedAt > SCAN_WINDOW_MS) {
-        clearInterval(interval)
         setResearching(false)
         return
       }
-      pollSignals()
-    }, 20000)
-    return () => clearInterval(interval)
+      timer = setTimeout(tick, 5000)
+    }
+
+    timer = setTimeout(tick, 3000)
+    return () => { cancelled = true; clearTimeout(timer) }
   }, [user])
 
-  // Once real signals exist, the flag has done its job — stop polling and
-  // don't show the "researching" state again on future visits.
-  useEffect(() => {
-    if (signals.length > 0 && user) {
-      try { localStorage.removeItem(SCAN_FLAG_PREFIX + user.id) } catch {}
-      setResearching(false)
+  async function checkScanStatus() {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) return { status: 'unknown' }
+      const resp = await fetch('/.netlify/functions/scan-status', {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+      return await resp.json().catch(() => ({ status: 'unknown' }))
+    } catch {
+      return { status: 'unknown' }
     }
-  }, [signals.length, user])
+  }
 
   async function pollSignals() {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
@@ -203,7 +227,7 @@ export default function Overview() {
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-bold text-white">Annie is researching your market right now</p>
-            <p className="text-[12.5px] text-gray-300 mt-0.5 leading-relaxed">Live funding rounds, leadership changes and hiring signals in your sectors — first results usually land within a couple of minutes. This page updates itself, no need to refresh.</p>
+            <p className="text-[12.5px] text-gray-300 mt-0.5 leading-relaxed">Live funding rounds, leadership changes and hiring signals in your sectors. First results usually land within a couple of minutes, and this page updates itself, no need to refresh.</p>
           </div>
         </div>
       )}
@@ -216,7 +240,7 @@ export default function Overview() {
           <div className="flex-1 min-w-0">
             <p className="text-[13.5px] font-semibold text-amber-900">Import your LinkedIn contacts to unlock Annie's full intelligence</p>
             <p className="text-[12.5px] text-amber-700 mt-0.5 leading-relaxed">
-              If you've requested your LinkedIn export, come back here once the email arrives (can take up to 24 hours) and upload the CSV. Haven't requested it yet? Do that first — it's the slow step.
+              If you've requested your LinkedIn export, come back here once the email arrives (can take up to 24 hours) and upload the CSV. Haven't requested it yet? Do that first, it's the slow step.
             </p>
           </div>
           <button
@@ -320,7 +344,15 @@ export default function Overview() {
               <p className="text-[15px] font-bold text-navy">Latest intelligence</p>
             </div>
             {signals.length === 0 ? (
-              <p className="text-sm text-gray-400">{researching ? "Annie's on it — see the banner above." : "Annie hasn't found anything new yet."}</p>
+              <p className="text-sm text-gray-400">
+                {researching
+                  ? "Annie's on it, see the banner above."
+                  : scanOutcome?.reason === 'no_results'
+                    ? "Annie checked your market just now and didn't find anything strong enough to flag yet. She checks again automatically every few hours."
+                    : scanOutcome?.reason === 'error'
+                      ? "Annie hit a snag reaching her research tools just now. She'll retry automatically, no action needed from you."
+                      : "Annie hasn't found anything new yet."}
+              </p>
             ) : (
               <>
                 {signals.map((s, i) => (
