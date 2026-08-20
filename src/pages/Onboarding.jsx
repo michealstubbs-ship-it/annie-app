@@ -154,6 +154,19 @@ export default function Onboarding() {
       const result = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(result.error || 'Could not save your answers. Please try again.')
 
+      // Kick off Annie's first research scan for this account right now,
+      // without waiting for it — otherwise the only research that ever runs
+      // is the shared 4-hourly cron job, which means a brand new customer
+      // could land on an empty dashboard for hours. This is a background
+      // function (runs up to 15 min server-side) and usually finishes well
+      // within the time it takes to get through the next screen, so real
+      // signals are already there by the time the dashboard loads.
+      fetch('/.netlify/functions/scan-now-background', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      }).catch(() => {})
+      try { localStorage.setItem('annie_scan_started_' + user?.id, String(Date.now())) } catch {}
+
       // The save already succeeded at this point — that's the part that
       // matters. refreshProfile() just re-pulls the profile row so the rest
       // of the app immediately knows onboarding is done; if it's slow or

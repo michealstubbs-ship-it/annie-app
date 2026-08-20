@@ -9,6 +9,9 @@ import {
 const JOB_STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled', lost: 'Lost' }
 const JOB_STATUS_COLOR = { active: '#2f9e5b', onhold: '#d99a2b', filled: '#c9a84c', lost: '#9ca0ac' }
 
+const SCAN_FLAG_PREFIX = 'annie_scan_started_'
+const SCAN_WINDOW_MS = 6 * 60 * 1000 // give up on "researching" messaging after 6 minutes either way
+
 function initials(name) {
   return (name || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase()
 }
@@ -48,8 +51,50 @@ export default function Overview() {
   const [meetings, setMeetings] = useState([])
   const [tasks, setTasks] = useState([])
   const [contactsCount, setContactsCount] = useState(null) // null = not checked yet, avoids a flash of the reminder
+  const [researching, setResearching] = useState(false)
 
   useEffect(() => { load() }, [user])
+
+  // Onboarding fires a background research scan for the account and stamps
+  // this flag (see Onboarding.jsx) — if it's still within its window and no
+  // signals have shown up yet, say so instead of a flat "nothing here",
+  // and gently poll until the first real signals land.
+  useEffect(() => {
+    if (!user) return
+    let startedAt = 0
+    try { startedAt = Number(localStorage.getItem(SCAN_FLAG_PREFIX + user.id)) || 0 } catch {}
+    if (!startedAt || Date.now() - startedAt > SCAN_WINDOW_MS) return
+
+    setResearching(true)
+    const interval = setInterval(() => {
+      if (Date.now() - startedAt > SCAN_WINDOW_MS) {
+        clearInterval(interval)
+        setResearching(false)
+        return
+      }
+      pollSignals()
+    }, 20000)
+    return () => clearInterval(interval)
+  }, [user])
+
+  // Once real signals exist, the flag has done its job — stop polling and
+  // don't show the "researching" state again on future visits.
+  useEffect(() => {
+    if (signals.length > 0 && user) {
+      try { localStorage.removeItem(SCAN_FLAG_PREFIX + user.id) } catch {}
+      setResearching(false)
+    }
+  }, [signals.length, user])
+
+  async function pollSignals() {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+    const [{ data: signalRows }, { data: signalCountRows }] = await Promise.all([
+      supabase.from('intelligence_signals').select('id, company_name, company_logo_url, headline, found_at').eq('user_id', user.id).neq('status', 'actioned').order('found_at', { ascending: false }).limit(3),
+      supabase.from('intelligence_signals').select('id').eq('user_id', user.id).gte('found_at', sevenDaysAgo),
+    ])
+    setSignals(signalRows || [])
+    setNewSignalsCount(signalCountRows?.length || 0)
+  }
 
   async function load() {
     setLoading(true)
@@ -262,7 +307,17 @@ export default function Overview() {
               <p className="text-[15px] font-bold text-navy">Latest intelligence</p>
             </div>
             {signals.length === 0 ? (
-              <p className="text-sm text-gray-400">Annie hasn't found anything new yet.</p>
+              researching ? (
+                <div className="py-1">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <div className="w-3.5 h-3.5 border-2 border-gold border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                    <p className="text-sm text-gray-600 font-medium">Annie is researching your market now...</p>
+                  </div>
+                  <p className="text-xs text-gray-400">First signals usually land within a couple of minutes — this updates automatically, no need to refresh.</p>
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400">Annie hasn't found anything new yet.</p>
+              )
             ) : (
               <>
                 {signals.map((s, i) => (
