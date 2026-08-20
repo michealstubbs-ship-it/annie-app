@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 
 export default function Login() {
@@ -9,6 +9,20 @@ export default function Login() {
   const [success, setSuccess] = useState('')
   const [showResend, setShowResend] = useState(false)
   const [showExistingAccount, setShowExistingAccount] = useState(false)
+  const [signedOutNotice, setSignedOutNotice] = useState(false)
+
+  // Landed here because a live session unexpectedly disappeared (see
+  // AuthContext) rather than because the person clicked "Log out" — most
+  // often means Annie was open in another tab too. Explain it here instead of
+  // just dropping them back at a blank login form with no context.
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem('annie_involuntary_signout')) {
+        setSignedOutNotice(true)
+        sessionStorage.removeItem('annie_involuntary_signout')
+      }
+    } catch {}
+  }, [])
 
   const [form, setForm] = useState({
     email: '', password: '', fullName: '', firmName: '',
@@ -108,6 +122,11 @@ export default function Login() {
             {mode === 'login' ? 'Sign in to your Annie dashboard' : mode === 'signup' ? 'Start your free trial, no credit card needed' : "We'll email you a link to set a new password"}
           </p>
 
+          {signedOutNotice && !error && (
+            <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg px-4 py-3 text-sm mb-4">
+              You were signed out unexpectedly — this usually happens if Annie was open in more than one browser tab at once (only one tab can hold a valid session at a time). Please log back in; if you were mid-onboarding, just pick up from where you left off.
+            </div>
+          )}
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">
               {error}

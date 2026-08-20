@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react'
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 
 const AuthContext = createContext({})
@@ -7,6 +7,8 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
+  const hadUserRef = useRef(false)
+  const intentionalSignOutRef = useRef(false)
 
   useEffect(() => {
     // Safety net — never spin forever
@@ -15,15 +17,29 @@ export function AuthProvider({ children }) {
     // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
-      if (session?.user) fetchProfile(session.user.id).finally(() => clearTimeout(fallback))
+      if (session?.user) { hadUserRef.current = true; fetchProfile(session.user.id).finally(() => clearTimeout(fallback)) }
       else { setLoading(false); clearTimeout(fallback) }
     }).catch(() => { setLoading(false); clearTimeout(fallback) })
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       setUser(session?.user ?? null)
-      if (session?.user) await fetchProfile(session.user.id)
-      else {
+      if (session?.user) {
+        hadUserRef.current = true
+        await fetchProfile(session.user.id)
+      } else {
+        // If we had a live session and it disappeared without the user hitting
+        // "Log out" themselves, that's an involuntary sign-out — almost always
+        // caused by having Annie open in more than one tab: Supabase rotates the
+        // refresh token on every use, so once one tab refreshes, every other
+        // tab's copy is invalidated and gets signed out on its next request.
+        // Flag it so the login page can explain what happened instead of just
+        // silently dropping the person back at the login form.
+        if (hadUserRef.current && !intentionalSignOutRef.current) {
+          try { sessionStorage.setItem('annie_involuntary_signout', '1') } catch {}
+        }
+        hadUserRef.current = false
+        intentionalSignOutRef.current = false
         setProfile(null)
         setLoading(false)
       }
@@ -63,6 +79,7 @@ export function AuthProvider({ children }) {
   }
 
   async function signOut() {
+    intentionalSignOutRef.current = true
     await supabase.auth.signOut()
   }
 
