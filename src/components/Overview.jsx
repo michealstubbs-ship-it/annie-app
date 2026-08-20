@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import {
-  IconZap, IconCalendar, IconRadio, IconBriefcase, IconSparkles, IconArrowRight, IconPlus, IconMessageCircle, IconBuilding,
+  IconZap, IconCalendar, IconRadio, IconBriefcase, IconSparkles, IconArrowRight, IconPlus, IconMessageCircle, IconBuilding, IconUsers,
 } from './icons'
 
 const JOB_STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled', lost: 'Lost' }
@@ -47,6 +47,7 @@ export default function Overview() {
   const [newSignalsCount, setNewSignalsCount] = useState(0)
   const [meetings, setMeetings] = useState([])
   const [tasks, setTasks] = useState([])
+  const [contactsCount, setContactsCount] = useState(null) // null = not checked yet, avoids a flash of the reminder
 
   useEffect(() => { load() }, [user])
 
@@ -65,6 +66,7 @@ export default function Overview() {
       { data: signalCountRows },
       { data: meetingRows },
       { data: taskRows },
+      { count: contactsCountResult },
     ] = await Promise.all([
       supabase.from('actions_cache').select('*').eq('user_id', user.id).gt('expires_at', new Date().toISOString()).order('generated_at', { ascending: false }).limit(1).single(),
       supabase.from('jobs').select('id, status, fee_value').eq('user_id', user.id),
@@ -73,6 +75,11 @@ export default function Overview() {
       supabase.from('intelligence_signals').select('id').eq('user_id', user.id).gte('found_at', sevenDaysAgo),
       supabase.from('meetings').select('id, title, meeting_type, meeting_date').eq('user_id', user.id).gte('meeting_date', todayStart).lte('meeting_date', todayEnd).order('meeting_date', { ascending: true }),
       supabase.from('bd_tasks').select('id, title, due_date').eq('user_id', user.id).eq('status', 'open').lte('due_date', todayDateStr).order('due_date', { ascending: true }).limit(5),
+      // head:true — just the count, no rows. Zero contacts is the signal that LinkedIn
+      // import hasn't happened yet (whether skipped or never started), independent of
+      // profiles.linkedin_import_completed which gets set true on skip too. This banner
+      // self-clears the moment a real import lands, no extra state to keep in sync.
+      supabase.from('contacts').select('id', { count: 'exact', head: true }).eq('user_id', user.id),
     ])
 
     if (cache?.actions?.length) {
@@ -88,6 +95,7 @@ export default function Overview() {
     setNewSignalsCount(signalCountRows?.length || 0)
     setMeetings(meetingRows || [])
     setTasks(taskRows || [])
+    setContactsCount(contactsCountResult ?? 0)
     setLoading(false)
   }
 
@@ -141,6 +149,26 @@ export default function Overview() {
         <IconSparkles className="w-[18px] h-[18px] text-gold flex-shrink-0" />
         <p className="text-[13.5px] text-gray-200 leading-relaxed">{briefing} <span className="text-gold font-semibold">Here's the shape of your day.</span></p>
       </div>
+
+      {!loading && contactsCount === 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-5 py-4 mb-5 flex items-center gap-3.5">
+          <div className="w-9 h-9 rounded-full bg-white flex items-center justify-center flex-shrink-0">
+            <IconUsers className="w-[18px] h-[18px] text-amber-600" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[13.5px] font-semibold text-amber-900">Import your LinkedIn contacts to unlock Annie's full intelligence</p>
+            <p className="text-[12.5px] text-amber-700 mt-0.5 leading-relaxed">
+              If you've requested your LinkedIn export, come back here once the email arrives (can take up to 24 hours) and upload the CSV. Haven't requested it yet? Do that first — it's the slow step.
+            </p>
+          </div>
+          <button
+            onClick={() => navigate('/dashboard/import-linkedin')}
+            className="flex-shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[12.5px] font-semibold bg-amber-600 text-white whitespace-nowrap"
+          >
+            Import contacts <IconArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
         <div className="bg-white rounded-xl border border-gray-100 p-4">
