@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
+import { logSignalOutcome } from '../lib/signalOutcomes'
+import { companiesMatch } from '../lib/companyMatch'
 
 const STAGES = ['sourced', 'screening', 'shortlisted', 'presented', 'interviewing', 'offer', 'placed', 'rejected', 'withdrawn']
 const STAGE_LABEL = { sourced: 'Sourced', screening: 'Screening', shortlisted: 'Shortlisted', presented: 'Presented', interviewing: 'Interviewing', offer: 'Offer', placed: 'Placed', rejected: 'Rejected', withdrawn: 'Withdrawn' }
@@ -80,6 +82,29 @@ export default function Candidates() {
     setShowModal(true)
   }
 
+  // The single highest-value data point for the signal flywheel is a real
+  // placement, but nobody's going to manually go link a candidate back to
+  // the signal that started it. This infers it instead: the moment a
+  // candidate's status flips to "placed", check whether Annie ever surfaced
+  // a live signal for that same company, and if so, log it as the outcome.
+  // Best-effort and company-name-fuzzy, not a guarantee, still far better
+  // than having no placement data at all to eventually weight signals by.
+  async function maybeLogPlacement(row, previousStatus) {
+    if (row.status !== 'placed' || previousStatus === 'placed' || !row.company) return
+    try {
+      const { data: recentSignals } = await supabase
+        .from('intelligence_signals')
+        .select('id, company_name, signal_type')
+        .eq('user_id', user.id)
+        .order('found_at', { ascending: false })
+        .limit(300)
+      const match = (recentSignals || []).find(s => companiesMatch(s.company_name, row.company))
+      if (match) logSignalOutcome(user, match, 'placed')
+    } catch {
+      // Best-effort, never let this block or fail the actual candidate save.
+    }
+  }
+
   async function save() {
     if (!form.name.trim()) return setError('Name is required')
     setSaving(true)
@@ -104,11 +129,14 @@ export default function Candidates() {
         updated_at: new Date().toISOString(),
       }
 
+      const previousStatus = editId ? candidates.find(c => c.id === editId)?.status : null
+
       if (editId) {
         await supabase.from('candidates').update(row).eq('id', editId)
       } else {
         await supabase.from('candidates').insert({ ...row, user_id: user.id })
       }
+      maybeLogPlacement(row, previousStatus)
       await load()
       setShowModal(false)
     } catch (err) {

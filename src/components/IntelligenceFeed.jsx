@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
+import { matchCandidatesToSignal } from '../lib/candidateMatch'
+import { findWarmContacts } from '../lib/companyMatch'
+import { logSignalOutcome } from '../lib/signalOutcomes'
 
 const TYPE_META = {
   funding: { label: 'Funding', icon: '💰', color: 'text-amber-700 bg-amber-100' },
@@ -47,6 +50,8 @@ export default function IntelligenceFeed() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const [signals, setSignals] = useState([])
+  const [candidates, setCandidates] = useState([])
+  const [contacts, setContacts] = useState([])
   const [loading, setLoading] = useState(true)
   const [typeFilter, setTypeFilter] = useState('all')
 
@@ -54,14 +59,24 @@ export default function IntelligenceFeed() {
 
   async function load() {
     setLoading(true)
-    const { data } = await supabase
-      .from('intelligence_signals')
-      .select('*')
-      .eq('user_id', user.id)
-      .neq('status', 'actioned')
-      .order('found_at', { ascending: false })
-      .limit(200)
+    const [{ data }, { data: cands }, { data: conts }] = await Promise.all([
+      supabase
+        .from('intelligence_signals')
+        .select('*')
+        .eq('user_id', user.id)
+        .neq('status', 'actioned')
+        .order('found_at', { ascending: false })
+        .limit(200),
+      // Lightweight, just enough to match against, not the full candidate
+      // record. This is what lets a signal say "you already have someone
+      // for this" instead of only ever pointing outward for a fresh source.
+      supabase.from('candidates').select('id, name, role, industry, status').eq('user_id', user.id),
+      // Same idea for contacts, a warm door beats a cold one every time.
+      supabase.from('contacts').select('id, name, title, company, linkedin_url').eq('user_id', user.id),
+    ])
     setSignals(data || [])
+    setCandidates(cands || [])
+    setContacts(conts || [])
     setLoading(false)
   }
 
@@ -73,11 +88,22 @@ export default function IntelligenceFeed() {
     if (s.status !== 'new') return
     await supabase.from('intelligence_signals').update({ status: 'seen' }).eq('id', s.id)
     setSignals(prev => prev.map(x => x.id === s.id ? { ...x, status: 'seen' } : x))
+    logSignalOutcome(user, s, 'seen')
   }
 
   async function markActioned(s) {
     await supabase.from('intelligence_signals').update({ status: 'actioned' }).eq('id', s.id)
     setSignals(prev => prev.filter(x => x.id !== s.id))
+  }
+
+  // The "Mark seen" button is really a dismiss, "not for me", distinct from
+  // markActioned's other caller (addToCrm), which means "I acted on this".
+  // Logging them differently is exactly the kind of signal a future
+  // weighting model needs, a dismissed funding signal in one sector says
+  // something different than a contact successfully added from one.
+  async function dismiss(s) {
+    await markActioned(s)
+    logSignalOutcome(user, s, 'dismissed')
   }
 
   async function addToCrm(s) {
@@ -91,10 +117,18 @@ export default function IntelligenceFeed() {
       tags: ['from-intelligence-feed'],
     })
     await markActioned(s)
+    logSignalOutcome(user, s, 'added_to_crm')
   }
 
-  function draftOutreach(s) {
-    const prefill = `Help me draft outreach about this: ${s.headline} at ${s.company_name}. ${s.why_it_matters || ''} ${s.who_to_approach ? 'Who to approach: ' + s.who_to_approach : ''}`.trim()
+  function draftOutreach(s, matches, warmContacts) {
+    const matchLine = matches?.length
+      ? ` I already have these candidates in my pipeline who could fit: ${matches.map(c => c.name).join(', ')}, lead with whichever fits best.`
+      : ''
+    const warmLine = warmContacts?.length
+      ? ` I already know ${warmContacts.map(c => c.name).join(', ')} at ${s.company_name}, help me draft a warm intro-style message to them instead of a cold one.`
+      : ''
+    const prefill = `Help me draft outreach about this: ${s.headline} at ${s.company_name}. ${s.why_it_matters || ''} ${s.who_to_approach ? 'Who to approach: ' + s.who_to_approach : ''}${warmLine}${matchLine}`.trim()
+    logSignalOutcome(user, s, 'outreach_drafted')
     navigate('/dashboard/chat', { state: { prefill } })
   }
 
@@ -136,6 +170,8 @@ export default function IntelligenceFeed() {
             const meta = TYPE_META[s.signal_type] || { label: s.signal_type, icon: '📌', color: 'text-gray-700 bg-gray-100' }
             const unread = s.status === 'new'
             const timeSensitive = RACY_TYPES.includes(s.signal_type) && (Date.now() - new Date(s.found_at).getTime()) < 3 * 86400000
+            const matches = matchCandidatesToSignal(s, candidates)
+            const warmContacts = findWarmContacts(s.company_name, contacts)
             return (
               <div
                 key={s.id}
@@ -167,6 +203,26 @@ export default function IntelligenceFeed() {
                 {s.why_it_matters && <p className="text-gray-600 text-xs italic border-l-2 border-gold pl-2.5 mb-2.5 leading-relaxed">{s.why_it_matters}</p>}
                 {timeSensitive && <p className="text-[10px] text-amber-700 font-semibold mb-2.5">⚡ Time-sensitive, worth acting on before someone else does</p>}
 
+                {warmContacts.length > 0 && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-2 flex flex-wrap gap-x-1.5">
+                    <p className="text-[11px] font-semibold text-blue-800">
+                      🤝 Warm door: you already know {warmContacts.map(c => c.name).join(', ')} at {s.company_name}, {warmContacts.length === 1 ? 'a real connection' : 'real connections'} beats a cold approach.
+                    </p>
+                  </div>
+                )}
+
+                {matches.length > 0 ? (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mb-2.5">
+                    <p className="text-[11px] font-semibold text-emerald-800">
+                      ✓ You already have {matches.length} candidate{matches.length === 1 ? '' : 's'} in your pipeline who could fit this: {matches.map(c => c.name).join(', ')}
+                    </p>
+                  </div>
+                ) : s.candidate_angle && (
+                  <div className="bg-page-bg rounded-lg px-3 py-2 mb-2.5">
+                    <p className="text-[11px] text-gray-500"><span className="font-semibold text-navy">Candidate angle to lead with:</span> {s.candidate_angle}</p>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-3 mb-2.5 flex-wrap">
                   <span className="text-[10px] text-gray-400 bg-page-bg rounded-md px-2 py-1">🔍 Annie found this {timeAgo(s.found_at)}</span>
                   {s.event_at && <span className="text-[10px] text-gray-400 bg-page-bg rounded-md px-2 py-1">📅 Actually happened {timeAgo(s.event_at)}</span>}
@@ -177,9 +233,9 @@ export default function IntelligenceFeed() {
                     <a href={s.source_url} target="_blank" rel="noreferrer" className="text-[10px] text-blue-600 hover:underline">🔗 {s.source_label || s.source_url}</a>
                   ) : <span />}
                   <div className="flex gap-1.5">
-                    <button onClick={() => markActioned(s)} className="text-[10px] font-semibold px-2.5 py-1.5 rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50">Mark seen</button>
+                    <button onClick={() => dismiss(s)} className="text-[10px] font-semibold px-2.5 py-1.5 rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50">Mark seen</button>
                     <button onClick={() => addToCrm(s)} className="text-[10px] font-semibold px-2.5 py-1.5 rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50">Add to CRM</button>
-                    <button onClick={() => draftOutreach(s)} className="text-[10px] font-semibold px-2.5 py-1.5 rounded-md bg-navy text-white hover:bg-navy/90">Draft outreach</button>
+                    <button onClick={() => draftOutreach(s, matches, warmContacts)} className="text-[10px] font-semibold px-2.5 py-1.5 rounded-md bg-navy text-white hover:bg-navy/90">Draft outreach</button>
                   </div>
                 </div>
               </div>
