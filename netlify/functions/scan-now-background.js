@@ -107,6 +107,83 @@ function isoDateDaysAgo(days) {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 }
 
+// Adzuna only covers a specific set of countries, and takes an ISO country
+// code (not a free-text market name), so onboarding.locations has to be
+// mapped to it. Markets Annie has customers in but Adzuna doesn't cover
+// (GCC, etc) correctly map to nothing, that market just gets no Adzuna
+// leads rather than a wrong or misleading one.
+const ADZUNA_COUNTRY_MAP = {
+  uk: 'gb', 'united kingdom': 'gb', gb: 'gb', britain: 'gb',
+  us: 'us', usa: 'us', 'united states': 'us', 'united states of america': 'us',
+  canada: 'ca', ca: 'ca',
+  australia: 'au', au: 'au',
+  france: 'fr', fr: 'fr',
+  netherlands: 'nl', nl: 'nl',
+  poland: 'pl', pl: 'pl',
+  india: 'in', in: 'in',
+  brazil: 'br', br: 'br',
+  'south africa': 'za', za: 'za',
+}
+
+function mapLocationsToAdzunaCountries(locations) {
+  const set = new Set()
+  for (const loc of locations || []) {
+    const key = (loc || '').trim().toLowerCase()
+    if (ADZUNA_COUNTRY_MAP[key]) set.add(ADZUNA_COUNTRY_MAP[key])
+  }
+  return [...set]
+}
+
+// Adzuna is a real, live jobs board, actual job ads with a real posting
+// date, title, company and location, not a news article's best guess. This
+// is exactly the evidence signalType "job_posting_unclaimed" needs: a role
+// posted directly by the company itself, no recruiter or agency attached.
+// Like the Apollo discovery pass, this hands real leads to the AI rather
+// than deciding "unclaimed" in code, Adzuna's own data doesn't reliably
+// flag agency-posted vs direct-posted, so the AI still has to look at each
+// ad's language and decide before writing it up. Free API, no credit cost,
+// so this runs for every sector group without a budget concern.
+async function discoverAdzunaJobs(appId, appKey, { sectors, functions, locations }) {
+  if (!appId || !appKey) return []
+  const countries = mapLocationsToAdzunaCountries(locations)
+  if (!countries.length) return []
+
+  const keywords = [...(sectors || []).flatMap(splitToKeywords), ...(functions || []).flatMap(splitToKeywords)].slice(0, 6)
+  if (!keywords.length) return []
+
+  const results = []
+  for (const country of countries.slice(0, 2)) {
+    try {
+      const params = new URLSearchParams({
+        app_id: appId,
+        app_key: appKey,
+        results_per_page: '10',
+        what: keywords.join(' '),
+        max_days_old: String(APOLLO_DISCOVERY_LOOKBACK_DAYS),
+        sort_by: 'date',
+      })
+      const resp = await fetch(`https://api.adzuna.com/v1/api/jobs/${country}/search/1?${params.toString()}`)
+      if (!resp.ok) continue
+      const data = await resp.json()
+      for (const j of data.results || []) {
+        const title = (j.title || '').replace(/<[^>]+>/g, '').trim()
+        const company = j.company?.display_name || ''
+        if (!title || !company) continue
+        results.push({
+          title,
+          company,
+          location: j.location?.display_name || '',
+          url: j.redirect_url || '',
+          salary: j.salary_min ? `${Math.round(j.salary_min)}${j.salary_max && j.salary_max !== j.salary_min ? `-${Math.round(j.salary_max)}` : ''}` : null,
+        })
+      }
+    } catch (err) {
+      console.error('[scan-now] adzuna discovery failed:', err.message)
+    }
+  }
+  return results.slice(0, 10)
+}
+
 // Apollo tracks real job postings and funding events directly, it isn't
 // guessing from news the way web search has to. Querying it BEFORE the AI
 // call gives Annie a list of companies Apollo has independently confirmed
@@ -163,6 +240,7 @@ Search thoroughly before concluding there is nothing. Run multiple distinct sear
 ${functions ? `This recruiter places into the functions listed above. When you find a strong, genuine signal, connect it to whichever of those functions it most plausibly affects, even if the reasoning takes a small logical step (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring, a new market launch signals Government/Regulatory Affairs hiring, an M&A deal signals Corporate Development or Legal hiring). Make your best reasonable case for the closest function rather than discarding a real, well-sourced signal purely because the function match isn't perfect. Only leave a strong signal out entirely if you genuinely cannot connect it to any of the functions listed, even loosely.` : ''}
 ${opts.broaden ? `\nIMPORTANT: an earlier, narrower search pass came up thin. For this pass, widen your net further: look back up to the last 4 weeks (not just the last 5 days), consider the parent industry category as well as the exact sub-sector, and count a signal even if the function connection takes a slightly longer logical chain, as long as it is still genuinely defensible. The bar is "real and sourced", not "perfect fit". Still never invent anything, and still cite a real source for every signal.\n` : ''}
 ${opts.apolloLeads?.length ? `\nApollo's own hiring database has independently confirmed these companies are actively posting jobs matching this recruiter's functions, within the last ${APOLLO_DISCOVERY_LOOKBACK_DAYS} days, in these sectors and markets: ${opts.apolloLeads.map(l => `${l.name}${l.industry ? ` (${l.industry})` : ''}`).join(', ')}. Treat these as strong, confirmed leads, actively search for the real story behind each one (why they're hiring, any funding or expansion tied to it, the right person to approach, a real citable source) before deciding whether to include it. You are not limited to only these companies, keep searching broadly too, but do not ignore this list, Apollo already did real work to surface it.\n` : ''}
+${opts.adzunaLeads?.length ? `\nAdzuna's live jobs board shows these real, recent job postings that may match this recruiter's sectors and functions: ${opts.adzunaLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. For any of these that reads as posted directly by the company itself (no recruitment agency name, no "on behalf of our client" language, no agency branding) rather than through a recruiter or agency, this is strong, verifiable evidence for signalType "job_posting_unclaimed", a company trying to fill this role itself right now with no recruiter attached, a genuine opportunity to pitch this recruiter's own candidates and service directly. Use the real posting URL as sourceUrl when you use one of these. Skip any that clearly look agency-posted.\n` : ''}
 
 This is a brand new account with no history yet, so there is nothing to avoid repeating: ${recentCompanies.join(', ') || 'None yet'}.
 
@@ -327,6 +405,8 @@ export default async (req) => {
   const anthropicKey = process.env.ANTHROPIC_API_KEY
   const apolloKey = process.env.APOLLO_API_KEY
   const companiesHouseKey = process.env.COMPANIES_HOUSE_API_KEY
+  const adzunaAppId = process.env.ADZUNA_APP_ID
+  const adzunaAppKey = process.env.ADZUNA_APP_KEY
   if (!supabaseUrl || !anonKey || !serviceKey || !anthropicKey) { console.error('[scan-now] not configured'); return }
 
   // Identify the caller from their OWN token first. Never trust a user id
@@ -382,13 +462,13 @@ export default async (req) => {
     // per group, up to MAX_SECTOR_GROUPS credits total for this whole pass).
     const groups = chunkSectors(ob.sectors, MAX_SECTOR_GROUPS)
     const groupResults = await Promise.all(groups.map(async (sectorGroup) => {
-      const apolloLeads = await discoverHotCompanies(apolloKey, {
-        sectors: sectorGroup?.length ? sectorGroup : ob.sectors,
-        functions: ob.functions,
-        locations: ob.locations,
-      })
+      const groupSectors = sectorGroup?.length ? sectorGroup : ob.sectors
+      const [apolloLeads, adzunaLeads] = await Promise.all([
+        discoverHotCompanies(apolloKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }),
+        discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }),
+      ])
       try {
-        const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { sectorsOverride: sectorGroup, apolloLeads }))
+        const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { sectorsOverride: sectorGroup, apolloLeads, adzunaLeads }))
         return { sectorGroup, found: extractJson(text), rawText: text }
       } catch (err) {
         console.error('[scan-now] group call failed for', userId, sectorGroup?.join('/') || 'general', err.message)

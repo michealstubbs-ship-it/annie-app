@@ -25,7 +25,95 @@ function normalizeKey(company, headline) {
   return `${(company || '').trim().toLowerCase()}::${(headline || '').trim().toLowerCase().slice(0, 80)}`
 }
 
-function buildScanPrompt(onboarding, recentCompanies) {
+// Turns a compound label like "Strategy & Corporate Development" into loose
+// keyword fragments for Adzuna's fuzzy keyword search. Same helper as
+// scan-now-background.js; duplicated on purpose, this file stays
+// self-contained (see the file header).
+function splitToKeywords(label) {
+  return (label || '')
+    .split(/&|\//)
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+
+// Adzuna only covers a specific set of countries, and takes an ISO country
+// code, not a free-text market name. A market Annie has customers in but
+// Adzuna doesn't cover (GCC, etc) correctly maps to nothing, so that
+// customer just gets no Adzuna leads rather than a wrong one.
+const ADZUNA_COUNTRY_MAP = {
+  uk: 'gb', 'united kingdom': 'gb', gb: 'gb', britain: 'gb',
+  us: 'us', usa: 'us', 'united states': 'us', 'united states of america': 'us',
+  canada: 'ca', ca: 'ca',
+  australia: 'au', au: 'au',
+  france: 'fr', fr: 'fr',
+  netherlands: 'nl', nl: 'nl',
+  poland: 'pl', pl: 'pl',
+  india: 'in', in: 'in',
+  brazil: 'br', br: 'br',
+  'south africa': 'za', za: 'za',
+}
+
+function mapLocationsToAdzunaCountries(locations) {
+  const set = new Set()
+  for (const loc of locations || []) {
+    const key = (loc || '').trim().toLowerCase()
+    if (ADZUNA_COUNTRY_MAP[key]) set.add(ADZUNA_COUNTRY_MAP[key])
+  }
+  return [...set]
+}
+
+// How far back an Adzuna posting counts as "recent" for this cron. Kept in
+// sync with the AI prompt's own "right now" framing.
+const ADZUNA_LOOKBACK_DAYS = 5
+
+// Adzuna is a real, live jobs board, actual job ads with a real posting
+// date, not a news article's best guess, exactly the evidence
+// signalType "job_posting_unclaimed" needs. Free API, no credit cost, so
+// this runs for every customer without a budget concern. A discovery input
+// handed to the AI, not a final answer, "unclaimed" (no agency attached)
+// still needs the AI to read the ad's own language before writing it up.
+async function discoverAdzunaJobs(appId, appKey, { sectors, functions, locations }) {
+  if (!appId || !appKey) return []
+  const countries = mapLocationsToAdzunaCountries(locations)
+  if (!countries.length) return []
+
+  const keywords = [...(sectors || []).flatMap(splitToKeywords), ...(functions || []).flatMap(splitToKeywords)].slice(0, 6)
+  if (!keywords.length) return []
+
+  const results = []
+  for (const country of countries.slice(0, 2)) {
+    try {
+      const params = new URLSearchParams({
+        app_id: appId,
+        app_key: appKey,
+        results_per_page: '10',
+        what: keywords.join(' '),
+        max_days_old: String(ADZUNA_LOOKBACK_DAYS),
+        sort_by: 'date',
+      })
+      const resp = await fetch(`https://api.adzuna.com/v1/api/jobs/${country}/search/1?${params.toString()}`)
+      if (!resp.ok) continue
+      const data = await resp.json()
+      for (const j of data.results || []) {
+        const title = (j.title || '').replace(/<[^>]+>/g, '').trim()
+        const company = j.company?.display_name || ''
+        if (!title || !company) continue
+        results.push({
+          title,
+          company,
+          location: j.location?.display_name || '',
+          url: j.redirect_url || '',
+          salary: j.salary_min ? `${Math.round(j.salary_min)}${j.salary_max && j.salary_max !== j.salary_min ? `-${Math.round(j.salary_max)}` : ''}` : null,
+        })
+      }
+    } catch (err) {
+      console.error('[intelligence-scan] adzuna discovery failed:', err.message)
+    }
+  }
+  return results.slice(0, 10)
+}
+
+function buildScanPrompt(onboarding, recentCompanies, opts = {}) {
   const functions = onboarding?.functions?.length ? onboarding.functions.join(', ') : null
   return `You are Annie, an expert BD researcher for a recruitment firm.
 Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
@@ -39,6 +127,8 @@ Search thoroughly before concluding there is nothing. Run multiple distinct sear
 ${functions ? `This recruiter places into the functions listed above. When you find a strong, genuine signal, connect it to whichever of those functions it most plausibly affects, even if the reasoning takes a small logical step (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring, a new market launch signals Government/Regulatory Affairs hiring, an M&A deal signals Corporate Development or Legal hiring). Make your best reasonable case for the closest function rather than discarding a real, well-sourced signal purely because the function match isn't perfect. Only leave a strong signal out entirely if you genuinely cannot connect it to any of the functions listed, even loosely.` : ''}
 
 Bias against obvious, oversaturated, famous names everyone already targets when a quieter, equally strong alternative exists, but do not discard a genuinely strong, well-sourced signal just because the company is well known, a real opportunity is better than an artificially obscure one.
+
+${opts.adzunaLeads?.length ? `\nAdzuna's live jobs board shows these real, recent job postings that may match this recruiter's sectors and functions: ${opts.adzunaLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. For any of these that reads as posted directly by the company itself (no recruitment agency name, no "on behalf of our client" language, no agency branding) rather than through a recruiter or agency, this is strong, verifiable evidence for signalType "job_posting_unclaimed", a company trying to fill this role itself right now with no recruiter attached, a genuine opportunity to pitch this recruiter's own candidates and service directly. Use the real posting URL as sourceUrl when you use one of these. Skip any that clearly look agency-posted.\n` : ''}
 
 Companies already surfaced recently, don't re-report the same event for these unless there is a brand new development: ${recentCompanies.join(', ') || 'None yet'}.
 
@@ -185,6 +275,8 @@ export default async (req, context) => {
   const anthropicKey = process.env.ANTHROPIC_API_KEY
   const apolloKey = process.env.APOLLO_API_KEY
   const companiesHouseKey = process.env.COMPANIES_HOUSE_API_KEY
+  const adzunaAppId = process.env.ADZUNA_APP_ID
+  const adzunaAppKey = process.env.ADZUNA_APP_KEY
   const supabaseUrl = process.env.VITE_SUPABASE_URL
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
@@ -207,7 +299,9 @@ export default async (req, context) => {
         .limit(30)
       const recentCompanies = [...new Set((recentSignals || []).map(r => r.company_name))]
 
-      const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies))
+      const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
+
+      const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads }))
       const found = extractJson(text)
       if (!found.length) {
         // Same reasoning as scan-now-background.js: log a preview so a
