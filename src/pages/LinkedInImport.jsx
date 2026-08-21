@@ -6,6 +6,7 @@ import { SECTOR_TAXONOMY, FLAT_SECTOR_OPTIONS } from '../lib/sectorTaxonomy'
 import { FUNCTION_TAXONOMY, FLAT_FUNCTION_OPTIONS } from '../lib/functionTaxonomy'
 import SectorPicker from '../components/SectorPicker'
 import { withTimeout, TIMEOUT_MESSAGE } from '../lib/withTimeout'
+import { trackEvent } from '../lib/analytics'
 
 // Sector and market keywords serve two purposes: (1) matched against a company's real
 // Apollo industry/country data when we have it, confidently excluding a confirmed
@@ -392,6 +393,7 @@ export default function LinkedInImport({ embedded = false }) {
       await refreshProfile()
 
       setDone({ imported: toInsert.length, targets: targetCount, newCompanies: newCompanyCount })
+      trackEvent('linkedin_import_completed', { skipped: false, imported: toInsert.length, targets: targetCount })
   }
 
   async function handleSkip() {
@@ -402,6 +404,7 @@ export default function LinkedInImport({ embedded = false }) {
         'linkedin-skip',
       )
       await refreshProfile()
+      trackEvent('linkedin_import_completed', { skipped: true })
       navigate('/dashboard')
     } catch (err) {
       console.error('[LinkedInImport] handleSkip failed:', err)

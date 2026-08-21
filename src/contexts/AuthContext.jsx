@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { withTimeout } from '../lib/withTimeout'
+import { identifyUser, resetAnalytics } from '../lib/analytics'
 
 const AuthContext = createContext({})
 
@@ -43,6 +44,7 @@ export function AuthProvider({ children }) {
         intentionalSignOutRef.current = false
         setProfile(null)
         setLoading(false)
+        resetAnalytics()
       }
     })
 
@@ -63,7 +65,7 @@ export function AuthProvider({ children }) {
         'fetch-profile',
       )
 
-      if (!error && data) setProfile(data)
+      if (!error && data) { setProfile(data); identifyUser(userId, data) }
     } catch (err) {
       console.error('Profile fetch error:', err)
     } finally {

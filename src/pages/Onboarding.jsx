@@ -6,6 +6,7 @@ import { SECTOR_TAXONOMY } from '../lib/sectorTaxonomy'
 import { FUNCTION_TAXONOMY } from '../lib/functionTaxonomy'
 import SectorPicker from '../components/SectorPicker'
 import { withTimeout, TIMEOUT_MESSAGE } from '../lib/withTimeout'
+import { trackEvent } from '../lib/analytics'
 
 const LOCATIONS = ['United Kingdom', 'UAE / GCC', 'Europe', 'United States', 'Asia Pacific', 'Global']
 
@@ -178,6 +179,8 @@ export default function Onboarding() {
       )
       const result = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(result.error || 'Could not save your answers. Please try again.')
+
+      trackEvent('onboarding_completed', { sectors: form.sectors, functions: form.functions })
 
       // Kick off Annie's first research scan for this account right now,
       // without waiting for it — otherwise the only research that ever runs

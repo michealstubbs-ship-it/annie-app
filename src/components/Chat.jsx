@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { callChat } from '../lib/callChat'
+import { trackEvent } from '../lib/analytics'
 
 export default function Chat() {
   const { user, profile } = useAuth()
@@ -59,6 +60,7 @@ Be specific, actionable and concise. No waffle.`
       const assistantMsg = { role: 'assistant', content: text }
       setMessages(prev => [...prev, assistantMsg])
       await supabase.from('chat_messages').insert({ user_id: user.id, role: 'assistant', content: text })
+      trackEvent('ask_annie_message_sent')
     } catch (err) {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Please try again.' }])
     } finally {

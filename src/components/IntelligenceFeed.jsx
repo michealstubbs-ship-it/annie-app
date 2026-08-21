@@ -6,6 +6,7 @@ import InfoTip from './InfoTip'
 import { matchCandidatesToSignal } from '../lib/candidateMatch'
 import { findWarmContacts } from '../lib/companyMatch'
 import { logSignalOutcome } from '../lib/signalOutcomes'
+import { trackEvent } from '../lib/analytics'
 
 const TYPE_META = {
   funding: { label: 'Funding', icon: '💰', color: 'text-amber-700 bg-amber-100' },
@@ -94,6 +95,7 @@ export default function IntelligenceFeed() {
   async function markActioned(s) {
     await supabase.from('intelligence_signals').update({ status: 'actioned' }).eq('id', s.id)
     setSignals(prev => prev.filter(x => x.id !== s.id))
+    trackEvent('signal_actioned', { signal_type: s.signal_type, source_verified: !!s.source_verified })
   }
 
   // The "Mark seen" button is really a dismiss, "not for me", distinct from
