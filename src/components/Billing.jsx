@@ -132,9 +132,14 @@ export default function Billing() {
         <div className="card p-6">
           <h2 className="text-lg font-bold text-navy mb-1 capitalize">{subscription.tier || 'Annie'} plan</h2>
           <p className="text-sm text-gray-500 mb-4">
-            {subscription.status === 'trialing' ? 'Trialing' : 'Active'}
+            {subscription.status === 'trialing' ? 'Free trial' : 'Active'}
             {subscription.current_period_end && (
-              <> · {subscription.cancel_at_period_end ? 'Ends' : 'Renews'} {formatDate(subscription.current_period_end)}</>
+              <>
+                {' · '}
+                {subscription.status === 'trialing'
+                  ? `Trial ends ${formatDate(subscription.current_period_end)}, then billing starts`
+                  : `${subscription.cancel_at_period_end ? 'Ends' : 'Renews'} ${formatDate(subscription.current_period_end)}`}
+              </>
             )}
             {subscription.seats > 1 && <> · {subscription.seats} seats</>}
           </p>
@@ -145,6 +150,17 @@ export default function Billing() {
         </div>
       ) : (
         <>
+          {/* Matches the trial-eligibility rule in stripe-checkout.js: a
+              customer with no subscriptions row at all gets 7 days free on
+              their first plan. A returning customer (this row exists but is
+              e.g. cancelled) has already had that trial once, so this
+              messaging — and the discount it implies — doesn't show for
+              them, and their next checkout starts billing immediately. */}
+          {!subscription ? (
+            <p className="text-sm text-gray-600 mb-4">Every plan starts with a <span className="font-semibold text-navy">7-day free trial</span>. Cancel anytime before it ends and you won't be charged.</p>
+          ) : (
+            <p className="text-sm text-gray-600 mb-4">Choose a plan to resubscribe.</p>
+          )}
           <div className="flex items-center gap-3 mb-6">
             <span className={`text-sm font-medium ${interval === 'month' ? 'text-navy' : 'text-gray-400'}`}>Monthly</span>
             <button
@@ -180,7 +196,7 @@ export default function Billing() {
                   disabled={checkingOutTier === tier.key}
                   className={tier.featured ? 'btn-primary' : 'btn-ghost'}
                 >
-                  {checkingOutTier === tier.key ? 'Redirecting...' : 'Choose plan'}
+                  {checkingOutTier === tier.key ? 'Redirecting...' : subscription ? 'Choose plan' : 'Start free trial'}
                 </button>
               </div>
             ))}

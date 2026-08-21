@@ -45,8 +45,27 @@ Stripe shows the signing secret (`whsec_...`) once the endpoint is created — t
 
 Stripe Dashboard → Settings → Billing → Customer portal. Turn it on, and decide there whether customers can switch plans themselves (the portal supports this, and `stripe-webhook.js` already handles a plan-change event correctly since it reads the live price ID off the subscription rather than stale checkout metadata) or only cancel/update payment method.
 
+## 5. Free trial (already built in)
+
+Every first-time subscriber gets 7 days free — `stripe-checkout.js` sets `trial_period_days: 7` automatically. Nothing to configure in Stripe for this part. A card is required upfront (standard for Stripe Checkout + trials); if nobody cancels, the first real charge fires automatically on day 8.
+
+Trial eligibility is gated in code, not in Stripe: a customer only gets the 7 days if they've never had a `subscriptions` row before (see `stripe-checkout.js` — `trialEligible = !existingSub`). Someone who cancels during or after their trial and starts a new checkout later is billed from day one on the new subscription, same as most SaaS "one trial per customer" policies. If you'd rather allow repeat trials (e.g. for testing), that's the one line to remove.
+
+## 6. A 100%-off code to comp people
+
+This needs no code change — Checkout already has `allow_promotion_codes: true`, which puts a promo-code entry field on Stripe's own hosted checkout page. You just need to create the coupon and a code for it:
+
+1. Stripe Dashboard → Product catalog → Coupons → **Create coupon**.
+   - Type: **Percentage discount**, 100%.
+   - Duration: **Forever** if you want the person to genuinely never be charged, for as long as they stay subscribed. Pick **Once** instead if you only want their first invoice free (they'd be charged from month/year 2 onward), or **Repeating** for a fixed number of months.
+2. Stripe Dashboard → Product catalog → Coupons → open the coupon you just made → **Create promotion code**.
+   - Set the code text to whatever you want to hand out (e.g. `FOUNDERSCIRCLE`) — this is what the person actually types at checkout, separate from the internal coupon.
+   - Optionally cap how many times it can be redeemed, or set an expiry date, right there.
+3. Give that code to whoever you want comped. At checkout they click "Add promotion code," type it in, and their total drops to $0 — Stripe still asks for a card on file (needed to resume billing later if the coupon has an end date), but never charges it while the 100% discount applies.
+
+Because the free trial (step 5) and a 100%-off code both result in $0 due today, they stack without conflict — someone using a comp code just never reaches a real charge at the end of the trial either.
+
 ## What's deliberately NOT built yet
 
-- **No paywall.** The Billing page exists, but nothing in the app currently checks `subscriptions.status` to gate access. Every onboarded account has full access regardless of billing state. Whether/how to enforce that (hard paywall vs. a trial period vs. something else) is a product decision, not something to bake into a billing-infrastructure pass — flag it explicitly when you're ready to decide.
-- **No trial period.** Checkout goes straight to a paid subscription. Adding a free trial is a one-line change in `stripe-checkout.js` (`subscription_data.trial_period_days`) once you decide on a length.
+- **No paywall.** The Billing page exists, but nothing in the app currently checks `subscriptions.status` to gate access. Every onboarded account has full access regardless of billing state. Whether/how to enforce that (hard paywall vs. relying on the trial alone vs. something else) is a product decision, not something to bake into a billing-infrastructure pass — flag it explicitly when you're ready to decide.
 - **No proration UI beyond what Stripe's own portal shows.** Plan switches go through Stripe's hosted portal, which handles proration on its own.

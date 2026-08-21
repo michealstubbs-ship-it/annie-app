@@ -71,7 +71,9 @@ export default async (req) => {
     // Reuse an existing Stripe customer if this user already has one on
     // file (e.g. they cancelled and are resubscribing), instead of Stripe
     // silently creating duplicate customer records for the same person on
-    // every checkout attempt.
+    // every checkout attempt. This same row also decides trial eligibility
+    // below — a returning row (any tier, any past status) means they've
+    // already had a subscription before, trial or paid.
     const { data: existingSub } = await supabase
       .from('subscriptions')
       .select('stripe_customer_id')
@@ -87,6 +89,16 @@ export default async (req) => {
       customerId = customer.id
     }
 
+    // 7-day free trial, first subscription only. Gating on "has a
+    // subscriptions row at all" (not on its current status) closes the
+    // obvious abuse path — cancel during the trial, then start a fresh
+    // checkout for another free 7 days — without needing Stripe's own
+    // trial-abuse settings. A genuinely returning customer (they cancelled
+    // months ago, now want back in) pays from day one on their new
+    // subscription, same as any competitor's "one trial per customer"
+    // policy.
+    const trialEligible = !existingSub
+
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       customer: customerId,
@@ -101,6 +113,7 @@ export default async (req) => {
       cancel_url: `${appUrl}/dashboard/billing?checkout=cancelled`,
       subscription_data: {
         metadata: { supabase_user_id: user.id, tier },
+        ...(trialEligible ? { trial_period_days: 7 } : {}),
       },
     })
 
