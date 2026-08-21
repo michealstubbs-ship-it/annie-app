@@ -19,7 +19,7 @@ export default function Privacy() {
           <div className="space-y-5 text-sm text-gray-700 leading-relaxed">
             <section>
               <h2 className="font-bold text-navy mb-1">What we collect</h2>
-              <p>Account information you provide (name, firm name, email). Contacts and companies you import or add, including any you import from LinkedIn. Business signals Annie's research surfaces about companies and contacts in your target sectors — company names, public news, job postings, and publicly available contact details (name, title, LinkedIn URL) for people at those companies.</p>
+              <p>Account information you provide (name, firm name, email). Contacts and companies you import or add, including any you import from LinkedIn. Business signals Annie's research surfaces about companies and contacts in your target sectors — company names, public news, job postings, and publicly available contact details (name, title, LinkedIn URL) for people at those companies. Basic diagnostic data when something goes wrong (error messages, the page it happened on) so we can fix it.</p>
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">Where contact data comes from</h2>
@@ -31,7 +31,15 @@ export default function Privacy() {
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">Third parties we share data with</h2>
-              <p>Supabase (database and authentication hosting), Netlify (application hosting), Anthropic (AI research), Apollo.io (contact and company enrichment), Adzuna (job listings), and the UK's Companies House (public company records). Each only receives what it needs to perform its function — we don't sell data to advertisers or data brokers.</p>
+              <p>Supabase (database and authentication hosting), Netlify (application hosting), Anthropic (AI research), Apollo.io (contact and company enrichment), Adzuna (job listings), the UK's Companies House (public company records), Resend (sending account emails, such as onboarding confirmation and billing alerts), and PostHog (product analytics — see "Cookies & analytics" below). If you're on a paid plan, Stripe processes your payment; we never see or store your card details ourselves. Each only receives what it needs to perform its function — we don't sell data to advertisers or data brokers.</p>
+            </section>
+            <section>
+              <h2 className="font-bold text-navy mb-1">Cookies & analytics</h2>
+              <p>We use PostHog to understand how Annie is used — which pages get visited, which features get clicked — so we can improve the product. This sets a small number of cookies and is tied to your account once you're logged in, not to anonymous visitors browsing the marketing site. It's not used for advertising, and we don't sell this data. You can ask us to stop this tracking for your account by contacting us (see below).</p>
+            </section>
+            <section>
+              <h2 className="font-bold text-navy mb-1">International data transfers</h2>
+              <p>Our hosting and analytics providers operate infrastructure in multiple regions, including the EU, UK, and US. Data may be processed outside the country you're based in as a result. Each provider we use maintains its own safeguards for cross-border transfers (such as standard contractual clauses where applicable) as part of its own compliance obligations.</p>
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">Your rights</h2>
@@ -44,6 +52,10 @@ export default function Privacy() {
             <section>
               <h2 className="font-bold text-navy mb-1">Security</h2>
               <p>Data is encrypted in transit and at rest through our hosting providers. Access within your firm's account is scoped so one customer's data is never visible to another.</p>
+            </section>
+            <section>
+              <h2 className="font-bold text-navy mb-1">Children</h2>
+              <p>Annie is a business tool for recruitment professionals and isn't directed at or knowingly used by anyone under 18.</p>
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">Changes</h2>

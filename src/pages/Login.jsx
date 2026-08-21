@@ -28,6 +28,7 @@ export default function Login() {
   const [form, setForm] = useState({
     email: '', password: '', fullName: '', firmName: '',
   })
+  const [agreedToTerms, setAgreedToTerms] = useState(false)
 
   function update(field, value) {
     setForm(prev => ({ ...prev, [field]: value }))
@@ -60,6 +61,11 @@ export default function Login() {
         if (!form.fullName.trim()) return setError('Please enter your full name')
         if (!form.firmName.trim()) return setError('Please enter your firm name')
         if (form.password.length < 8) return setError('Password must be at least 8 characters')
+        // Belt-and-braces alongside the disabled submit button below — a
+        // browser autofill or Enter-key submit could otherwise slip past a
+        // disabled attribute in some edge case, and this is the one check
+        // here with real legal weight (see the checkbox itself for why).
+        if (!agreedToTerms) return setError('Please agree to the Terms of Service and Privacy Policy to continue')
 
         const { data, error } = await signUp(form.email, form.password, form.fullName, form.firmName)
         if (error) {
@@ -182,7 +188,25 @@ export default function Login() {
               </div>
             )}
 
-            <button type="submit" disabled={loading} className="btn-primary w-full mt-2">
+            {mode === 'signup' && (
+              // Real, active consent rather than the passive footer text
+              // this replaces for signup specifically — an unticked box the
+              // person has to check themselves holds up far better than
+              // text sitting below a button they may never have read.
+              <label className="flex items-start gap-2.5 text-sm text-gray-600 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={agreedToTerms}
+                  onChange={e => { setAgreedToTerms(e.target.checked); setError('') }}
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-gold-ink focus:ring-gold-ink"
+                />
+                <span>
+                  I agree to Annie's <Link to="/terms" target="_blank" className="text-gold-ink font-semibold hover:underline">Terms of Service</Link> and <Link to="/privacy" target="_blank" className="text-gold-ink font-semibold hover:underline">Privacy Policy</Link>
+                </span>
+              </label>
+            )}
+
+            <button type="submit" disabled={loading || (mode === 'signup' && !agreedToTerms)} className="btn-primary w-full mt-2">
               {loading ? 'Please wait...' : mode === 'login' ? 'Sign in' : mode === 'signup' ? 'Create account' : 'Send reset link'}
             </button>
           </form>
@@ -204,9 +228,11 @@ export default function Login() {
           </div>
         </div>
 
-        <p className="text-center text-gray-500 text-xs mt-6">
-          By signing up you agree to our <Link to="/terms" className="text-gold-ink hover:underline">Terms of Service</Link> and <Link to="/privacy" className="text-gold-ink hover:underline">Privacy Policy</Link>
-        </p>
+        {mode !== 'signup' && (
+          <p className="text-center text-gray-500 text-xs mt-6">
+            <Link to="/terms" className="text-gold-ink hover:underline">Terms of Service</Link> · <Link to="/privacy" className="text-gold-ink hover:underline">Privacy Policy</Link>
+          </p>
+        )}
       </div>
     </div>
   )

@@ -52,6 +52,14 @@ export default function Terms() {
               <p>Annie is provided "as is." Business decisions made from Annie's research are yours to make and verify — we're not liable for outreach sent, deals pursued, or opportunities missed based on information Annie surfaced.</p>
             </section>
             <section>
+              <h2 className="font-bold text-navy mb-1">9. Eligibility</h2>
+              <p>Annie is a business tool and isn't directed at or intended for anyone under 18.</p>
+            </section>
+            <section>
+              <h2 className="font-bold text-navy mb-1">10. Governing law</h2>
+              <p>These terms are governed by the laws of the United Arab Emirates, without regard to conflict-of-law principles.</p>
+            </section>
+            <section>
               <h2 className="font-bold text-navy mb-1">Questions</h2>
               <p>Reach us through the in-app support chat, or contact the email address you used to sign up.</p>
             </section>
