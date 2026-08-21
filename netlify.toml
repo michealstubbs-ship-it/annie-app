@@ -9,13 +9,16 @@
   publish = "dist"
 
 [build.environment]
-  # Vitest (added for the test suite that gates this build, see the comment
-  # above) requires Node 20+ to run at all — it doesn't support Node 18.
-  # This was left at 18 when the test suite was first wired in, which meant
-  # `npm test` failed on Netlify's build machine before it ever reached real
-  # test results, well before it got anywhere near actual app code. Bumped
-  # to the current LTS.
-  NODE_VERSION = "20"
+  # @supabase/supabase-js constructs a RealtimeClient the moment
+  # createClient() is called — even though none of these functions ever
+  # open a realtime channel — and that construction unconditionally checks
+  # for a native WebSocket global. Node only ships that natively from v22.
+  # On Node 20 every function that calls createClient() (which is nearly
+  # all of them: chat, onboarding, scans, billing) crashed with a 502 the
+  # instant it ran, regardless of auth — "Node.js detected but native
+  # WebSocket not found." Bumped to 22 to match, since pinning an older
+  # supabase-js instead would just be deferring the same fix.
+  NODE_VERSION = "22"
 
 [[redirects]]
   from = "/*"
