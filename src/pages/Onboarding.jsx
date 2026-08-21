@@ -122,6 +122,31 @@ export default function Onboarding() {
     setError('')
   }
 
+  // Required-field gate per step so "Continue"/"Launch Annie" can't be
+  // clicked past a blank step — otherwise handleFinish() happily submits
+  // empty sectors/functions/locations, and the scan pipeline downstream has
+  // nothing to search against with no clear error surfaced to the user.
+  function isStepValid(s, f) {
+    switch (s) {
+      case 1: return f.firmName.trim().length > 0
+      case 2: return f.sectors.length > 0
+      case 3: return f.functions.length > 0
+      case 4: return f.locations.length > 0
+      case 5: return !!f.tone
+      default: return true
+    }
+  }
+
+  const STEP_HINTS = {
+    1: 'Enter your firm name to continue',
+    2: 'Select at least one sector to continue',
+    3: 'Select at least one function to continue',
+    4: 'Select at least one market to continue',
+    5: 'Select a communication tone to continue',
+  }
+
+  const canContinue = isStepValid(step, form)
+
   async function handleFinish() {
     setLoading(true)
     setError('')
@@ -305,18 +330,23 @@ export default function Onboarding() {
           </div>
         )}
 
-        <div className="flex justify-between items-center mt-8">
-          {step > 1 ? (
-            <button onClick={() => setStep(s => s - 1)} className="btn-ghost">Back</button>
-          ) : <div />}
-
-          {step < 5 ? (
-            <button onClick={() => setStep(s => s + 1)} className="btn-primary">Continue</button>
-          ) : (
-            <button onClick={handleFinish} disabled={loading} className="btn-primary">
-              {loading ? 'Setting up Annie...' : 'Launch Annie'}
-            </button>
+        <div className="mt-8">
+          {!canContinue && (
+            <p className="text-xs text-gold-ink mb-2 text-right">{STEP_HINTS[step]}</p>
           )}
+          <div className="flex justify-between items-center">
+            {step > 1 ? (
+              <button onClick={() => setStep(s => s - 1)} className="btn-ghost">Back</button>
+            ) : <div />}
+
+            {step < 5 ? (
+              <button onClick={() => setStep(s => s + 1)} disabled={!canContinue} className="btn-primary">Continue</button>
+            ) : (
+              <button onClick={handleFinish} disabled={loading || !canContinue} className="btn-primary">
+                {loading ? 'Setting up Annie...' : 'Launch Annie'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

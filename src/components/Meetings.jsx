@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
+import ConfirmDialog from './ConfirmDialog'
 
 const TYPE_LABEL = { call: 'Call', video: 'Video', in_person: 'In person' }
 const TYPE_ICON = { call: '📞', video: '💻', in_person: '🤝' }
@@ -27,6 +28,8 @@ export default function Meetings() {
   const [editId, setEditId] = useState(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [listError, setListError] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null)
 
   useEffect(() => { load() }, [user])
   useEffect(() => { if (location.state?.autoOpenAdd) openAdd() }, [location.state])
@@ -79,9 +82,11 @@ export default function Meetings() {
         updated_at: new Date().toISOString(),
       }
       if (editId) {
-        await supabase.from('meetings').update(row).eq('id', editId)
+        const { error: err } = await supabase.from('meetings').update(row).eq('id', editId)
+        if (err) throw err
       } else {
-        await supabase.from('meetings').insert({ ...row, user_id: user.id })
+        const { error: err } = await supabase.from('meetings').insert({ ...row, user_id: user.id })
+        if (err) throw err
       }
       await load()
       setShowModal(false)
@@ -93,8 +98,9 @@ export default function Meetings() {
   }
 
   async function del(id) {
-    if (!confirm('Delete this meeting?')) return
-    await supabase.from('meetings').delete().eq('id', id)
+    setListError('')
+    const { error: err } = await supabase.from('meetings').delete().eq('id', id)
+    if (err) return setListError(err.message)
     setMeetings(prev => prev.filter(m => m.id !== id))
   }
 
@@ -116,8 +122,8 @@ export default function Meetings() {
             </div>
           </div>
           <div className="flex gap-2 flex-shrink-0">
-            <button onClick={() => openEdit(m)} className="text-xs text-gold font-semibold hover:underline">Edit</button>
-            <button onClick={() => del(m.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
+            <button onClick={() => openEdit(m)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
+            <button onClick={() => setConfirmDeleteId(m.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
           </div>
         </div>
       </div>
@@ -136,6 +142,8 @@ export default function Meetings() {
         </div>
         <button onClick={openAdd} className="btn-primary">+ Log Meeting</button>
       </div>
+
+      {listError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-4">{listError}</div>}
 
       {loading ? (
         <div className="flex items-center justify-center py-20"><div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" /></div>
@@ -168,54 +176,65 @@ export default function Meetings() {
           <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
             <h2 className="text-xl font-bold text-navy mb-4">{editId ? 'Edit Meeting' : 'Log Meeting'}</h2>
             {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{error}</div>}
-            <div className="space-y-3">
-              <div>
-                <label className="label">Title *</label>
-                <input className="input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Intro call with Wio Bank" />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
+            <form onSubmit={e => { e.preventDefault(); save() }}>
+              <div className="space-y-3">
                 <div>
-                  <label className="label">Type</label>
-                  <select className="input" value={form.meeting_type} onChange={e => setForm(p => ({ ...p, meeting_type: e.target.value }))}>
-                    {Object.entries(TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  <label className="label">Title *</label>
+                  <input className="input" required value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Intro call with Wio Bank" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label">Type</label>
+                    <select className="input" value={form.meeting_type} onChange={e => setForm(p => ({ ...p, meeting_type: e.target.value }))}>
+                      {Object.entries(TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Date & time *</label>
+                    <input className="input" type="datetime-local" required value={form.meeting_date} onChange={e => setForm(p => ({ ...p, meeting_date: e.target.value }))} />
+                  </div>
+                </div>
+                <div>
+                  <label className="label">Contact</label>
+                  <select className="input" value={form.contact_id} onChange={e => setForm(p => ({ ...p, contact_id: e.target.value }))}>
+                    <option value="">Not linked to a contact</option>
+                    {contacts.map(c => <option key={c.id} value={c.id}>{c.name}{c.company ? ` (${c.company})` : ''}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="label">Date & time *</label>
-                  <input className="input" type="datetime-local" value={form.meeting_date} onChange={e => setForm(p => ({ ...p, meeting_date: e.target.value }))} />
+                  <label className="label">Outcome</label>
+                  <textarea className="input resize-none" rows={2} value={form.outcome} onChange={e => setForm(p => ({ ...p, outcome: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="label">Next steps</label>
+                  <textarea className="input resize-none" rows={2} value={form.next_steps} onChange={e => setForm(p => ({ ...p, next_steps: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="label">Follow-up date</label>
+                  <input className="input" type="date" value={form.follow_up_date} onChange={e => setForm(p => ({ ...p, follow_up_date: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="label">Notes</label>
+                  <textarea className="input resize-none" rows={2} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
                 </div>
               </div>
-              <div>
-                <label className="label">Contact</label>
-                <select className="input" value={form.contact_id} onChange={e => setForm(p => ({ ...p, contact_id: e.target.value }))}>
-                  <option value="">Not linked to a contact</option>
-                  {contacts.map(c => <option key={c.id} value={c.id}>{c.name}{c.company ? ` (${c.company})` : ''}</option>)}
-                </select>
+              <div className="flex gap-3 justify-end mt-5">
+                <button type="button" onClick={() => setShowModal(false)} className="btn-ghost">Cancel</button>
+                <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
               </div>
-              <div>
-                <label className="label">Outcome</label>
-                <textarea className="input resize-none" rows={2} value={form.outcome} onChange={e => setForm(p => ({ ...p, outcome: e.target.value }))} />
-              </div>
-              <div>
-                <label className="label">Next steps</label>
-                <textarea className="input resize-none" rows={2} value={form.next_steps} onChange={e => setForm(p => ({ ...p, next_steps: e.target.value }))} />
-              </div>
-              <div>
-                <label className="label">Follow-up date</label>
-                <input className="input" type="date" value={form.follow_up_date} onChange={e => setForm(p => ({ ...p, follow_up_date: e.target.value }))} />
-              </div>
-              <div>
-                <label className="label">Notes</label>
-                <textarea className="input resize-none" rows={2} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
-              </div>
-            </div>
-            <div className="flex gap-3 justify-end mt-5">
-              <button onClick={() => setShowModal(false)} className="btn-ghost">Cancel</button>
-              <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
-            </div>
+            </form>
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!confirmDeleteId}
+        onClose={() => setConfirmDeleteId(null)}
+        onConfirm={() => del(confirmDeleteId)}
+        title="Delete meeting?"
+        message="This can't be undone."
+        confirmLabel="Delete"
+      />
     </div>
   )
 }

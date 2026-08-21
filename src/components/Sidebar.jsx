@@ -1,8 +1,10 @@
 import React from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { IconHome, IconZap, IconRadio, IconUsers, IconBuilding, IconTrendingUp, IconBell, IconCalendar, IconCheckSquare, IconMessageCircle, IconBriefcase, IconUser, IconSettings } from './icons'
+import { IconHome, IconZap, IconRadio, IconUsers, IconBuilding, IconTrendingUp, IconCalendar, IconCheckSquare, IconMessageCircle, IconBriefcase, IconUser, IconSettings } from './icons'
 
+// "Signals" was retired as a standalone page — the same BD-trigger data now
+// lives on the Intelligence Feed, so this nav no longer links anywhere dead.
 const NAV = [
   { to: '/dashboard', label: 'Overview', Icon: IconHome, exact: true },
   { to: '/dashboard/actions', label: "Today's Actions", Icon: IconZap },
@@ -10,7 +12,6 @@ const NAV = [
   { to: '/dashboard/contacts', label: 'Contacts', Icon: IconUsers },
   { to: '/dashboard/companies', label: 'Companies', Icon: IconBuilding },
   { to: '/dashboard/pipeline', label: 'BD Pipeline', Icon: IconTrendingUp },
-  { to: '/dashboard/signals', label: 'Signals', Icon: IconBell },
   { to: '/dashboard/meetings', label: 'Meetings', Icon: IconCalendar },
   { to: '/dashboard/tasks', label: 'Tasks', Icon: IconCheckSquare },
   { to: '/dashboard/chat', label: 'Ask Annie', Icon: IconMessageCircle },

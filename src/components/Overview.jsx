@@ -10,7 +10,15 @@ const JOB_STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled'
 const JOB_STATUS_COLOR = { active: '#2f9e5b', onhold: '#d99a2b', filled: '#c9a84c', lost: '#9ca0ac' }
 
 const SCAN_FLAG_PREFIX = 'annie_scan_started_'
-const SCAN_WINDOW_MS = 6 * 60 * 1000 // give up on "researching" messaging after 6 minutes either way
+// scan-now-background.js has up to a 15-minute wall-clock budget, and
+// scan-status.js itself only starts treating a "running" status as timed
+// out after 14 minutes — this window has to be at least that long, or the
+// "researching" banner can vanish while the real scan is still genuinely
+// working, dropping a brand-new customer onto generic "nothing new yet"
+// copy on the single highest-stakes trust moment in the product. Was 6
+// minutes, which raced against a scan the backend itself documents as
+// taking up to 15.
+const SCAN_WINDOW_MS = 16 * 60 * 1000
 
 function initials(name) {
   return (name || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase()
@@ -349,9 +357,11 @@ export default function Overview() {
                   ? "Annie's on it, see the banner above."
                   : scanOutcome?.reason === 'no_results'
                     ? "Annie checked your market just now and didn't find anything strong enough to flag yet. She checks again automatically every few hours."
-                    : scanOutcome?.reason === 'error'
-                      ? "Annie hit a snag reaching her research tools just now. She'll retry automatically, no action needed from you."
-                      : "Annie hasn't found anything new yet."}
+                    : scanOutcome?.reason === 'timed_out'
+                      ? "Annie's first research pass is taking longer than usual for a market this size, she's still working. Refresh this page in a few minutes to see what she's found."
+                      : scanOutcome?.reason === 'error'
+                        ? "Annie hit a snag reaching her research tools just now. She'll retry automatically, no action needed from you."
+                        : "Annie hasn't found anything new yet."}
               </p>
             ) : (
               <>

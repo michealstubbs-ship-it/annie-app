@@ -2,9 +2,11 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { normalizeCompanyName } from '../lib/companyMatch'
 import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
 import JobFormModal from './JobFormModal'
+import ConfirmDialog from './ConfirmDialog'
 
 const EMPTY_CO = { name: '', industry: '', location: '', website: '', notes: '' }
 const STATUS_COLOR = { hot: 'bg-red-100 text-red-700', warm: 'bg-amber-100 text-amber-700', cold: 'bg-blue-100 text-blue-700', client: 'bg-green-100 text-green-700', inactive: 'bg-gray-100 text-gray-500' }
@@ -32,11 +34,14 @@ export default function Companies() {
   const [coForm, setCoForm] = useState(EMPTY_CO)
   const [coSaving, setCoSaving] = useState(false)
   const [coError, setCoError] = useState('')
+  const [coNote, setCoNote] = useState('')
 
   const [selected, setSelected] = useState(null)
   const [tab, setTab] = useState('contacts')
   const [showContactModal, setShowContactModal] = useState(false)
   const [showJobModal, setShowJobModal] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [delError, setDelError] = useState('')
 
   useEffect(() => { load() }, [user])
   useEffect(() => { if (location.state?.autoOpenAdd) openAddCo() }, [location.state])
@@ -62,22 +67,41 @@ export default function Companies() {
   function contactsFor(id) { return contacts.filter(c => c.company_id === id) }
   function jobsFor(id) { return jobs.filter(j => j.company_id === id) }
 
-  function openAddCo() { setCoForm(EMPTY_CO); setEditCo(null); setCoError(''); setShowCoModal(true) }
-  function openEditCo(co) { setCoForm({ name: co.name, industry: co.industry || '', location: co.location || '', website: co.website || '', notes: co.notes || '' }); setEditCo(co); setCoError(''); setShowCoModal(true) }
+  function openAddCo() { setCoForm(EMPTY_CO); setEditCo(null); setCoError(''); setCoNote(''); setShowCoModal(true) }
+  function openEditCo(co) { setCoForm({ name: co.name, industry: co.industry || '', location: co.location || '', website: co.website || '', notes: co.notes || '' }); setEditCo(co); setCoError(''); setCoNote(''); setShowCoModal(true) }
 
   async function saveCo() {
-    if (!coForm.name.trim()) return setCoError('Company name is required')
+    const name = coForm.name.trim()
+    if (!name) return setCoError('Company name is required')
+
+    // Same dedupe rule as CompanySelect's add-company flow: never create a
+    // second row for a company that's already here under a different
+    // spelling ("Acme Ltd" vs "Acme Limited" vs "acme").
+    if (!editCo) {
+      const existing = companies.find(c => normalizeCompanyName(c.name) === normalizeCompanyName(name))
+      if (existing) {
+        setShowCoModal(false)
+        setSelected(existing)
+        setTab('contacts')
+        setDelError('')
+        setCoNote(`Using existing record for ${existing.name}`)
+        return
+      }
+    }
+
     setCoSaving(true)
     setCoError('')
     try {
       const row = {
-        name: coForm.name.trim(), industry: coForm.industry.trim() || null, location: coForm.location.trim() || null,
+        name, industry: coForm.industry.trim() || null, location: coForm.location.trim() || null,
         website: coForm.website.trim() || null, notes: coForm.notes.trim() || null, updated_at: new Date().toISOString(),
       }
       if (editCo) {
-        await supabase.from('companies').update(row).eq('id', editCo.id)
+        const { error: err } = await supabase.from('companies').update(row).eq('id', editCo.id)
+        if (err) throw err
       } else {
-        await supabase.from('companies').insert({ ...row, user_id: user.id })
+        const { error: err } = await supabase.from('companies').insert({ ...row, user_id: user.id })
+        if (err) throw err
       }
       await load()
       setShowCoModal(false)
@@ -89,8 +113,9 @@ export default function Companies() {
   }
 
   async function delCo(id) {
-    if (!confirm('Delete this company? Contacts and jobs linked to it will stay, just unlinked.')) return
-    await supabase.from('companies').delete().eq('id', id)
+    setDelError('')
+    const { error: err } = await supabase.from('companies').delete().eq('id', id)
+    if (err) { setDelError(err.message); return }
     setSelected(null)
     await load()
   }
@@ -126,7 +151,7 @@ export default function Companies() {
             const jOpen = jobsFor(co.id).filter(j => j.status === 'active' || j.status === 'onhold').length
             const clr = color(co.name)
             return (
-              <button key={co.id} onClick={() => { setSelected(co); setTab('contacts') }} className="card p-4 text-left hover:border-gold border border-transparent transition-all">
+              <button key={co.id} onClick={() => { setSelected(co); setTab('contacts'); setDelError(''); setCoNote('') }} className="card p-4 text-left hover:border-gold border border-transparent transition-all">
                 <div className="flex items-center gap-3 mb-2">
                   <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0" style={{ background: clr + '18', color: clr }}>{initials(co.name)}</div>
                   <div className="min-w-0">
@@ -170,6 +195,8 @@ export default function Companies() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4 py-8" onClick={() => setSelected(null)}>
           <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="p-6 border-b border-gray-100">
+              {coNote && <div className="bg-gray-50 border border-gray-200 text-gray-600 rounded-lg px-3 py-2 text-sm mb-3">{coNote}</div>}
+              {delError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{delError}</div>}
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h2 className="text-2xl font-bold text-navy">{selected.name}</h2>
@@ -178,8 +205,8 @@ export default function Companies() {
                   {selected.notes && <p className="text-sm text-gray-600 mt-2">{selected.notes}</p>}
                 </div>
                 <div className="flex gap-2 flex-shrink-0">
-                  <button onClick={() => openEditCo(selected)} className="text-xs text-gold font-semibold hover:underline">Edit</button>
-                  <button onClick={() => delCo(selected.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
+                  <button onClick={() => openEditCo(selected)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
+                  <button onClick={() => setShowDeleteConfirm(true)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
                   <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 ml-2">✕</button>
                 </div>
               </div>
@@ -248,6 +275,14 @@ export default function Companies() {
         lockedCompanyName={selected?.name}
         onClose={() => setShowJobModal(false)}
         onSaved={() => load()}
+      />
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        onClose={() => setShowDeleteConfirm(false)}
+        onConfirm={() => delCo(selected.id)}
+        title="Delete company"
+        message="Delete this company? Contacts and jobs linked to it will stay, just unlinked."
+        confirmLabel="Delete"
       />
     </div>
   )

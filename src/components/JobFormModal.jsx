@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import CompanySelect from './CompanySelect'
+import Modal from './Modal'
 
 const LIKELIHOOD_OPTIONS = [
   { value: '5', label: '★★★★★ Very likely (90%+)' },
@@ -57,8 +58,6 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
     setError('')
   }, [open, editJob, lockedCompanyId, lockedCompanyName])
 
-  if (!open) return null
-
   const feeValue = calcFee(form.salary_num, form.fee_pct)
 
   function handleCompanyChange(id, name, industry) {
@@ -67,6 +66,8 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
 
   async function save() {
     if (!form.title.trim()) return setError('Job title is required')
+    // CompanySelect's <select> has no native `required` attribute, so this
+    // check has to stay — the browser can't express it for us.
     if (!form.company_id) return setError('Select a company')
     setSaving(true)
     setError('')
@@ -106,12 +107,11 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4 py-8">
-      <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
-        <h2 className="text-xl font-bold text-navy mb-4">{editJob ? 'Edit job' : 'Add job'}</h2>
+    <Modal open={open} onClose={onClose} title={editJob ? 'Edit job' : 'Add job'} maxWidth="max-w-lg">
+      <form onSubmit={e => { e.preventDefault(); save() }}>
         {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{error}</div>}
         <div className="space-y-3">
-          <div><label className="label">Job title *</label><input className="input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Senior Software Engineer" autoFocus /></div>
+          <div><label className="label">Job title *</label><input required className="input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Senior Software Engineer" /></div>
 
           {lockedCompanyId ? (
             <div>
@@ -156,10 +156,10 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
           <div><label className="label">Brief / job description</label><textarea className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Key requirements, must-haves, skills needed, context about the role..." /></div>
         </div>
         <div className="flex gap-3 justify-end mt-5">
-          <button onClick={onClose} className="btn-ghost">Cancel</button>
-          <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save job'}</button>
+          <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
+          <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save job'}</button>
         </div>
-      </div>
-    </div>
+      </form>
+    </Modal>
   )
 }

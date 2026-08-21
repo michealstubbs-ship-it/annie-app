@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
+import ConfirmDialog from './ConfirmDialog'
 
 const PRIORITY_COLOR = {
   high: 'bg-red-100 text-red-700',
@@ -23,6 +24,8 @@ export default function Tasks() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [showDone, setShowDone] = useState(false)
+  const [listError, setListError] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null)
 
   useEffect(() => { load() }, [user])
 
@@ -77,9 +80,11 @@ export default function Tasks() {
         updated_at: new Date().toISOString(),
       }
       if (editId) {
-        await supabase.from('bd_tasks').update(row).eq('id', editId)
+        const { error: err } = await supabase.from('bd_tasks').update(row).eq('id', editId)
+        if (err) throw err
       } else {
-        await supabase.from('bd_tasks').insert({ ...row, user_id: user.id })
+        const { error: err } = await supabase.from('bd_tasks').insert({ ...row, user_id: user.id })
+        if (err) throw err
       }
       await load()
       setShowModal(false)
@@ -91,14 +96,20 @@ export default function Tasks() {
   }
 
   async function toggleDone(t) {
+    setListError('')
     const status = t.status === 'done' ? 'open' : 'done'
     setTasks(prev => prev.map(x => x.id === t.id ? { ...x, status } : x))
-    await supabase.from('bd_tasks').update({ status, updated_at: new Date().toISOString() }).eq('id', t.id)
+    const { error: err } = await supabase.from('bd_tasks').update({ status, updated_at: new Date().toISOString() }).eq('id', t.id)
+    if (err) {
+      setTasks(prev => prev.map(x => x.id === t.id ? { ...x, status: t.status } : x))
+      setListError(err.message)
+    }
   }
 
   async function del(id) {
-    if (!confirm('Delete this task?')) return
-    await supabase.from('bd_tasks').delete().eq('id', id)
+    setListError('')
+    const { error: err } = await supabase.from('bd_tasks').delete().eq('id', id)
+    if (err) return setListError(err.message)
     setTasks(prev => prev.filter(t => t.id !== id))
   }
 
@@ -129,8 +140,8 @@ export default function Tasks() {
           {t.due_date && <p className={`text-[11px] font-semibold mt-1 ${!isDone && t.due_date < new Date().toISOString().slice(0,10) ? 'text-red-500' : 'text-gray-400'}`}>Due {new Date(t.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</p>}
         </div>
         <div className="flex gap-2 flex-shrink-0">
-          <button onClick={() => openEdit(t)} className="text-xs text-gold font-semibold hover:underline">Edit</button>
-          <button onClick={() => del(t.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
+          <button onClick={() => openEdit(t)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
+          <button onClick={() => setConfirmDeleteId(t.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
         </div>
       </div>
     )
@@ -150,6 +161,8 @@ export default function Tasks() {
         </div>
         <button onClick={openAdd} className="btn-primary">+ Add Task</button>
       </div>
+
+      {listError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-4">{listError}</div>}
 
       {loading ? (
         <div className="flex items-center justify-center py-20"><div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" /></div>
@@ -202,53 +215,64 @@ export default function Tasks() {
           <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
             <h2 className="text-xl font-bold text-navy mb-4">{editId ? 'Edit Task' : 'Add Task'}</h2>
             {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{error}</div>}
-            <div className="space-y-3">
-              <div>
-                <label className="label">Title *</label>
-                <input className="input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Follow up on proposal" />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
+            <form onSubmit={e => { e.preventDefault(); save() }}>
+              <div className="space-y-3">
                 <div>
-                  <label className="label">Due date</label>
-                  <input className="input" type="date" value={form.due_date} onChange={e => setForm(p => ({ ...p, due_date: e.target.value }))} />
+                  <label className="label">Title *</label>
+                  <input className="input" required value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Follow up on proposal" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label">Due date</label>
+                    <input className="input" type="date" value={form.due_date} onChange={e => setForm(p => ({ ...p, due_date: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="label">Priority</label>
+                    <select className="input" value={form.priority} onChange={e => setForm(p => ({ ...p, priority: e.target.value }))}>
+                      <option value="low">Low</option>
+                      <option value="normal">Normal</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label">Contact</label>
+                    <select className="input" value={form.contact_id} onChange={e => setForm(p => ({ ...p, contact_id: e.target.value }))}>
+                      <option value="">None</option>
+                      {contacts.map(c => <option key={c.id} value={c.id}>{c.name}{c.company ? ` (${c.company})` : ''}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Candidate</label>
+                    <select className="input" value={form.candidate_id} onChange={e => setForm(p => ({ ...p, candidate_id: e.target.value }))}>
+                      <option value="">None</option>
+                      {candidates.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </div>
                 </div>
                 <div>
-                  <label className="label">Priority</label>
-                  <select className="input" value={form.priority} onChange={e => setForm(p => ({ ...p, priority: e.target.value }))}>
-                    <option value="low">Low</option>
-                    <option value="normal">Normal</option>
-                    <option value="high">High</option>
-                  </select>
+                  <label className="label">Notes</label>
+                  <textarea className="input resize-none" rows={2} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="label">Contact</label>
-                  <select className="input" value={form.contact_id} onChange={e => setForm(p => ({ ...p, contact_id: e.target.value }))}>
-                    <option value="">None</option>
-                    {contacts.map(c => <option key={c.id} value={c.id}>{c.name}{c.company ? ` (${c.company})` : ''}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="label">Candidate</label>
-                  <select className="input" value={form.candidate_id} onChange={e => setForm(p => ({ ...p, candidate_id: e.target.value }))}>
-                    <option value="">None</option>
-                    {candidates.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </div>
+              <div className="flex gap-3 justify-end mt-5">
+                <button type="button" onClick={() => setShowModal(false)} className="btn-ghost">Cancel</button>
+                <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
               </div>
-              <div>
-                <label className="label">Notes</label>
-                <textarea className="input resize-none" rows={2} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
-              </div>
-            </div>
-            <div className="flex gap-3 justify-end mt-5">
-              <button onClick={() => setShowModal(false)} className="btn-ghost">Cancel</button>
-              <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
-            </div>
+            </form>
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!confirmDeleteId}
+        onClose={() => setConfirmDeleteId(null)}
+        onConfirm={() => del(confirmDeleteId)}
+        title="Delete task?"
+        message="This can't be undone."
+        confirmLabel="Delete"
+      />
     </div>
   )
 }

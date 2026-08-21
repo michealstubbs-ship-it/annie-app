@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { normalizeCompanyName } from '../lib/companyMatch'
 
 // Reusable "pick an existing company, or add one" dropdown. Used anywhere a
 // company needs to be attached to something (contacts, jobs) so the same
@@ -15,6 +16,7 @@ export default function CompanySelect({ value, onChange, required = false, label
   const [form, setForm] = useState(EMPTY_CO)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [note, setNote] = useState('')
 
   useEffect(() => { load() }, [user])
 
@@ -28,19 +30,33 @@ export default function CompanySelect({ value, onChange, required = false, label
 
   function handleSelect(e) {
     const v = e.target.value
-    if (v === '__add__') { setForm(EMPTY_CO); setError(''); setShowAdd(true); return }
+    if (v === '__add__') { setForm(EMPTY_CO); setError(''); setNote(''); setShowAdd(true); return }
+    setNote('')
     const co = companies.find(c => c.id === v)
     onChange(v || null, co?.name || '', co?.industry || '')
   }
 
   async function saveNewCompany() {
-    if (!form.name.trim()) return setError('Company name is required')
+    const name = form.name.trim()
+    if (!name) return setError('Company name is required')
+
+    // Same company, different spelling ("Acme Ltd" vs "Acme Limited" vs
+    // "acme") should never become two records — match against what's
+    // already loaded before creating anything.
+    const existing = companies.find(c => normalizeCompanyName(c.name) === normalizeCompanyName(name))
+    if (existing) {
+      onChange(existing.id, existing.name, existing.industry || '')
+      setShowAdd(false)
+      setNote(`Using existing record for ${existing.name}`)
+      return
+    }
+
     setSaving(true)
     setError('')
     try {
       const { data, error: err } = await supabase.from('companies').insert({
         user_id: user.id,
-        name: form.name.trim(),
+        name,
         industry: form.industry.trim() || null,
         location: form.location.trim() || null,
         website: form.website.trim() || null,
@@ -64,6 +80,7 @@ export default function CompanySelect({ value, onChange, required = false, label
         {companies.map(c => <option key={c.id} value={c.id}>{c.name}{c.industry ? ` (${c.industry})` : ''}</option>)}
         <option value="__add__">+ Add new company...</option>
       </select>
+      {note && <p className="text-xs text-gray-500 mt-1">{note}</p>}
 
       {showAdd && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] px-4" onClick={e => e.stopPropagation()}>

@@ -1,5 +1,11 @@
 [build]
-  command = "npm run build"
+  # Tests run before the build, and their exit code gates it: if `npm test`
+  # fails, `&&` short-circuits and `vite build` never runs, so a real
+  # regression can't reach production just because the frontend still
+  # compiles. This is what makes the test suite actually enforce anything —
+  # tests that only ever get run by hand don't catch what nobody remembered
+  # to run.
+  command = "npm test && npm run build"
   publish = "dist"
 
 [build.environment]

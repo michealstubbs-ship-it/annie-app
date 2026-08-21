@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
 import JobFormModal from './JobFormModal'
+import ConfirmDialog from './ConfirmDialog'
 
 const STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled', lost: 'Lost' }
 const STATUS_COLOR = {
@@ -25,6 +26,8 @@ export default function Jobs() {
   const [showModal, setShowModal] = useState(false)
   const [editJob, setEditJob] = useState(null)
   const [showClosed, setShowClosed] = useState(false)
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [listError, setListError] = useState('')
 
   useEffect(() => { load() }, [user])
   useEffect(() => { if (location.state?.autoOpenAdd) openAdd() }, [location.state])
@@ -52,8 +55,9 @@ export default function Jobs() {
   function openEdit(j) { setEditJob(j); setShowModal(true) }
 
   async function del(id) {
-    if (!confirm('Delete this job?')) return
-    await supabase.from('jobs').delete().eq('id', id)
+    setListError('')
+    const { error: err } = await supabase.from('jobs').delete().eq('id', id)
+    if (err) return setListError('Could not delete job: ' + err.message)
     setJobs(prev => prev.filter(j => j.id !== id))
   }
 
@@ -80,8 +84,8 @@ export default function Jobs() {
             {j.notes && <p className="text-xs text-gray-500 mt-2 line-clamp-2">{j.notes}</p>}
           </div>
           <div className="flex gap-2 flex-shrink-0">
-            <button onClick={() => openEdit(j)} className="text-xs text-gold font-semibold hover:underline">Edit</button>
-            <button onClick={() => del(j.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
+            <button onClick={() => openEdit(j)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
+            <button onClick={() => setConfirmDeleteId(j.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
           </div>
         </div>
       </div>
@@ -100,6 +104,8 @@ export default function Jobs() {
         </div>
         <button onClick={openAdd} className="btn-primary">+ Add Job</button>
       </div>
+
+      {listError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-4">{listError}</div>}
 
       {loading ? (
         <div className="flex items-center justify-center py-20"><div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" /></div>
@@ -134,6 +140,15 @@ export default function Jobs() {
         editJob={editJob}
         onClose={() => setShowModal(false)}
         onSaved={() => load()}
+      />
+
+      <ConfirmDialog
+        open={!!confirmDeleteId}
+        onClose={() => setConfirmDeleteId(null)}
+        onConfirm={() => del(confirmDeleteId)}
+        title="Delete this job?"
+        message="This can't be undone."
+        confirmLabel="Delete"
       />
     </div>
   )

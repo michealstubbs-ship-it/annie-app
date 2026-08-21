@@ -1,31 +1,37 @@
 // Runs one immediate research scan for a single, just-onboarded customer, so
 // they land on their dashboard with real signals already waiting instead of
-// staring at an empty page until the next 4-hourly intelligence-scan cron
-// tick (which loops every customer and can be up to 4 hours away). Fired
-// once, without being awaited, right after onboarding finishes — the
-// customer moves straight on to the LinkedIn import step while this keeps
-// running server-side, and is very often done before they get through it.
+// staring at an empty page until the next cron tick (which loops every
+// customer and can be hours away). Fired once, without being awaited, right
+// after onboarding finishes — the customer moves straight on to the
+// LinkedIn import step while this keeps running server-side, and is very
+// often done before they get through it.
 //
 // This is THE first-impression moment for a brand new customer, so unlike
-// the 4-hourly all-customer cron this one is deliberately over-resourced:
-// instead of one AI call trying to cover every sector and function a
-// customer picked with a shared search budget, it runs several calls in
-// parallel (one per sector group), each with its own generous search
-// budget, then merges the results. If that still comes up thin, it runs one
-// more, deliberately broader pass before giving up. It only runs once per
-// signup, never on a schedule, so the extra Anthropic/Apollo spend here is
-// small in absolute terms.
+// the recurring cron this one is deliberately over-resourced: instead of
+// one AI call trying to cover every sector and function a customer picked
+// with a shared search budget, it runs several calls in parallel (one per
+// sector group), each with its own generous search budget, then merges the
+// results. If that still comes up thin, it runs one more, deliberately
+// broader pass before giving up. It only runs once per signup, never on a
+// schedule, so the extra Anthropic/Apollo spend here is small in absolute
+// terms.
 //
-// Deliberately self-contained rather than sharing code with
-// intelligence-scan.js: this is a background function (different runtime
-// contract, 15-minute wall clock budget, no response body), and keeping it
-// separate means nothing here can ever risk the all-customers cron job that
-// already runs reliably in production. Netlify requires the "-background"
-// filename suffix to run it this way.
+// Shares pure logic (dedup keys, JSON extraction, Apollo/Adzuna/Companies
+// House calls) with intelligence-scan.js via lib/scanShared.js, so a fix
+// made once applies to both — but keeps its own orchestration (parallel
+// sector groups, the broaden pass, model/budget choices) separate on
+// purpose, since this is a background function (different runtime
+// contract, 15-minute wall clock budget, no response body) and changes made
+// for the one-off onboarding scan should never risk the cron that already
+// runs reliably in production. Netlify requires the "-background" filename
+// suffix to run it this way.
 import { createClient } from '@supabase/supabase-js'
 import { getStore } from '@netlify/blobs'
-
-const SIGNAL_TYPES = ['funding', 'leadership_change', 'hiring_activity', 'expansion', 'team_building', 'public_commentary', 'job_posting_unclaimed', 'm_and_a', 'regulatory']
+import {
+  SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, splitToKeywords, extractJson, toEventIso,
+  resolveSignalType, discoverHotCompanies, discoverAdzunaJobs, verifyContact, enrichCompany,
+  verifyLeadershipChange, fetchWithTimeout,
+} from './lib/scanShared.js'
 
 // How many sector groups to research in parallel, and the minimum number of
 // unique signals we want back before we're willing to show a brand new
@@ -34,31 +40,19 @@ const MAX_SECTOR_GROUPS = 4
 const MIN_SIGNAL_TARGET = 3
 const MAX_TOTAL_SIGNALS = 12
 
-// How far back Apollo's own job-posting data counts as "actively hiring right
-// now" for the discovery pass below. Kept in sync with the AI prompt's own
-// 5-day window so both sources agree on what "recent" means.
-const APOLLO_DISCOVERY_LOOKBACK_DAYS = 5
-
-// A brand new customer landing on an empty dashboard for the full 6-minute
-// "researching" window even when the scan genuinely finished in 11 seconds
-// (found nothing worth reporting, or hit an error) reads as broken, not
-// slow. This status blob is how the frontend tells "still running" apart
-// from "finished, here's what actually happened" — see scan-status.js
-// (reads it) and Overview.jsx (polls scan-status.js instead of just
-// guessing off a timer).
+// A brand new customer landing on an empty dashboard for the full loading
+// window even when the scan genuinely finished in 11 seconds (found nothing
+// worth reporting, or hit an error) reads as broken, not slow. This status
+// blob is how the frontend tells "still running" apart from "finished,
+// here's what actually happened" — see scan-status.js (reads it) and
+// Overview.jsx (polls scan-status.js instead of just guessing off a timer).
 async function setStatus(userId, data) {
   try {
     const store = getStore({ name: 'annie-scan-status', consistency: 'strong' })
     await store.setJSON(userId, data)
   } catch (err) {
-    // Status tracking is a nicety for the loading UI, never let it take the
-    // actual scan down.
     console.error('[scan-now] failed to write status blob for', userId, err.message)
   }
-}
-
-function normalizeKey(company, headline) {
-  return `${(company || '').trim().toLowerCase()}::${(headline || '').trim().toLowerCase().slice(0, 80)}`
 }
 
 // Splits a customer's selected sectors into up to maxGroups buckets so each
@@ -90,141 +84,6 @@ function mergeSignals(lists) {
   return [...seen.values()]
 }
 
-// Turns a compound label like "Strategy & Corporate Development" or
-// "Policy & Government Affairs" into loose keyword fragments ("strategy",
-// "corporate development") without needing to import the full sector/function
-// taxonomy into this function (this file stays deliberately self-contained,
-// see the file header). Good enough for Apollo's fuzzy keyword/title
-// matching, not meant to be exact.
-function splitToKeywords(label) {
-  return (label || '')
-    .split(/&|\//)
-    .map(s => s.trim())
-    .filter(Boolean)
-}
-
-function isoDateDaysAgo(days) {
-  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-}
-
-// Adzuna only covers a specific set of countries, and takes an ISO country
-// code (not a free-text market name), so onboarding.locations has to be
-// mapped to it. Markets Annie has customers in but Adzuna doesn't cover
-// (GCC, etc) correctly map to nothing, that market just gets no Adzuna
-// leads rather than a wrong or misleading one.
-const ADZUNA_COUNTRY_MAP = {
-  uk: 'gb', 'united kingdom': 'gb', gb: 'gb', britain: 'gb',
-  us: 'us', usa: 'us', 'united states': 'us', 'united states of america': 'us',
-  canada: 'ca', ca: 'ca',
-  australia: 'au', au: 'au',
-  france: 'fr', fr: 'fr',
-  netherlands: 'nl', nl: 'nl',
-  poland: 'pl', pl: 'pl',
-  india: 'in', in: 'in',
-  brazil: 'br', br: 'br',
-  'south africa': 'za', za: 'za',
-}
-
-function mapLocationsToAdzunaCountries(locations) {
-  const set = new Set()
-  for (const loc of locations || []) {
-    const key = (loc || '').trim().toLowerCase()
-    if (ADZUNA_COUNTRY_MAP[key]) set.add(ADZUNA_COUNTRY_MAP[key])
-  }
-  return [...set]
-}
-
-// Adzuna is a real, live jobs board, actual job ads with a real posting
-// date, title, company and location, not a news article's best guess. This
-// is exactly the evidence signalType "job_posting_unclaimed" needs: a role
-// posted directly by the company itself, no recruiter or agency attached.
-// Like the Apollo discovery pass, this hands real leads to the AI rather
-// than deciding "unclaimed" in code, Adzuna's own data doesn't reliably
-// flag agency-posted vs direct-posted, so the AI still has to look at each
-// ad's language and decide before writing it up. Free API, no credit cost,
-// so this runs for every sector group without a budget concern.
-async function discoverAdzunaJobs(appId, appKey, { sectors, functions, locations }) {
-  if (!appId || !appKey) return []
-  const countries = mapLocationsToAdzunaCountries(locations)
-  if (!countries.length) return []
-
-  const keywords = [...(sectors || []).flatMap(splitToKeywords), ...(functions || []).flatMap(splitToKeywords)].slice(0, 6)
-  if (!keywords.length) return []
-
-  const results = []
-  for (const country of countries.slice(0, 2)) {
-    try {
-      const params = new URLSearchParams({
-        app_id: appId,
-        app_key: appKey,
-        results_per_page: '10',
-        what: keywords.join(' '),
-        max_days_old: String(APOLLO_DISCOVERY_LOOKBACK_DAYS),
-        sort_by: 'date',
-      })
-      const resp = await fetch(`https://api.adzuna.com/v1/api/jobs/${country}/search/1?${params.toString()}`)
-      if (!resp.ok) continue
-      const data = await resp.json()
-      for (const j of data.results || []) {
-        const title = (j.title || '').replace(/<[^>]+>/g, '').trim()
-        const company = j.company?.display_name || ''
-        if (!title || !company) continue
-        results.push({
-          title,
-          company,
-          location: j.location?.display_name || '',
-          url: j.redirect_url || '',
-          salary: j.salary_min ? `${Math.round(j.salary_min)}${j.salary_max && j.salary_max !== j.salary_min ? `-${Math.round(j.salary_max)}` : ''}` : null,
-        })
-      }
-    } catch (err) {
-      console.error('[scan-now] adzuna discovery failed:', err.message)
-    }
-  }
-  return results.slice(0, 10)
-}
-
-// Apollo tracks real job postings and funding events directly, it isn't
-// guessing from news the way web search has to. Querying it BEFORE the AI
-// call gives Annie a list of companies Apollo has independently confirmed
-// are actively hiring in this sector/function/location combo right now, so
-// the AI's own search has real leads to investigate and write up rather than
-// relying purely on whatever general news it happens to surface. This is a
-// discovery input, not a replacement for the AI's narrative writeup (why it
-// matters, who to approach, etc still needs real reasoning over real
-// sources), so it deliberately asks for a short list, not a final answer.
-async function discoverHotCompanies(apolloKey, { sectors, functions, locations }) {
-  if (!apolloKey) return []
-  try {
-    const body = { per_page: 8, organization_num_jobs_range: { min: 1 } }
-    body.organization_job_posted_at_range = { min: isoDateDaysAgo(APOLLO_DISCOVERY_LOOKBACK_DAYS) }
-
-    const sectorKeywords = (sectors || []).flatMap(splitToKeywords)
-    if (sectorKeywords.length) body.q_organization_keyword_tags = sectorKeywords.slice(0, 20)
-
-    const titleKeywords = (functions || []).flatMap(splitToKeywords)
-    if (titleKeywords.length) body.q_organization_job_titles = titleKeywords.slice(0, 20)
-
-    if (locations?.length) body.organization_locations = locations.slice(0, 10)
-
-    const resp = await fetch('https://api.apollo.io/v1/mixed_companies/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
-      body: JSON.stringify(body),
-    })
-    if (!resp.ok) return []
-    const data = await resp.json()
-    const orgs = [...(data.organizations || []), ...(data.accounts || [])]
-    return orgs
-      .map(o => ({ name: o.name, industry: o.industry || null, employees: o.estimated_num_employees || null }))
-      .filter(o => o.name)
-      .slice(0, 8)
-  } catch (err) {
-    console.error('[scan-now] apollo discovery failed:', err.message)
-    return []
-  }
-}
-
 function buildScanPrompt(onboarding, recentCompanies, opts = {}) {
   const functions = onboarding?.functions?.length ? onboarding.functions.join(', ') : null
   const sectorsForPrompt = opts.sectorsOverride?.length ? opts.sectorsOverride : onboarding?.sectors
@@ -234,12 +93,12 @@ Functions this recruiter places candidates into: ${functions || 'All functions, 
 Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Communication tone: ${onboarding?.tone || 'professional'}.
 ${onboarding?.writing_style ? `The recruiter's real writing style, follow this closely when writing the candidateAngle text:\n${onboarding.writing_style}\n` : ''}
-Use web search to find genuine, timely BD-relevant signals in these sectors and markets from the last 5 days: funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity. A signal from any point in the last 5 days counts as timely, it does not need to have happened today or this specific hour.
+Use web search to find genuine, timely BD-relevant signals in these sectors and markets from the last ${SIGNAL_LOOKBACK_DAYS} days: funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity. A signal from any point in the last ${SIGNAL_LOOKBACK_DAYS} days counts as timely, it does not need to have happened today or this specific hour.
 Also actively look for layoffs, redundancies, or restructuring news. This cuts both ways and both are worth surfacing: a company doing layoffs sometimes still needs to quietly backfill specific roles (frame the signal around that need), and separately, a real layoff or redundancy event puts a pool of genuinely available, often strong candidates on the market at once, worth surfacing on its own even with no obvious open role at that company, in which case candidateAngle should describe that available talent pool specifically. Classify these as signalType "regulatory" and make the headline clearly say layoffs or redundancy so it's not confused with an ordinary hiring signal.
 Search thoroughly before concluding there is nothing. Run multiple distinct searches, try each sector and each function by name, try combinations of sector + "funding" / "hiring" / "appoints" / "expansion" / "acquires", try the specified markets by name, and try recent news generally in these sectors before narrowing. Do not stop after one or two searches, a real, live-news industry genuinely has more happening in it than that.
 ${functions ? `This recruiter places into the functions listed above. When you find a strong, genuine signal, connect it to whichever of those functions it most plausibly affects, even if the reasoning takes a small logical step (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring, a new market launch signals Government/Regulatory Affairs hiring, an M&A deal signals Corporate Development or Legal hiring). Make your best reasonable case for the closest function rather than discarding a real, well-sourced signal purely because the function match isn't perfect. Only leave a strong signal out entirely if you genuinely cannot connect it to any of the functions listed, even loosely.` : ''}
-${opts.broaden ? `\nIMPORTANT: an earlier, narrower search pass came up thin. For this pass, widen your net further: look back up to the last 4 weeks (not just the last 5 days), consider the parent industry category as well as the exact sub-sector, and count a signal even if the function connection takes a slightly longer logical chain, as long as it is still genuinely defensible. The bar is "real and sourced", not "perfect fit". Still never invent anything, and still cite a real source for every signal.\n` : ''}
-${opts.apolloLeads?.length ? `\nApollo's own hiring database has independently confirmed these companies are actively posting jobs matching this recruiter's functions, within the last ${APOLLO_DISCOVERY_LOOKBACK_DAYS} days, in these sectors and markets: ${opts.apolloLeads.map(l => `${l.name}${l.industry ? ` (${l.industry})` : ''}`).join(', ')}. Treat these as strong, confirmed leads, actively search for the real story behind each one (why they're hiring, any funding or expansion tied to it, the right person to approach, a real citable source) before deciding whether to include it. You are not limited to only these companies, keep searching broadly too, but do not ignore this list, Apollo already did real work to surface it.\n` : ''}
+${opts.broaden ? `\nIMPORTANT: an earlier, narrower search pass came up thin. For this pass, widen your net further: look back up to the last 4 weeks (not just the last ${SIGNAL_LOOKBACK_DAYS} days), consider the parent industry category as well as the exact sub-sector, and count a signal even if the function connection takes a slightly longer logical chain, as long as it is still genuinely defensible. The bar is "real and sourced", not "perfect fit". Still never invent anything, and still cite a real source for every signal.\n` : ''}
+${opts.apolloLeads?.length ? `\nApollo's own hiring database has independently confirmed these companies are actively posting jobs matching this recruiter's functions, within the last ${SIGNAL_LOOKBACK_DAYS} days, in these sectors and markets: ${opts.apolloLeads.map(l => `${l.name}${l.industry ? ` (${l.industry})` : ''}`).join(', ')}. Treat these as strong, confirmed leads, actively search for the real story behind each one (why they're hiring, any funding or expansion tied to it, the right person to approach, a real citable source) before deciding whether to include it. You are not limited to only these companies, keep searching broadly too, but do not ignore this list, Apollo already did real work to surface it.\n` : ''}
 ${opts.adzunaLeads?.length ? `\nAdzuna's live jobs board shows these real, recent job postings that may match this recruiter's sectors and functions: ${opts.adzunaLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. For any of these that reads as posted directly by the company itself (no recruitment agency name, no "on behalf of our client" language, no agency branding) rather than through a recruiter or agency, this is strong, verifiable evidence for signalType "job_posting_unclaimed", a company trying to fill this role itself right now with no recruiter attached, a genuine opportunity to pitch this recruiter's own candidates and service directly. Use the real posting URL as sourceUrl when you use one of these. Skip any that clearly look agency-posted.\n` : ''}
 
 This is a brand new account with no history yet, so there is nothing to avoid repeating: ${recentCompanies.join(', ') || 'None yet'}.
@@ -267,10 +126,9 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
   // their first impression of the whole product, so this one uses the
   // stronger model even though it costs more per call. It only runs once
   // per signup, not on a recurring schedule, so the extra cost here is
-  // small in absolute terms. The 4-hourly all-customer cron
-  // (intelligence-scan.js) stays on the cheaper model to control cost at
-  // scale.
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+  // small in absolute terms. The recurring cron (intelligence-scan.js)
+  // stays on the cheaper model to control cost at scale.
+  const resp = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
@@ -280,116 +138,10 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
       messages: [{ role: 'user', content: 'Scan for signals now.' }],
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxUses }],
     }),
-  })
+  }, 120000) // web search runs multiple search round-trips, needs far more than the 12s default
   if (!resp.ok) throw new Error(`Anthropic ${resp.status}`)
   const data = await resp.json()
   return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
-}
-
-function extractJson(text) {
-  const match = text.match(/\[[\s\S]*\]/)
-  try { return JSON.parse(match ? match[0] : '[]') } catch { return [] }
-}
-
-// Contact info is only ever trusted from Apollo. An AI-mentioned name is reasoning,
-// not a fact, it stays in who_to_approach, never in the verified contact fields.
-async function verifyContact(apolloKey, company, titleKeywords) {
-  if (!apolloKey || !company) return null
-  try {
-    const resp = await fetch('https://api.apollo.io/v1/mixed_people/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
-      body: JSON.stringify({ q_organization_name: company, person_titles: titleKeywords?.length ? titleKeywords : undefined, page: 1, per_page: 1 }),
-    })
-    if (!resp.ok) return null
-    const data = await resp.json()
-    const p = (data.people || [])[0]
-    if (!p) return null
-    const name = [p.first_name, p.last_name].filter(Boolean).join(' ').trim()
-    if (!name) return null
-    return { name, title: p.title || '', linkedin_url: p.linkedin_url || '' }
-  } catch {
-    return null
-  }
-}
-
-async function enrichCompany(apolloKey, company) {
-  if (!apolloKey || !company) return null
-  try {
-    const resp = await fetch('https://api.apollo.io/v1/mixed_companies/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
-      body: JSON.stringify({ q_organization_name: company, page: 1, per_page: 1 }),
-    })
-    if (!resp.ok) return null
-    const data = await resp.json()
-    const org = (data.organizations && data.organizations[0]) || (data.accounts && data.accounts[0])
-    if (!org) return null
-    return {
-      domain: org.primary_domain || org.domain || null,
-      industry: org.industry || null,
-      city: org.city || null,
-      state: org.state || null,
-      country: org.country || null,
-      logo_url: org.logo_url || null,
-    }
-  } catch {
-    return null
-  }
-}
-
-// How far back a Companies House filing can be and still count as
-// confirming a leadership_change signal. Wider than the AI's own 5-day
-// search window on purpose, real appointments and resignations are often
-// filed a few weeks after the actual event, filings lag reality.
-const LEADERSHIP_VERIFY_WINDOW_DAYS = 45
-
-// Companies House is the UK's own public register, a director appointment
-// or resignation here is a verified FACT, not a news article's best guess.
-// Only called for leadership_change signals, and only ever upgrades a
-// signal's credibility, never blocks one, if nothing matches this quietly
-// returns null and the AI's own writeup stands on its own.
-async function verifyLeadershipChange(chApiKey, companyName) {
-  if (!chApiKey || !companyName) return null
-  try {
-    const authHeader = 'Basic ' + Buffer.from(`${chApiKey}:`).toString('base64')
-
-    const searchResp = await fetch(`https://api.company-information.service.gov.uk/search/companies?q=${encodeURIComponent(companyName)}&items_per_page=5`, {
-      headers: { Authorization: authHeader },
-    })
-    if (!searchResp.ok) return null
-    const searchData = await searchResp.json()
-    const items = searchData.items || []
-    const best = items.find(c => c.company_status === 'active') || items[0]
-    if (!best?.company_number) return null
-
-    const officersResp = await fetch(`https://api.company-information.service.gov.uk/company/${best.company_number}/officers?items_per_page=50`, {
-      headers: { Authorization: authHeader },
-    })
-    if (!officersResp.ok) return null
-    const officersData = await officersResp.json()
-
-    const cutoff = Date.now() - LEADERSHIP_VERIFY_WINDOW_DAYS * 24 * 60 * 60 * 1000
-    let mostRecent = null
-    let mostRecentTime = 0
-    for (const o of officersData.items || []) {
-      const dateStr = o.resigned_on || o.appointed_on
-      if (!dateStr) continue
-      const t = new Date(dateStr).getTime()
-      if (isNaN(t) || t < cutoff) continue
-      if (t > mostRecentTime) { mostRecent = o; mostRecentTime = t }
-    }
-    if (!mostRecent) return null
-
-    const changeType = mostRecent.resigned_on ? 'resigned as' : 'appointed as'
-    const changeDate = mostRecent.resigned_on || mostRecent.appointed_on
-    return {
-      detail: `Companies House confirms: ${mostRecent.name} ${changeType} ${mostRecent.officer_role || 'officer'} on ${changeDate}.`,
-    }
-  } catch (err) {
-    console.error('[scan-now] Companies House verification failed:', err.message)
-    return null
-  }
 }
 
 export default async (req) => {
@@ -456,10 +208,9 @@ export default async (req) => {
 
     // Pass 1: research each sector group in parallel, each with its own
     // full search budget, instead of one call rationing searches across
-    // everything the customer picked. Each group first asks Apollo which
-    // companies it can independently confirm are hiring right now in that
-    // slice, then hands that list to the AI as a head start (1 Apollo credit
-    // per group, up to MAX_SECTOR_GROUPS credits total for this whole pass).
+    // everything the customer picked. Each group first asks Apollo and
+    // Adzuna what they can independently confirm is happening right now in
+    // that slice, then hands that list to the AI as a head start.
     const groups = chunkSectors(ob.sectors, MAX_SECTOR_GROUPS)
     const groupResults = await Promise.all(groups.map(async (sectorGroup) => {
       const groupSectors = sectorGroup?.length ? sectorGroup : ob.sectors
@@ -553,12 +304,12 @@ export default async (req) => {
         company_state: companyInfo?.state || null,
         company_country: companyInfo?.country || null,
         company_logo_url: companyInfo?.logo_url || null,
-        signal_type: SIGNAL_TYPES.includes(s.signalType) ? s.signalType : 'public_commentary',
+        signal_type: resolveSignalType(s.signalType, '[scan-now]'),
         headline: s.headline,
         why_it_matters: s.whyItMatters || '',
         source_url: s.sourceUrl || '',
         source_label: s.sourceLabel || '',
-        event_at: s.eventDate && !isNaN(Date.parse(s.eventDate)) ? new Date(s.eventDate).toISOString() : null,
+        event_at: toEventIso(s.eventDate),
         who_to_approach: s.whoToApproach || '',
         candidate_angle: s.candidateAngle || '',
         contact_name: contact?.name || null,

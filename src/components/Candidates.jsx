@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
+import ConfirmDialog from './ConfirmDialog'
 import { logSignalOutcome } from '../lib/signalOutcomes'
 import { companiesMatch } from '../lib/companyMatch'
 
@@ -44,6 +45,8 @@ export default function Candidates() {
   const [error, setError] = useState('')
   const [cvFile, setCvFile] = useState(null)
   const [existingCvPath, setExistingCvPath] = useState(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [listError, setListError] = useState('')
 
   useEffect(() => { load() }, [user])
 
@@ -132,9 +135,11 @@ export default function Candidates() {
       const previousStatus = editId ? candidates.find(c => c.id === editId)?.status : null
 
       if (editId) {
-        await supabase.from('candidates').update(row).eq('id', editId)
+        const { error: err } = await supabase.from('candidates').update(row).eq('id', editId)
+        if (err) throw err
       } else {
-        await supabase.from('candidates').insert({ ...row, user_id: user.id })
+        const { error: err } = await supabase.from('candidates').insert({ ...row, user_id: user.id })
+        if (err) throw err
       }
       maybeLogPlacement(row, previousStatus)
       await load()
@@ -147,8 +152,9 @@ export default function Candidates() {
   }
 
   async function del(id) {
-    if (!confirm('Delete this candidate?')) return
-    await supabase.from('candidates').delete().eq('id', id)
+    setListError('')
+    const { error: err } = await supabase.from('candidates').delete().eq('id', id)
+    if (err) return setListError('Could not delete candidate: ' + err.message)
     setCandidates(prev => prev.filter(c => c.id !== id))
   }
 
@@ -204,6 +210,8 @@ export default function Candidates() {
         ))}
       </div>
 
+      {listError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{listError}</div>}
+
       {loading ? (
         <div className="flex items-center justify-center py-20">
           <div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" />
@@ -251,7 +259,7 @@ export default function Candidates() {
                     {c.cv_path && <button onClick={() => viewCv(c.cv_path)} className="text-[10px] font-semibold px-2 py-1 rounded-md border border-green-300 text-green-700">📄 CV</button>}
                     <button onClick={() => openEdit(c)} className="text-[10px] font-semibold px-2 py-1 rounded-md border border-gray-200 text-gray-600">Edit</button>
                     <button onClick={() => askAnnie(c)} className="text-[10px] font-semibold px-2 py-1 rounded-md bg-navy text-gold">Ask Annie</button>
-                    <button onClick={() => del(c.id)} className="text-[10px] font-semibold px-2 py-1 rounded-md text-red-400 ml-auto">Delete</button>
+                    <button onClick={() => setConfirmDeleteId(c.id)} className="text-[10px] font-semibold px-2 py-1 rounded-md text-red-400 ml-auto">Delete</button>
                   </div>
                 </div>
               </div>
@@ -345,7 +353,7 @@ export default function Candidates() {
                 {existingCvPath && !cvFile ? (
                   <div className="flex items-center gap-2 bg-page-bg rounded-lg px-3 py-2">
                     <span className="text-xs text-gray-600 flex-1 truncate">CV on file</span>
-                    <button type="button" onClick={() => viewCv(existingCvPath)} className="text-xs font-semibold text-gold">View</button>
+                    <button type="button" onClick={() => viewCv(existingCvPath)} className="text-xs font-semibold text-gold-ink">View</button>
                     <button type="button" onClick={() => setExistingCvPath(null)} className="text-xs font-semibold text-red-400">Remove</button>
                   </div>
                 ) : (
@@ -364,6 +372,15 @@ export default function Candidates() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!confirmDeleteId}
+        onClose={() => setConfirmDeleteId(null)}
+        onConfirm={() => del(confirmDeleteId)}
+        title="Delete this candidate?"
+        message="This can't be undone."
+        confirmLabel="Delete"
+      />
     </div>
   )
 }

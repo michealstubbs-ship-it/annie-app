@@ -30,6 +30,24 @@ export default async (req) => {
   try {
     const store = getStore({ name: 'annie-scan-status', consistency: 'strong' })
     const record = await store.get(userData.user.id, { type: 'json' })
+
+    // scan-now-background.js has a 15-minute wall-clock budget. If it gets
+    // hard-killed mid-run (a hung external call, an unhandled error before
+    // the catch block), it can leave the status blob stuck on "running"
+    // forever, with no terminal status ever written — which otherwise means
+    // the dashboard's "Annie is researching" state never resolves. Treat a
+    // "running" status older than that budget as timed out rather than
+    // trusting it verbatim.
+    if (record?.status === 'running' && record?.startedAt) {
+      const ageMs = Date.now() - record.startedAt
+      if (ageMs > 14 * 60 * 1000) {
+        return new Response(JSON.stringify({ ...record, status: 'done', reason: 'timed_out' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     return new Response(JSON.stringify(record || { status: 'unknown' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },

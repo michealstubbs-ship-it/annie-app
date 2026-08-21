@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
+import ConfirmDialog from './ConfirmDialog'
 
 const STATUS_COLORS = {
   hot: 'bg-red-100 text-red-700',
@@ -22,6 +23,8 @@ export default function Contacts() {
   const [search, setSearch] = useState('')
   const [showModal, setShowModal] = useState(false)
   const [editContact, setEditContact] = useState(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [listError, setListError] = useState('')
 
   useEffect(() => { loadContacts() }, [user])
   useEffect(() => { if (location.state?.autoOpenAdd) openAdd() }, [location.state])
@@ -37,8 +40,9 @@ export default function Contacts() {
   function openEdit(c) { setEditContact(c); setShowModal(true) }
 
   async function del(id) {
-    if (!confirm('Delete this contact?')) return
-    await supabase.from('contacts').delete().eq('id', id)
+    setListError('')
+    const { error: err } = await supabase.from('contacts').delete().eq('id', id)
+    if (err) return setListError('Could not delete contact: ' + err.message)
     setContacts(prev => prev.filter(c => c.id !== id))
   }
 
@@ -63,6 +67,8 @@ export default function Contacts() {
       </div>
 
       <input className="input max-w-sm mb-6" placeholder="Search contacts..." value={search} onChange={e => setSearch(e.target.value)} />
+
+      {listError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{listError}</div>}
 
       {loading ? (
         <div className="flex items-center justify-center py-20">
@@ -104,8 +110,8 @@ export default function Contacts() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex gap-2">
-                      <button onClick={() => openEdit(c)} className="text-xs text-gold font-semibold hover:underline">Edit</button>
-                      <button onClick={() => del(c.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
+                      <button onClick={() => openEdit(c)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
+                      <button onClick={() => setConfirmDeleteId(c.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
                     </div>
                   </td>
                 </tr>
@@ -120,6 +126,15 @@ export default function Contacts() {
         editContact={editContact}
         onClose={() => setShowModal(false)}
         onSaved={() => loadContacts()}
+      />
+
+      <ConfirmDialog
+        open={!!confirmDeleteId}
+        onClose={() => setConfirmDeleteId(null)}
+        onConfirm={() => del(confirmDeleteId)}
+        title="Delete this contact?"
+        message="This can't be undone."
+        confirmLabel="Delete"
       />
     </div>
   )

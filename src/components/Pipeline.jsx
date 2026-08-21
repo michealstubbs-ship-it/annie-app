@@ -2,11 +2,35 @@ import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
+import ConfirmDialog from './ConfirmDialog'
 
 const STAGES = ['prospect', 'approached', 'meeting_booked', 'pitch_sent', 'negotiating', 'won', 'lost']
 const STAGE_LABELS = { prospect: 'Prospect', approached: 'Approached', meeting_booked: 'Meeting Booked', pitch_sent: 'Pitch Sent', negotiating: 'Negotiating', won: 'Won', lost: 'Lost' }
 const STAGE_COLORS = { prospect: 'bg-gray-100 text-gray-600', approached: 'bg-blue-100 text-blue-700', meeting_booked: 'bg-purple-100 text-purple-700', pitch_sent: 'bg-amber-100 text-amber-700', negotiating: 'bg-orange-100 text-orange-700', won: 'bg-green-100 text-green-700', lost: 'bg-red-100 text-red-700' }
 const EMPTY = { company: '', role: '', stage: 'prospect', value: '', probability: 25, notes: '', next_action: '', next_action_date: '' }
+
+// Maps an onboarding target market (LOCATIONS in Onboarding.jsx step 4) to
+// the currency prefix deals in that market are actually valued in. AED has
+// no single-character symbol in common use, so it renders as a "AED "
+// prefix rather than a symbol, following how it's actually written.
+// Asia Pacific/Global have no single sane default currency, so they fall
+// back to $ same as the US. Unknown/missing data falls back to £, the
+// product's original (UK-only) default.
+const MARKET_CURRENCY = {
+  'United Kingdom': '£',
+  'UAE / GCC': 'AED ',
+  'United States': '$',
+  'Europe': '€',
+  'Asia Pacific': '$',
+  'Global': '$',
+}
+const DEFAULT_CURRENCY = '£'
+
+function currencyLabel(symbol) {
+  // "AED " already reads correctly as a label ("Value (AED )" is off, so
+  // trim it for the form label but keep the trailing space for amounts).
+  return symbol.trim()
+}
 
 export default function Pipeline() {
   const { user } = useAuth()
@@ -16,6 +40,9 @@ export default function Pipeline() {
   const [form, setForm] = useState(EMPTY)
   const [editId, setEditId] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [currency, setCurrency] = useState(DEFAULT_CURRENCY)
 
   useEffect(() => { load() }, [user])
 
@@ -23,7 +50,22 @@ export default function Pipeline() {
     setLoading(true)
     const { data } = await supabase.from('deals').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
     setDeals(data || [])
+    await loadCurrency()
     setLoading(false)
+  }
+
+  // Target market lives in the `onboarding` table (locations column, an
+  // array), not on `profiles` — profiles only carries onboarding_completed
+  // and firm_name (see netlify/functions/save-onboarding.js). So we query
+  // `onboarding` directly rather than reading it off useAuth()'s profile.
+  async function loadCurrency() {
+    try {
+      const { data, error: err } = await supabase.from('onboarding').select('locations').eq('user_id', user.id).single()
+      if (err || !data?.locations?.length) { setCurrency(DEFAULT_CURRENCY); return }
+      setCurrency(MARKET_CURRENCY[data.locations[0]] || DEFAULT_CURRENCY)
+    } catch {
+      setCurrency(DEFAULT_CURRENCY)
+    }
   }
 
   function openAdd() { setForm(EMPTY); setEditId(null); setShowModal(true) }
@@ -31,17 +73,27 @@ export default function Pipeline() {
 
   async function save() {
     setSaving(true)
+    setError('')
     const payload = { ...form, value: parseFloat(form.value) || 0, probability: parseInt(form.probability) || 0 }
-    if (editId) await supabase.from('deals').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', editId)
-    else await supabase.from('deals').insert({ ...payload, user_id: user.id })
+    const { error: err } = editId
+      ? await supabase.from('deals').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', editId)
+      : await supabase.from('deals').insert({ ...payload, user_id: user.id })
+    if (err) {
+      setError(err.message || 'Could not save this deal. Please try again.')
+      setSaving(false)
+      return
+    }
     await load()
     setShowModal(false)
     setSaving(false)
   }
 
   async function del(id) {
-    if (!confirm('Delete this deal?')) return
-    await supabase.from('deals').delete().eq('id', id)
+    const { error: err } = await supabase.from('deals').delete().eq('id', id)
+    if (err) {
+      setError(err.message || 'Could not delete this deal. Please try again.')
+      return
+    }
     setDeals(prev => prev.filter(d => d.id !== id))
   }
 
@@ -61,11 +113,13 @@ export default function Pipeline() {
         <button onClick={openAdd} className="btn-primary">+ Add Deal</button>
       </div>
 
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{error}</div>}
+
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4 mb-6">
         {[
-          { label: 'Pipeline Value', value: `£${totalValue.toLocaleString()}`, color: 'text-navy' },
-          { label: 'Won', value: `£${wonValue.toLocaleString()}`, color: 'text-green-600' },
+          { label: 'Pipeline Value', value: `${currency}${totalValue.toLocaleString()}`, color: 'text-navy' },
+          { label: 'Won', value: `${currency}${wonValue.toLocaleString()}`, color: 'text-green-600' },
           { label: 'Active Deals', value: deals.filter(d => !['won','lost'].includes(d.stage)).length, color: 'text-navy' },
         ].map(s => (
           <div key={s.label} className="card p-4">
@@ -98,11 +152,11 @@ export default function Pipeline() {
                   {d.next_action && <p className="text-sm text-gray-600">Next: {d.next_action}</p>}
                 </div>
                 <div className="text-right flex-shrink-0">
-                  {d.value > 0 && <div className="font-bold text-navy">£{Number(d.value).toLocaleString()}</div>}
+                  {d.value > 0 && <div className="font-bold text-navy">{currency}{Number(d.value).toLocaleString()}</div>}
                   <div className="text-xs text-gray-400 mt-0.5">{d.probability}% probability</div>
                   <div className="flex gap-2 justify-end mt-2">
-                    <button onClick={() => openEdit(d)} className="text-xs text-gold font-semibold hover:underline">Edit</button>
-                    <button onClick={() => del(d.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
+                    <button onClick={() => openEdit(d)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
+                    <button onClick={() => setConfirmDeleteId(d.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
                   </div>
                 </div>
               </div>
@@ -120,7 +174,7 @@ export default function Pipeline() {
                 <div key={f}><label className="label">{l}</label><input className="input" type={t} value={form[f]} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} /></div>
               ))}
               <div className="grid grid-cols-2 gap-3">
-                <div><label className="label">Value (£)</label><input className="input" type="number" value={form.value} onChange={e => setForm(p => ({ ...p, value: e.target.value }))} /></div>
+                <div><label className="label">Value ({currencyLabel(currency)})</label><input className="input" type="number" value={form.value} onChange={e => setForm(p => ({ ...p, value: e.target.value }))} /></div>
                 <div><label className="label">Probability (%)</label><input className="input" type="number" min="0" max="100" value={form.probability} onChange={e => setForm(p => ({ ...p, probability: e.target.value }))} /></div>
               </div>
               <div><label className="label">Stage</label>
@@ -138,6 +192,15 @@ export default function Pipeline() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!confirmDeleteId}
+        onClose={() => setConfirmDeleteId(null)}
+        onConfirm={() => del(confirmDeleteId)}
+        title="Delete deal?"
+        message="This can't be undone."
+        confirmLabel="Delete"
+      />
     </div>
   )
 }

@@ -11,107 +11,23 @@
 // signal sitting a few extra hours before showing up doesn't cost them
 // anything the way an empty first scan would for a brand new signup (see
 // scan-now-background.js, which is deliberately the more expensive one).
+//
+// Shares pure logic (dedup keys, JSON extraction, Apollo/Adzuna/Companies
+// House calls) with scan-now-background.js via lib/scanShared.js — see that
+// file's header for why. This file keeps only what's genuinely different:
+// a single AI call per customer instead of parallel sector groups, a hard
+// per-run signal cap, and the cheaper model.
 import { createClient } from '@supabase/supabase-js'
-
-const SIGNAL_TYPES = ['funding', 'leadership_change', 'hiring_activity', 'expansion', 'team_building', 'public_commentary', 'job_posting_unclaimed', 'm_and_a', 'regulatory']
+import {
+  SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, extractJson, toEventIso, resolveSignalType,
+  discoverAdzunaJobs, verifyContact, enrichCompany, verifyLeadershipChange, fetchWithTimeout,
+} from './lib/scanShared.js'
 
 // Hard ceiling on how many NEW (never-seen-before) signals get enriched via
 // Apollo per customer per run. The prompt also asks for "up to" this many,
 // but this is the real, code-enforced cap, since Apollo credits are a
 // limited monthly budget and this cron runs across every customer.
 const MAX_SIGNALS_PER_RUN = 5
-
-function normalizeKey(company, headline) {
-  return `${(company || '').trim().toLowerCase()}::${(headline || '').trim().toLowerCase().slice(0, 80)}`
-}
-
-// Turns a compound label like "Strategy & Corporate Development" into loose
-// keyword fragments for Adzuna's fuzzy keyword search. Same helper as
-// scan-now-background.js; duplicated on purpose, this file stays
-// self-contained (see the file header).
-function splitToKeywords(label) {
-  return (label || '')
-    .split(/&|\//)
-    .map(s => s.trim())
-    .filter(Boolean)
-}
-
-// Adzuna only covers a specific set of countries, and takes an ISO country
-// code, not a free-text market name. A market Annie has customers in but
-// Adzuna doesn't cover (GCC, etc) correctly maps to nothing, so that
-// customer just gets no Adzuna leads rather than a wrong one.
-const ADZUNA_COUNTRY_MAP = {
-  uk: 'gb', 'united kingdom': 'gb', gb: 'gb', britain: 'gb',
-  us: 'us', usa: 'us', 'united states': 'us', 'united states of america': 'us',
-  canada: 'ca', ca: 'ca',
-  australia: 'au', au: 'au',
-  france: 'fr', fr: 'fr',
-  netherlands: 'nl', nl: 'nl',
-  poland: 'pl', pl: 'pl',
-  india: 'in', in: 'in',
-  brazil: 'br', br: 'br',
-  'south africa': 'za', za: 'za',
-}
-
-function mapLocationsToAdzunaCountries(locations) {
-  const set = new Set()
-  for (const loc of locations || []) {
-    const key = (loc || '').trim().toLowerCase()
-    if (ADZUNA_COUNTRY_MAP[key]) set.add(ADZUNA_COUNTRY_MAP[key])
-  }
-  return [...set]
-}
-
-// How far back an Adzuna posting counts as "recent" for this cron. Kept in
-// sync with the AI prompt's own "right now" framing.
-const ADZUNA_LOOKBACK_DAYS = 5
-
-// Adzuna is a real, live jobs board, actual job ads with a real posting
-// date, not a news article's best guess, exactly the evidence
-// signalType "job_posting_unclaimed" needs. Free API, no credit cost, so
-// this runs for every customer without a budget concern. A discovery input
-// handed to the AI, not a final answer, "unclaimed" (no agency attached)
-// still needs the AI to read the ad's own language before writing it up.
-async function discoverAdzunaJobs(appId, appKey, { sectors, functions, locations }) {
-  if (!appId || !appKey) return []
-  const countries = mapLocationsToAdzunaCountries(locations)
-  if (!countries.length) return []
-
-  const keywords = [...(sectors || []).flatMap(splitToKeywords), ...(functions || []).flatMap(splitToKeywords)].slice(0, 6)
-  if (!keywords.length) return []
-
-  const results = []
-  for (const country of countries.slice(0, 2)) {
-    try {
-      const params = new URLSearchParams({
-        app_id: appId,
-        app_key: appKey,
-        results_per_page: '10',
-        what: keywords.join(' '),
-        max_days_old: String(ADZUNA_LOOKBACK_DAYS),
-        sort_by: 'date',
-      })
-      const resp = await fetch(`https://api.adzuna.com/v1/api/jobs/${country}/search/1?${params.toString()}`)
-      if (!resp.ok) continue
-      const data = await resp.json()
-      for (const j of data.results || []) {
-        const title = (j.title || '').replace(/<[^>]+>/g, '').trim()
-        const company = j.company?.display_name || ''
-        if (!title || !company) continue
-        results.push({
-          title,
-          company,
-          location: j.location?.display_name || '',
-          url: j.redirect_url || '',
-          salary: j.salary_min ? `${Math.round(j.salary_min)}${j.salary_max && j.salary_max !== j.salary_min ? `-${Math.round(j.salary_max)}` : ''}` : null,
-        })
-      }
-    } catch (err) {
-      console.error('[intelligence-scan] adzuna discovery failed:', err.message)
-    }
-  }
-  return results.slice(0, 10)
-}
 
 function buildScanPrompt(onboarding, recentCompanies, opts = {}) {
   const functions = onboarding?.functions?.length ? onboarding.functions.join(', ') : null
@@ -151,7 +67,7 @@ Only return the JSON array, nothing else. If nothing genuinely good was found, r
 }
 
 async function callAnthropic(apiKey, systemPrompt) {
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+  const resp = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
@@ -161,114 +77,10 @@ async function callAnthropic(apiKey, systemPrompt) {
       messages: [{ role: 'user', content: 'Scan for signals now.' }],
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
     }),
-  })
+  }, 90000) // web search runs multiple search round-trips, needs far more than the 12s default
   if (!resp.ok) throw new Error(`Anthropic ${resp.status}`)
   const data = await resp.json()
   return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
-}
-
-function extractJson(text) {
-  const match = text.match(/\[[\s\S]*\]/)
-  try { return JSON.parse(match ? match[0] : '[]') } catch { return [] }
-}
-
-// Contact info is only ever trusted from Apollo. An AI-mentioned name is reasoning,
-// not a fact, it stays in who_to_approach, never in the verified contact fields.
-async function verifyContact(apolloKey, company, titleKeywords) {
-  if (!apolloKey || !company) return null
-  try {
-    const resp = await fetch('https://api.apollo.io/v1/mixed_people/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
-      body: JSON.stringify({ q_organization_name: company, person_titles: titleKeywords?.length ? titleKeywords : undefined, page: 1, per_page: 1 }),
-    })
-    if (!resp.ok) return null
-    const data = await resp.json()
-    const p = (data.people || [])[0]
-    if (!p) return null
-    const name = [p.first_name, p.last_name].filter(Boolean).join(' ').trim()
-    if (!name) return null
-    return { name, title: p.title || '', linkedin_url: p.linkedin_url || '' }
-  } catch {
-    return null
-  }
-}
-
-async function enrichCompany(apolloKey, company) {
-  if (!apolloKey || !company) return null
-  try {
-    const resp = await fetch('https://api.apollo.io/v1/mixed_companies/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
-      body: JSON.stringify({ q_organization_name: company, page: 1, per_page: 1 }),
-    })
-    if (!resp.ok) return null
-    const data = await resp.json()
-    const org = (data.organizations && data.organizations[0]) || (data.accounts && data.accounts[0])
-    if (!org) return null
-    return {
-      domain: org.primary_domain || org.domain || null,
-      industry: org.industry || null,
-      city: org.city || null,
-      state: org.state || null,
-      country: org.country || null,
-      logo_url: org.logo_url || null,
-    }
-  } catch {
-    return null
-  }
-}
-
-// How far back a Companies House filing can be and still count as
-// confirming a leadership_change signal. Filings often lag the real event
-// by a few weeks, so this is wider than the AI's own search window.
-const LEADERSHIP_VERIFY_WINDOW_DAYS = 45
-
-// Companies House is the UK's own public register, a director appointment
-// or resignation here is a verified FACT, not a news article's best guess.
-// Only called for leadership_change signals, and only ever upgrades a
-// signal's credibility, never blocks one.
-async function verifyLeadershipChange(chApiKey, companyName) {
-  if (!chApiKey || !companyName) return null
-  try {
-    const authHeader = 'Basic ' + Buffer.from(`${chApiKey}:`).toString('base64')
-
-    const searchResp = await fetch(`https://api.company-information.service.gov.uk/search/companies?q=${encodeURIComponent(companyName)}&items_per_page=5`, {
-      headers: { Authorization: authHeader },
-    })
-    if (!searchResp.ok) return null
-    const searchData = await searchResp.json()
-    const items = searchData.items || []
-    const best = items.find(c => c.company_status === 'active') || items[0]
-    if (!best?.company_number) return null
-
-    const officersResp = await fetch(`https://api.company-information.service.gov.uk/company/${best.company_number}/officers?items_per_page=50`, {
-      headers: { Authorization: authHeader },
-    })
-    if (!officersResp.ok) return null
-    const officersData = await officersResp.json()
-
-    const cutoff = Date.now() - LEADERSHIP_VERIFY_WINDOW_DAYS * 24 * 60 * 60 * 1000
-    let mostRecent = null
-    let mostRecentTime = 0
-    for (const o of officersData.items || []) {
-      const dateStr = o.resigned_on || o.appointed_on
-      if (!dateStr) continue
-      const t = new Date(dateStr).getTime()
-      if (isNaN(t) || t < cutoff) continue
-      if (t > mostRecentTime) { mostRecent = o; mostRecentTime = t }
-    }
-    if (!mostRecent) return null
-
-    const changeType = mostRecent.resigned_on ? 'resigned as' : 'appointed as'
-    const changeDate = mostRecent.resigned_on || mostRecent.appointed_on
-    return {
-      detail: `Companies House confirms: ${mostRecent.name} ${changeType} ${mostRecent.officer_role || 'officer'} on ${changeDate}.`,
-    }
-  } catch (err) {
-    console.error('[intelligence-scan] Companies House verification failed:', err.message)
-    return null
-  }
 }
 
 export default async (req, context) => {
@@ -348,12 +160,12 @@ export default async (req, context) => {
           company_state: companyInfo?.state || null,
           company_country: companyInfo?.country || null,
           company_logo_url: companyInfo?.logo_url || null,
-          signal_type: SIGNAL_TYPES.includes(s.signalType) ? s.signalType : 'public_commentary',
+          signal_type: resolveSignalType(s.signalType, '[intelligence-scan]'),
           headline: s.headline,
           why_it_matters: s.whyItMatters || '',
           source_url: s.sourceUrl || '',
           source_label: s.sourceLabel || '',
-          event_at: s.eventDate && !isNaN(Date.parse(s.eventDate)) ? new Date(s.eventDate).toISOString() : null,
+          event_at: toEventIso(s.eventDate),
           who_to_approach: s.whoToApproach || '',
           candidate_angle: s.candidateAngle || '',
           contact_name: contact?.name || null,

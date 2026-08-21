@@ -1,11 +1,11 @@
 import React, { Suspense, lazy } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import Sidebar from '../components/Sidebar'
+import { useAuth } from '../contexts/AuthContext'
 
 const TodaysActions = lazy(() => import('../components/TodaysActions'))
 const Contacts = lazy(() => import('../components/Contacts'))
 const Pipeline = lazy(() => import('../components/Pipeline'))
-const Signals = lazy(() => import('../components/Signals'))
 const Chat = lazy(() => import('../components/Chat'))
 const Settings = lazy(() => import('../components/Settings'))
 const LinkedInImport = lazy(() => import('./LinkedInImport'))
@@ -26,6 +26,21 @@ function PageLoader() {
   )
 }
 
+// Sidebar.jsx already hides the "Insights" link for non-admins, but that
+// was cosmetic only — the route itself rendered for any logged-in,
+// onboarded user with no admin check, and Insights.jsx calls RPCs
+// (get_support_insights, get_support_conversations) that return every
+// customer's support conversation content. This is the actual enforcement:
+// a non-admin who navigates to /dashboard/insights directly is redirected
+// away before the component (and its RPC calls) ever mounts. Server-side
+// enforcement on the RPCs themselves still needs confirming independently,
+// this is defense-in-depth, not a replacement for that.
+function AdminRoute({ children }) {
+  const { profile } = useAuth()
+  if (!profile?.is_admin) return <Navigate to="/dashboard" replace />
+  return children
+}
+
 export default function Dashboard() {
   return (
     <div className="flex min-h-screen bg-page-bg">
@@ -43,11 +58,10 @@ export default function Dashboard() {
             <Route path="jobs" element={<Jobs />} />
             <Route path="contacts" element={<Contacts />} />
             <Route path="pipeline" element={<Pipeline />} />
-            <Route path="signals" element={<Signals />} />
             <Route path="chat" element={<Chat />} />
             <Route path="settings" element={<Settings />} />
             <Route path="import-linkedin" element={<LinkedInImport embedded />} />
-            <Route path="insights" element={<Insights />} />
+            <Route path="insights" element={<AdminRoute><Insights /></AdminRoute>} />
           </Routes>
         </Suspense>
       </main>
