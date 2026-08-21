@@ -1,16 +1,46 @@
+import { createClient } from '@supabase/supabase-js'
+
 export default async (req, context) => {
   if (req.method !== 'POST') {
     return new Response('Method not allowed', { status: 405 })
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'API key not configured' }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+  const supabaseUrl = process.env.VITE_SUPABASE_URL
+  const anonKey = process.env.VITE_SUPABASE_ANON_KEY
+  if (!apiKey || !supabaseUrl || !anonKey) {
+    return new Response(JSON.stringify({ error: 'Not configured' }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+  }
+
+  // Every caller must be a real, logged-in Annie customer, verified from
+  // their OWN Supabase session token, never trusted from the request body.
+  // Without this check, this function is a free, unmetered door into the
+  // Anthropic API on Annie's own key for anyone who finds the URL — see
+  // scan-now-background.js for the same pattern.
+  const authHeader = req.headers.get('authorization') || ''
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim()
+  if (!token) {
+    return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401, headers: { 'Content-Type': 'application/json' } })
+  }
+  const authClient = createClient(supabaseUrl, anonKey, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
+  const { data: userData, error: userErr } = await authClient.auth.getUser(token)
+  if (userErr || !userData?.user) {
+    return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401, headers: { 'Content-Type': 'application/json' } })
   }
 
   try {
     const body = await req.json()
-    const { messages, systemOverride, maxTokens = 1024, model = 'claude-haiku-4-5-20251001', webSearch = false, maxSearchUses = 4 } = body
+    const { messages, systemOverride, webSearch = false } = body
+
+    // Server-enforced ceilings. A real, logged-in customer can still send a
+    // very large or search-heavy request, this just bounds what any single
+    // authenticated call can cost, regardless of what the client sends.
+    const maxTokens = Math.min(Number(body.maxTokens) || 1024, 4000)
+    const maxSearchUses = Math.min(Number(body.maxSearchUses) || 4, 6)
+    const model = body.model === 'claude-sonnet-4-5-20250929' ? body.model : 'claude-haiku-4-5-20251001'
 
     const payload = {
       model,

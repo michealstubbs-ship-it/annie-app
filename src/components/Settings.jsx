@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { callChat } from '../lib/callChat'
 
 export default function Settings() {
   const navigate = useNavigate()
@@ -52,17 +53,11 @@ Read the pasted messages below and produce a concise style profile (120-180 word
 
 Only return the style profile text, nothing else.`
 
-      const resp = await fetch('/.netlify/functions/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [{ role: 'user', content: pastedMessages.trim() }],
-          systemOverride: systemPrompt,
-          maxTokens: 500,
-        }),
+      const { text } = await callChat({
+        messages: [{ role: 'user', content: pastedMessages.trim() }],
+        systemOverride: systemPrompt,
+        maxTokens: 500,
       })
-      const { text, error } = await resp.json()
-      if (error) throw new Error(error)
       setWritingStyle((text || '').trim())
     } catch (err) {
       setStyleError('Could not analyse right now. Please try again.')

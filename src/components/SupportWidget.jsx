@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { callChat } from '../lib/callChat'
 
 const SUPPORT_SYSTEM_PROMPT = `You are Annie's product support. You speak like a sharp, warm colleague who built this product and knows it cold, not like a script. Never open with "As an AI" or "I am an assistant." Talk the way a smart founder's right hand would talk to a customer they respect. Use contractions, keep it short, get to the fix fast. If someone directly asks whether they're talking to a person or a bot, tell them the truth plainly and without fuss, then keep helping, don't make it a big moment. Never invent policies, pricing, or capabilities that don't exist. When you don't know something, say so and offer to flag it for the team rather than guessing.
 
@@ -44,16 +45,11 @@ export default function SupportWidget() {
 
   async function tagTopic(userText) {
     try {
-      const resp = await fetch('/.netlify/functions/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [{ role: 'user', content: userText }],
-          systemOverride: 'Read the customer support question and respond with only a short 2-4 word topic tag summarising what they are confused or asking about, for example "linkedin import filters" or "password reset". Respond with the tag only, nothing else, lowercase.',
-          maxTokens: 20,
-        }),
+      const { text } = await callChat({
+        messages: [{ role: 'user', content: userText }],
+        systemOverride: 'Read the customer support question and respond with only a short 2-4 word topic tag summarising what they are confused or asking about, for example "linkedin import filters" or "password reset". Respond with the tag only, nothing else, lowercase.',
+        maxTokens: 20,
       })
-      const { text } = await resp.json()
       return (text || '').trim().replace(/["'.]/g, '').slice(0, 60)
     } catch {
       return null
@@ -77,16 +73,11 @@ export default function SupportWidget() {
       .catch(() => {})
 
     try {
-      const resp = await fetch('/.netlify/functions/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [...messages, userMsg].map(m => ({ role: m.role, content: m.content })),
-          systemOverride: SUPPORT_SYSTEM_PROMPT,
-          maxTokens: 600,
-        }),
+      const { text } = await callChat({
+        messages: [...messages, userMsg].map(m => ({ role: m.role, content: m.content })),
+        systemOverride: SUPPORT_SYSTEM_PROMPT,
+        maxTokens: 600,
       })
-      const { text } = await resp.json()
       const assistantMsg = { role: 'assistant', content: text }
       setMessages(prev => [...prev, assistantMsg])
       await supabase.from('support_messages').insert({ user_id: user.id, role: 'assistant', content: text })

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { callChat } from '../lib/callChat'
 
 export default function Chat() {
   const { user, profile } = useAuth()
@@ -50,17 +51,11 @@ ${onboarding?.writing_style ? `\nWhen drafting any message, email, or LinkedIn c
 You help with: BD strategy, outreach messages, market intelligence, interview prep, candidate pitches, objection handling, and anything recruitment business development related.
 Be specific, actionable and concise. No waffle.`
 
-      const resp = await fetch('/.netlify/functions/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [...messages, userMsg].map(m => ({ role: m.role, content: m.content })),
-          systemOverride: systemPrompt,
-          maxTokens: 1500,
-        }),
+      const { text } = await callChat({
+        messages: [...messages, userMsg].map(m => ({ role: m.role, content: m.content })),
+        systemOverride: systemPrompt,
+        maxTokens: 1500,
       })
-
-      const { text } = await resp.json()
       const assistantMsg = { role: 'assistant', content: text }
       setMessages(prev => [...prev, assistantMsg])
       await supabase.from('chat_messages').insert({ user_id: user.id, role: 'assistant', content: text })

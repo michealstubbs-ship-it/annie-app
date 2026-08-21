@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool, buildSourcedPool, selectDailyItems } from '../lib/actionsEngine'
 import { buildEnrichmentPrompt } from '../lib/actionsCopy'
+import { callChat } from '../lib/callChat'
 
 const BADGE = {
   dormant: { label: 're-engage', className: 'bg-amber-100 text-amber-700' },
@@ -10,17 +11,6 @@ const BADGE = {
   relationship: { label: 'relationship', className: 'bg-purple-100 text-purple-700' },
   new_client: { label: 'new client', className: 'bg-blue-100 text-blue-700' },
   sourced: { label: 'sourced by annie', className: 'bg-navy text-gold' },
-}
-
-async function callChat({ messages, systemOverride, maxTokens, model }) {
-  const resp = await fetch('/.netlify/functions/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages, systemOverride, maxTokens, model }),
-  })
-  if (!resp.ok) throw new Error('Request failed')
-  const { text } = await resp.json()
-  return text
 }
 
 function extractJson(text) {
@@ -103,7 +93,7 @@ export default function TodaysActions() {
       let enrichedList = []
       if (crmItems.length) {
         const prompt = buildEnrichmentPrompt(crmItems, ob, profile)
-        const text = await callChat({
+        const { text } = await callChat({
           messages: [{ role: 'user', content: 'Write the copy for these items.' }],
           systemOverride: prompt,
           maxTokens: 2500,
