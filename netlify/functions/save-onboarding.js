@@ -11,6 +11,8 @@
 // policies (auth.uid() = user_id) apply exactly as they would to a direct
 // browser call. It cannot act as any other user.
 import { createClient } from '@supabase/supabase-js'
+import { reportServerError } from './lib/reportError.js'
+import { sendWelcomeEmail } from './lib/email.js'
 
 export default async (req) => {
   if (req.method !== 'POST') {
@@ -61,6 +63,7 @@ export default async (req) => {
     tone: tone || 'professional',
   }, { onConflict: 'user_id' })
   if (onboardErr) {
+    await reportServerError('save-onboarding', onboardErr, { userId, stage: 'onboarding-upsert' })
     return new Response(JSON.stringify({ error: onboardErr.message }), { status: 400 })
   }
 
@@ -69,8 +72,15 @@ export default async (req) => {
     .update({ onboarding_completed: true, firm_name: firmName || '' })
     .eq('id', userId)
   if (profileErr) {
+    await reportServerError('save-onboarding', profileErr, { userId, stage: 'profile-update' })
     return new Response(JSON.stringify({ error: profileErr.message }), { status: 400 })
   }
+
+  // Fire-and-forget: sendWelcomeEmail already never throws (see
+  // lib/email.js), and onboarding's own success response shouldn't wait on
+  // an email provider round-trip — the save already happened, that's what
+  // the client is waiting on.
+  sendWelcomeEmail(userData.user.email, firmName).catch(() => {})
 
   return new Response(JSON.stringify({ success: true }), {
     status: 200,

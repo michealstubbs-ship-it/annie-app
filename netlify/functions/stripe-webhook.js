@@ -14,6 +14,7 @@ import { createClient } from '@supabase/supabase-js'
 import Stripe from 'stripe'
 import { reportServerError } from './lib/reportError.js'
 import { resolveTierFromPriceId } from './lib/stripeShared.js'
+import { sendPaymentFailedEmail } from './lib/email.js'
 
 // Pulls the fields subscriptions actually needs off a Stripe Subscription
 // object, resolving tier/interval from the live price ID rather than any
@@ -106,12 +107,17 @@ export default async (req) => {
       }
 
       // Failed renewal charge. Stripe already retries and emails the
-      // customer on its own dunning schedule — this alert is for Annie's
-      // own ops visibility (mirrors alertIfConfigured in scanShared.js),
-      // not a substitute for Stripe's customer-facing dunning flow.
+      // customer on its own dunning schedule — the console.error here is
+      // for Annie's own ops visibility (mirrors alertIfConfigured in
+      // scanShared.js), and sendPaymentFailedEmail is a second,
+      // Annie-branded notice pointed at the billing page — not a
+      // replacement for Stripe's own dunning emails, a supplement to them.
       case 'invoice.payment_failed': {
         const invoice = event.data.object
         console.error('[stripe-webhook] payment failed for customer', invoice.customer, 'invoice', invoice.id)
+        if (invoice.customer_email) {
+          sendPaymentFailedEmail(invoice.customer_email).catch(() => {})
+        }
         break
       }
 
