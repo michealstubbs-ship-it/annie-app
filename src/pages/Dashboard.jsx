@@ -17,6 +17,7 @@ const Tasks = lazy(() => import('../components/Tasks'))
 const Companies = lazy(() => import('../components/Companies'))
 const Jobs = lazy(() => import('../components/Jobs'))
 const Overview = lazy(() => import('../components/Overview'))
+const Billing = lazy(() => import('../components/Billing'))
 
 function PageLoader() {
   return (
@@ -62,6 +63,7 @@ export default function Dashboard() {
             <Route path="pipeline" element={<Pipeline />} />
             <Route path="chat" element={<Chat />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="billing" element={<Billing />} />
             <Route path="import-linkedin" element={<LinkedInImport embedded />} />
             <Route path="insights" element={<AdminRoute><Insights /></AdminRoute>} />
           </Routes>

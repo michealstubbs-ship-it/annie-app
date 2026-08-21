@@ -25,3 +25,4 @@ export const IconSettings = p => <Svg {...p}><circle cx="12" cy="12" r="3" /><pa
 export const IconSparkles = p => <Svg {...p}><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z" /><path d="M19 15l.7 2.1L22 18l-2.3.9L19 21l-.7-2.1L16 18l2.3-.9z" /></Svg>
 export const IconPlus = p => <Svg {...p}><path d="M12 5v14M5 12h14" /></Svg>
 export const IconArrowRight = p => <Svg {...p}><path d="M5 12h14M13 6l6 6-6 6" /></Svg>
+export const IconCreditCard = p => <Svg {...p}><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M2 10h20" /><path d="M6 15h4" /></Svg>

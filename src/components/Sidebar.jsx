@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { IconHome, IconZap, IconRadio, IconUsers, IconBuilding, IconTrendingUp, IconCalendar, IconCheckSquare, IconMessageCircle, IconBriefcase, IconUser, IconSettings } from './icons'
+import { IconHome, IconZap, IconRadio, IconUsers, IconBuilding, IconTrendingUp, IconCalendar, IconCheckSquare, IconMessageCircle, IconBriefcase, IconUser, IconSettings, IconCreditCard } from './icons'
 
 // "Signals" was retired as a standalone page — the same BD-trigger data now
 // lives on the Intelligence Feed, so this nav no longer links anywhere dead.
@@ -23,6 +23,7 @@ const RECRUITMENT_NAV = [
 ]
 
 const SETTINGS_NAV = [
+  { to: '/dashboard/billing', label: 'Billing', Icon: IconCreditCard },
   { to: '/dashboard/settings', label: 'Settings', Icon: IconSettings },
 ]
 
@@ -144,12 +145,12 @@ export default function Sidebar() {
             </NavLink>
           ))}
 
-          {SETTINGS_NAV.map(item => (
+          {SETTINGS_NAV.map((item, i) => (
             <NavLink
               key={item.to}
               to={item.to}
               onClick={() => setOpen(false)}
-              className={({ isActive }) => `${linkClass({ isActive })} mt-4`}
+              className={({ isActive }) => `${linkClass({ isActive })} ${i === 0 ? 'mt-4' : ''}`}
             >
               <item.Icon className="w-[17px] h-[17px] flex-shrink-0" />
               {item.label}
