@@ -54,6 +54,42 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
   }
 }
 
+// Global daily cap on Apollo.io API credits, spent from ANY call site
+// (LinkedIn import enrichment, the onboarding scan, the recurring cron).
+// Enforced here rather than trusted to good behaviour at each call site,
+// because a bug, a retried request, or a stranger hitting an endpoint
+// directly could otherwise run up an unbounded bill on a paid third-party
+// API that has no ceiling of its own. See supabase-migrations/2026-08-21-
+// apollo-credit-cap.sql for the table and the atomic reservation function
+// this calls — the reservation happens in a single SQL statement, so
+// concurrent calls (parallel sector-group scans, two customers' scans
+// running at once) can't both read a stale total and both slip past the
+// cap the way a check-then-write done in JS could.
+const DEFAULT_APOLLO_DAILY_CAP = 500
+
+export async function reserveApolloCredits(supabase, credits = 1) {
+  // No supabase client passed (e.g. a unit test calling these functions
+  // directly) — fail open rather than block a context that was never meant
+  // to be capped in the first place.
+  if (!supabase) return true
+  const dailyCap = parseInt(process.env.APOLLO_DAILY_CREDIT_CAP, 10) || DEFAULT_APOLLO_DAILY_CAP
+  try {
+    const { data, error } = await supabase.rpc('apollo_reserve_credits', { p_credits: credits, p_daily_cap: dailyCap })
+    if (error) {
+      // A DB hiccup here shouldn't take the whole scan down with it — fail
+      // open, same philosophy as every other "degrade gracefully" branch in
+      // this file.
+      console.error('[scanShared] apollo_reserve_credits RPC failed, allowing the call through:', error.message)
+      return true
+    }
+    if (!data) console.error(`[scanShared] Apollo daily credit cap (${dailyCap}) reached for today, skipping call`)
+    return data
+  } catch (err) {
+    console.error('[scanShared] apollo_reserve_credits threw, allowing the call through:', err.message)
+    return true
+  }
+}
+
 // Company-name normalization now goes through the same helper the rest of
 // the app already uses to tell "Acme Ltd" and "Acme Limited" apart from two
 // genuinely different companies (src/lib/companyMatch.js) — previously the
@@ -221,8 +257,9 @@ export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, lo
 // Querying it BEFORE the AI call gives the AI a head start of real,
 // independently-confirmed leads rather than relying purely on whatever
 // general news search happens to surface.
-export async function discoverHotCompanies(apolloKey, { sectors, functions, locations }) {
+export async function discoverHotCompanies(apolloKey, { sectors, functions, locations }, supabase) {
   if (!apolloKey) return []
+  if (!(await reserveApolloCredits(supabase))) return []
   try {
     const body = { per_page: 8, organization_num_jobs_range: { min: 1 } }
     body.organization_job_posted_at_range = { min: isoDateDaysAgo(SIGNAL_LOOKBACK_DAYS) }
@@ -256,8 +293,9 @@ export async function discoverHotCompanies(apolloKey, { sectors, functions, loca
 // Contact info is only ever trusted from Apollo. An AI-mentioned name is
 // reasoning, not a fact, it stays in who_to_approach, never in the verified
 // contact fields.
-export async function verifyContact(apolloKey, company, titleKeywords) {
+export async function verifyContact(apolloKey, company, titleKeywords, supabase) {
   if (!apolloKey || !company) return null
+  if (!(await reserveApolloCredits(supabase))) return null
   try {
     const resp = await fetchWithTimeout('https://api.apollo.io/v1/mixed_people/search', {
       method: 'POST',
@@ -280,8 +318,47 @@ export async function verifyContact(apolloKey, company, titleKeywords) {
   }
 }
 
-export async function enrichCompany(apolloKey, company) {
-  if (!apolloKey || !company) return null
+// Normalizes a company name into the same lowercase cache key
+// apollo-enrich-companies.js already uses for the shared `company_enrichment`
+// table, so a company enriched once via LinkedIn import (by any customer)
+// or once via a scan run (for any customer) is never re-enriched by Apollo
+// again anywhere else in the product.
+function enrichmentCacheKey(name) {
+  return (name || '').trim().toLowerCase()
+}
+
+export async function enrichCompany(apolloKey, company, supabase) {
+  if (!company) return null
+  const cacheKey = enrichmentCacheKey(company)
+
+  // 1. Check the shared, cross-customer cache first — this is the same
+  // `company_enrichment` table apollo-enrich-companies.js populates from the
+  // LinkedIn import flow, extended here so the scan pipeline benefits from
+  // it too instead of maintaining its own separate, never-shared cache (or
+  // no cache at all, which is what this function did before: every scan run
+  // re-spent a credit on the same company every time it resurfaced).
+  if (supabase) {
+    try {
+      const { data: cached } = await supabase
+        .from('company_enrichment')
+        .select('domain, industry, city, state, country, logo_url, matched')
+        .eq('company_name_key', cacheKey)
+        .maybeSingle()
+      if (cached) {
+        return cached.matched
+          ? { domain: cached.domain, industry: cached.industry, city: cached.city, state: cached.state, country: cached.country, logo_url: cached.logo_url }
+          : null
+      }
+    } catch (err) {
+      console.error(`[scanShared] company_enrichment cache lookup failed for "${company}":`, err.message)
+    }
+  }
+
+  // 2. Cache miss — only now does this spend anything.
+  if (!apolloKey) return null
+  if (!(await reserveApolloCredits(supabase))) return null
+
+  let result = null
   try {
     const resp = await fetchWithTimeout('https://api.apollo.io/v1/mixed_companies/search', {
       method: 'POST',
@@ -290,23 +367,47 @@ export async function enrichCompany(apolloKey, company) {
     })
     if (!resp.ok) {
       console.error(`[scanShared] enrichCompany non-ok response for "${company}": ${resp.status}`)
-      return null
-    }
-    const data = await resp.json()
-    const org = (data.organizations && data.organizations[0]) || (data.accounts && data.accounts[0])
-    if (!org) return null
-    return {
-      domain: org.primary_domain || org.domain || null,
-      industry: org.industry || null,
-      city: org.city || null,
-      state: org.state || null,
-      country: org.country || null,
-      logo_url: org.logo_url || null,
+    } else {
+      const data = await resp.json()
+      const org = (data.organizations && data.organizations[0]) || (data.accounts && data.accounts[0])
+      if (org) {
+        result = {
+          domain: org.primary_domain || org.domain || null,
+          industry: org.industry || null,
+          city: org.city || null,
+          state: org.state || null,
+          country: org.country || null,
+          logo_url: org.logo_url || null,
+        }
+      }
     }
   } catch (err) {
     console.error(`[scanShared] enrichCompany failed for "${company}":`, err.message)
-    return null
   }
+
+  // 3. Write through to the cache regardless of hit or miss, matched or not
+  // — an unmatched company also never costs a repeat credit, same reasoning
+  // apollo-enrich-companies.js already uses.
+  if (supabase) {
+    try {
+      await supabase.from('company_enrichment').upsert({
+        company_name_key: cacheKey,
+        company_name: company,
+        domain: result?.domain || null,
+        industry: result?.industry || null,
+        city: result?.city || null,
+        state: result?.state || null,
+        country: result?.country || null,
+        logo_url: result?.logo_url || null,
+        matched: !!result,
+        enriched_at: new Date().toISOString(),
+      }, { onConflict: 'company_name_key' })
+    } catch (err) {
+      console.error(`[scanShared] company_enrichment cache write failed for "${company}":`, err.message)
+    }
+  }
+
+  return result
 }
 
 // Companies House is the UK's own public register, a director appointment

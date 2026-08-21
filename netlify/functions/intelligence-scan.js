@@ -146,8 +146,8 @@ export default async (req, context) => {
       const rows = []
       for (const s of newSignals) {
         const [contact, companyInfo, chVerification] = await Promise.all([
-          verifyContact(apolloKey, s.company, s.titleKeywords),
-          enrichCompany(apolloKey, s.company),
+          verifyContact(apolloKey, s.company, s.titleKeywords, supabase),
+          enrichCompany(apolloKey, s.company, supabase),
           s.signalType === 'leadership_change' ? verifyLeadershipChange(companiesHouseKey, s.company) : Promise.resolve(null),
         ])
 

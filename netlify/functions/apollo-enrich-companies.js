@@ -3,6 +3,7 @@
 // company name text. Results are cached in Supabase, shared across every customer,
 // so the same company is never enriched twice, only cache misses spend a credit.
 import { createClient } from '@supabase/supabase-js'
+import { reserveApolloCredits } from './lib/scanShared.js'
 
 function normalize(name) {
   return (name || '').trim().toLowerCase()
@@ -15,13 +16,40 @@ export default async (req, context) => {
 
   const apiKey = process.env.APOLLO_API_KEY
   const supabaseUrl = process.env.VITE_SUPABASE_URL
+  const anonKey = process.env.VITE_SUPABASE_ANON_KEY
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
-  if (!apiKey || !supabaseUrl || !serviceKey) {
+  if (!apiKey || !supabaseUrl || !anonKey || !serviceKey) {
     // Not configured yet, degrade gracefully, the import flow falls back to the
     // company-name keyword heuristic rather than breaking.
     return new Response(JSON.stringify({ results: [], configured: false }), {
       status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  // Same pattern as chat.js and scan-now-background.js: this endpoint spends
+  // real Apollo credit per call, so it must only ever run for a genuine,
+  // signed-in customer, verified from their own session token, never trust
+  // a caller with no token at all. Previously this had no auth check
+  // whatsoever, an unauthenticated request from anywhere on the internet
+  // could run up Apollo spend indefinitely.
+  const authHeader = req.headers.get('authorization') || ''
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim()
+  if (!token) {
+    return new Response(JSON.stringify({ results: [], error: 'Missing session token' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  const authClient = createClient(supabaseUrl, anonKey, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
+  const { data: userData, error: userErr } = await authClient.auth.getUser(token)
+  if (userErr || !userData?.user) {
+    return new Response(JSON.stringify({ results: [], error: 'Invalid session' }), {
+      status: 401,
       headers: { 'Content-Type': 'application/json' },
     })
   }
@@ -52,6 +80,17 @@ export default async (req, context) => {
     for (let i = 0; i < missing.length; i += CONCURRENCY) {
       const batch = missing.slice(i, i + CONCURRENCY)
       const batchResults = await Promise.all(batch.map(async (name) => {
+        // Same global daily credit cap the scan pipeline reserves against
+        // (see supabase-migrations/2026-08-21-apollo-credit-cap.sql) — this
+        // is a different call site spending the same shared Apollo budget,
+        // it has to respect the same ceiling.
+        // skipCache marks this specific result as "not actually checked",
+        // not "checked and no match" — step 3 below must never write this
+        // into the permanent cache, or a company skipped once for a cap hit
+        // would incorrectly read as permanently unmatched forever after.
+        if (!(await reserveApolloCredits(supabase))) {
+          return { company_name: name, company_name_key: normalize(name), matched: false, skipCache: true }
+        }
         try {
           const resp = await fetch('https://api.apollo.io/v1/mixed_companies/search', {
             method: 'POST',
@@ -80,11 +119,16 @@ export default async (req, context) => {
       freshResults.push(...batchResults)
     }
 
-    // 3. Cache every result, matched or not, so an unmatched company also never costs
-    // a repeat credit.
-    if (freshResults.length) {
+    // 3. Cache every result that was actually looked up, matched or not, so
+    // an unmatched company also never costs a repeat credit. Cap-skipped
+    // results are excluded — they were never actually checked against
+    // Apollo, so caching them would wrongly mark a company unmatched
+    // forever just because it happened to be requested on a day the cap
+    // was already hit.
+    const cacheable = freshResults.filter(r => !r.skipCache)
+    if (cacheable.length) {
       await supabase.from('company_enrichment').upsert(
-        freshResults.map(r => ({ ...r, enriched_at: new Date().toISOString() })),
+        cacheable.map(({ skipCache, ...r }) => ({ ...r, enriched_at: new Date().toISOString() })),
         { onConflict: 'company_name_key' }
       )
     }

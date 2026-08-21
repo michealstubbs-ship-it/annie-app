@@ -45,7 +45,9 @@ export default function Dashboard() {
   return (
     <div className="flex min-h-screen bg-page-bg">
       <Sidebar />
-      <main className="flex-1 overflow-auto">
+      {/* pt-14 clears the fixed mobile top bar Sidebar renders below md;
+          md:pt-0 restores today's desktop layout exactly. */}
+      <main className="flex-1 overflow-auto pt-14 md:pt-0">
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route index element={<Overview />} />

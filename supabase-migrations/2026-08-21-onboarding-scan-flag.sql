@@ -1,0 +1,12 @@
+-- Run this once in the Supabase SQL Editor, same as the other migration files.
+--
+-- Persistent guard against re-triggering a new customer's expensive,
+-- deliberately over-resourced first scan (scan-now-background.js) more than
+-- once. That function already checks for signals written in the last 10
+-- minutes before starting, which catches a fast duplicate (a double-click,
+-- a second tab) — but nothing stopped a valid session token, replayed
+-- hours or days later, from re-running the whole first-scan pipeline again
+-- for the same customer. This column closes that gap: scan-now-background.js
+-- checks it before doing any work and sets it immediately, before the
+-- expensive part starts.
+ALTER TABLE onboarding ADD COLUMN IF NOT EXISTS initial_scan_triggered_at timestamptz;

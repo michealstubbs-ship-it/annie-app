@@ -3,10 +3,10 @@
 // eventDate values that were never checked for plausibility. Pure logic,
 // no network calls, no Netlify runtime — this is the whole point of having
 // pulled it out of the two scan functions in the first place.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   extractJson, normalizeKey, toEventIso, resolveSignalType, splitToKeywords,
-  mapLocationsToAdzunaCountries, SIGNAL_TYPES,
+  mapLocationsToAdzunaCountries, SIGNAL_TYPES, reserveApolloCredits,
 } from './scanShared.js'
 
 describe('extractJson', () => {
@@ -137,5 +137,40 @@ describe('mapLocationsToAdzunaCountries', () => {
 
   it('dedupes when multiple onboarding locations map to the same country', () => {
     expect(mapLocationsToAdzunaCountries(['UK', 'United Kingdom', 'Britain'])).toEqual(['gb'])
+  })
+})
+
+describe('reserveApolloCredits (spend cap)', () => {
+  it('fails open when no supabase client is passed', async () => {
+    expect(await reserveApolloCredits(undefined)).toBe(true)
+    expect(await reserveApolloCredits(null)).toBe(true)
+  })
+
+  it('allows the call through when the RPC reports the cap is not reached', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: true, error: null })
+    const supabase = { rpc }
+    expect(await reserveApolloCredits(supabase)).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('apollo_reserve_credits', expect.objectContaining({ p_credits: 1 }))
+  })
+
+  it('blocks the call when the RPC reports the daily cap is reached', async () => {
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: false, error: null }) }
+    expect(await reserveApolloCredits(supabase)).toBe(false)
+  })
+
+  it('respects a custom credits argument', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: true, error: null })
+    await reserveApolloCredits({ rpc }, 3)
+    expect(rpc).toHaveBeenCalledWith('apollo_reserve_credits', expect.objectContaining({ p_credits: 3 }))
+  })
+
+  it('fails open (allows the call) if the RPC itself errors — a DB hiccup should not take the whole scan down', async () => {
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: null, error: { message: 'connection reset' } }) }
+    expect(await reserveApolloCredits(supabase)).toBe(true)
+  })
+
+  it('fails open (allows the call) if calling the RPC throws', async () => {
+    const supabase = { rpc: vi.fn().mockRejectedValue(new Error('network down')) }
+    expect(await reserveApolloCredits(supabase)).toBe(true)
   })
 })

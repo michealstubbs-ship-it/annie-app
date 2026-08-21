@@ -197,7 +197,7 @@ export default async (req) => {
 
     const { data: ob } = await supabase
       .from('onboarding')
-      .select('user_id, sectors, functions, locations, tone, firm_name, writing_style')
+      .select('user_id, sectors, functions, locations, tone, firm_name, writing_style, initial_scan_triggered_at')
       .eq('user_id', userId)
       .single()
     if (!ob) {
@@ -205,6 +205,20 @@ export default async (req) => {
       await setStatus(userId, { status: 'done', reason: 'no_onboarding', signalsFound: 0, startedAt, finishedAt: Date.now() })
       return
     }
+
+    // Persistent guard, on top of the 10-minute recentBatch check above: that
+    // check only catches a duplicate trigger arriving within a few minutes
+    // (a double-click, a second tab). This one closes the gap the audit
+    // flagged — a valid session token replayed hours or days later could
+    // otherwise re-run this expensive, over-resourced first scan indefinitely
+    // for the same customer. Set BEFORE the expensive work starts, not after,
+    // so a second concurrent request can't slip through the same window.
+    if (ob.initial_scan_triggered_at) {
+      console.log('[scan-now] initial scan already triggered for', userId, 'at', ob.initial_scan_triggered_at, '- skipping')
+      await setStatus(userId, { status: 'done', reason: 'already_scanned', signalsFound: 0, startedAt, finishedAt: Date.now() })
+      return
+    }
+    await supabase.from('onboarding').update({ initial_scan_triggered_at: new Date().toISOString() }).eq('user_id', userId)
 
     // Pass 1: research each sector group in parallel, each with its own
     // full search budget, instead of one call rationing searches across
@@ -215,7 +229,7 @@ export default async (req) => {
     const groupResults = await Promise.all(groups.map(async (sectorGroup) => {
       const groupSectors = sectorGroup?.length ? sectorGroup : ob.sectors
       const [apolloLeads, adzunaLeads] = await Promise.all([
-        discoverHotCompanies(apolloKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }),
+        discoverHotCompanies(apolloKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }, supabase),
         discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }),
       ])
       try {
@@ -290,8 +304,8 @@ export default async (req) => {
       if (existingKeys.has(normalizeKey(s.company, s.headline))) continue
 
       const [contact, companyInfo, chVerification] = await Promise.all([
-        verifyContact(apolloKey, s.company, s.titleKeywords),
-        enrichCompany(apolloKey, s.company),
+        verifyContact(apolloKey, s.company, s.titleKeywords, supabase),
+        enrichCompany(apolloKey, s.company, supabase),
         s.signalType === 'leadership_change' ? verifyLeadershipChange(companiesHouseKey, s.company) : Promise.resolve(null),
       ])
 
