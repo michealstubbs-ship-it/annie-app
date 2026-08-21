@@ -260,6 +260,60 @@ async function enrichCompany(apolloKey, company) {
   }
 }
 
+// How far back a Companies House filing can be and still count as
+// confirming a leadership_change signal. Wider than the AI's own 5-day
+// search window on purpose, real appointments and resignations are often
+// filed a few weeks after the actual event, filings lag reality.
+const LEADERSHIP_VERIFY_WINDOW_DAYS = 45
+
+// Companies House is the UK's own public register, a director appointment
+// or resignation here is a verified FACT, not a news article's best guess.
+// Only called for leadership_change signals, and only ever upgrades a
+// signal's credibility, never blocks one, if nothing matches this quietly
+// returns null and the AI's own writeup stands on its own.
+async function verifyLeadershipChange(chApiKey, companyName) {
+  if (!chApiKey || !companyName) return null
+  try {
+    const authHeader = 'Basic ' + Buffer.from(`${chApiKey}:`).toString('base64')
+
+    const searchResp = await fetch(`https://api.company-information.service.gov.uk/search/companies?q=${encodeURIComponent(companyName)}&items_per_page=5`, {
+      headers: { Authorization: authHeader },
+    })
+    if (!searchResp.ok) return null
+    const searchData = await searchResp.json()
+    const items = searchData.items || []
+    const best = items.find(c => c.company_status === 'active') || items[0]
+    if (!best?.company_number) return null
+
+    const officersResp = await fetch(`https://api.company-information.service.gov.uk/company/${best.company_number}/officers?items_per_page=50`, {
+      headers: { Authorization: authHeader },
+    })
+    if (!officersResp.ok) return null
+    const officersData = await officersResp.json()
+
+    const cutoff = Date.now() - LEADERSHIP_VERIFY_WINDOW_DAYS * 24 * 60 * 60 * 1000
+    let mostRecent = null
+    let mostRecentTime = 0
+    for (const o of officersData.items || []) {
+      const dateStr = o.resigned_on || o.appointed_on
+      if (!dateStr) continue
+      const t = new Date(dateStr).getTime()
+      if (isNaN(t) || t < cutoff) continue
+      if (t > mostRecentTime) { mostRecent = o; mostRecentTime = t }
+    }
+    if (!mostRecent) return null
+
+    const changeType = mostRecent.resigned_on ? 'resigned as' : 'appointed as'
+    const changeDate = mostRecent.resigned_on || mostRecent.appointed_on
+    return {
+      detail: `Companies House confirms: ${mostRecent.name} ${changeType} ${mostRecent.officer_role || 'officer'} on ${changeDate}.`,
+    }
+  } catch (err) {
+    console.error('[scan-now] Companies House verification failed:', err.message)
+    return null
+  }
+}
+
 export default async (req) => {
   if (req.method !== 'POST') return
 
@@ -272,6 +326,7 @@ export default async (req) => {
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   const anthropicKey = process.env.ANTHROPIC_API_KEY
   const apolloKey = process.env.APOLLO_API_KEY
+  const companiesHouseKey = process.env.COMPANIES_HOUSE_API_KEY
   if (!supabaseUrl || !anonKey || !serviceKey || !anthropicKey) { console.error('[scan-now] not configured'); return }
 
   // Identify the caller from their OWN token first. Never trust a user id
@@ -403,9 +458,10 @@ export default async (req) => {
       if (!s.company || !s.headline) continue
       if (existingKeys.has(normalizeKey(s.company, s.headline))) continue
 
-      const [contact, companyInfo] = await Promise.all([
+      const [contact, companyInfo, chVerification] = await Promise.all([
         verifyContact(apolloKey, s.company, s.titleKeywords),
         enrichCompany(apolloKey, s.company),
+        s.signalType === 'leadership_change' ? verifyLeadershipChange(companiesHouseKey, s.company) : Promise.resolve(null),
       ])
 
       rows.push({
@@ -430,6 +486,8 @@ export default async (req) => {
         contact_linkedin_url: contact?.linkedin_url || null,
         contact_verified: !!contact,
         title_keywords: Array.isArray(s.titleKeywords) ? s.titleKeywords.slice(0, 6) : [],
+        ch_verified: !!chVerification,
+        ch_verified_detail: chVerification?.detail || null,
         dedup_key: normalizeKey(s.company, s.headline),
         status: 'new',
       })

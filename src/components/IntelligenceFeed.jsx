@@ -199,8 +199,16 @@ export default function IntelligenceFeed() {
                   <span className={`text-[9px] font-bold uppercase tracking-wide px-2 py-1 rounded-md flex-shrink-0 ${meta.color}`}>{meta.icon} {meta.label}</span>
                 </div>
 
-                <h3 className="text-navy text-[13px] font-semibold leading-snug mb-1.5">{s.headline}</h3>
+                <h3 className="text-navy text-[13px] font-semibold leading-snug mb-1.5 flex items-center gap-1.5 flex-wrap">
+                  {s.headline}
+                  {s.ch_verified && (
+                    <span className="text-[9px] font-bold text-white bg-emerald-600 rounded-full px-2 py-0.5 uppercase tracking-wide" title={s.ch_verified_detail || ''}>
+                      ✓ Verified, Companies House
+                    </span>
+                  )}
+                </h3>
                 {s.why_it_matters && <p className="text-gray-600 text-xs italic border-l-2 border-gold pl-2.5 mb-2.5 leading-relaxed">{s.why_it_matters}</p>}
+                {s.ch_verified_detail && <p className="text-[10.5px] text-emerald-700 mb-2.5">🏛️ {s.ch_verified_detail}</p>}
                 {timeSensitive && <p className="text-[10px] text-amber-700 font-semibold mb-2.5">⚡ Time-sensitive, worth acting on before someone else does</p>}
 
                 {warmContacts.length > 0 && (

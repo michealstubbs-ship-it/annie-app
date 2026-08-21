@@ -129,9 +129,62 @@ async function enrichCompany(apolloKey, company) {
   }
 }
 
+// How far back a Companies House filing can be and still count as
+// confirming a leadership_change signal. Filings often lag the real event
+// by a few weeks, so this is wider than the AI's own search window.
+const LEADERSHIP_VERIFY_WINDOW_DAYS = 45
+
+// Companies House is the UK's own public register, a director appointment
+// or resignation here is a verified FACT, not a news article's best guess.
+// Only called for leadership_change signals, and only ever upgrades a
+// signal's credibility, never blocks one.
+async function verifyLeadershipChange(chApiKey, companyName) {
+  if (!chApiKey || !companyName) return null
+  try {
+    const authHeader = 'Basic ' + Buffer.from(`${chApiKey}:`).toString('base64')
+
+    const searchResp = await fetch(`https://api.company-information.service.gov.uk/search/companies?q=${encodeURIComponent(companyName)}&items_per_page=5`, {
+      headers: { Authorization: authHeader },
+    })
+    if (!searchResp.ok) return null
+    const searchData = await searchResp.json()
+    const items = searchData.items || []
+    const best = items.find(c => c.company_status === 'active') || items[0]
+    if (!best?.company_number) return null
+
+    const officersResp = await fetch(`https://api.company-information.service.gov.uk/company/${best.company_number}/officers?items_per_page=50`, {
+      headers: { Authorization: authHeader },
+    })
+    if (!officersResp.ok) return null
+    const officersData = await officersResp.json()
+
+    const cutoff = Date.now() - LEADERSHIP_VERIFY_WINDOW_DAYS * 24 * 60 * 60 * 1000
+    let mostRecent = null
+    let mostRecentTime = 0
+    for (const o of officersData.items || []) {
+      const dateStr = o.resigned_on || o.appointed_on
+      if (!dateStr) continue
+      const t = new Date(dateStr).getTime()
+      if (isNaN(t) || t < cutoff) continue
+      if (t > mostRecentTime) { mostRecent = o; mostRecentTime = t }
+    }
+    if (!mostRecent) return null
+
+    const changeType = mostRecent.resigned_on ? 'resigned as' : 'appointed as'
+    const changeDate = mostRecent.resigned_on || mostRecent.appointed_on
+    return {
+      detail: `Companies House confirms: ${mostRecent.name} ${changeType} ${mostRecent.officer_role || 'officer'} on ${changeDate}.`,
+    }
+  } catch (err) {
+    console.error('[intelligence-scan] Companies House verification failed:', err.message)
+    return null
+  }
+}
+
 export default async (req, context) => {
   const anthropicKey = process.env.ANTHROPIC_API_KEY
   const apolloKey = process.env.APOLLO_API_KEY
+  const companiesHouseKey = process.env.COMPANIES_HOUSE_API_KEY
   const supabaseUrl = process.env.VITE_SUPABASE_URL
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
@@ -186,9 +239,10 @@ export default async (req, context) => {
 
       const rows = []
       for (const s of newSignals) {
-        const [contact, companyInfo] = await Promise.all([
+        const [contact, companyInfo, chVerification] = await Promise.all([
           verifyContact(apolloKey, s.company, s.titleKeywords),
           enrichCompany(apolloKey, s.company),
+          s.signalType === 'leadership_change' ? verifyLeadershipChange(companiesHouseKey, s.company) : Promise.resolve(null),
         ])
 
         rows.push({
@@ -213,6 +267,8 @@ export default async (req, context) => {
           contact_linkedin_url: contact?.linkedin_url || null,
           contact_verified: !!contact,
           title_keywords: Array.isArray(s.titleKeywords) ? s.titleKeywords.slice(0, 6) : [],
+          ch_verified: !!chVerification,
+          ch_verified_detail: chVerification?.detail || null,
           dedup_key: normalizeKey(s.company, s.headline),
           status: 'new',
         })
