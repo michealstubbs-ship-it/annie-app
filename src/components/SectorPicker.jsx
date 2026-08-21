@@ -98,7 +98,7 @@ export default function SectorPicker({ taxonomy, value, onChange }) {
                     )
                   })}
                 </div>
-                <button type="button" onClick={() => selectAll(cat.label)} className="text-[11px] font-semibold text-gold hover:underline">
+                <button type="button" onClick={() => selectAll(cat.label)} className="text-[11px] font-semibold text-gold-ink hover:underline">
                   All {cat.label}
                 </button>
               </div>

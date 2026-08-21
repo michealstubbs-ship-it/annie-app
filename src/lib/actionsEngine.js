@@ -15,6 +15,16 @@ const DORMANT_THRESHOLD_DAYS = 60
 const SIGNAL_FRESH_DAYS = 14
 const MIN_SCORE = 20 // quality bar, items below this never make the list, no exceptions
 
+// The pre-launch audit's M2 finding: buildSourcedPool's score decayed
+// toward an additive floor (25, or 40 contact-verified) rather than toward
+// zero, so an unactioned signal never naturally dropped below MIN_SCORE no
+// matter how old it got — it just sat there competing for a slot forever.
+// Wider than SIGNAL_FRESH_DAYS on purpose: a sourced signal has no existing
+// relationship prompting faster follow-up the way a relationship-pool
+// signal does, so it's given longer before being auto-archived, but it does
+// still age out.
+const SOURCED_MAX_AGE_DAYS = 21
+
 function daysSince(dateStr) {
   if (!dateStr) return null
   const diff = Date.now() - new Date(dateStr).getTime()
@@ -183,6 +193,8 @@ export function buildSourcedPool(intelligenceSignals, contacts) {
     .filter(s => !knownCompanies.has(norm(s.company_name)))
     .map(s => {
       const daysFound = daysSince(s.found_at) ?? 999
+      if (daysFound > SOURCED_MAX_AGE_DAYS) return null // see SOURCED_MAX_AGE_DAYS — this is the actual fix for M2
+
       const score = Math.min(100, decayFall(daysFound, 3, 55) + 25 + (s.contact_verified ? 15 : 0))
       const isRacy = RACY_SIGNAL_TYPES.includes(s.signal_type)
       const urgency = isRacy && daysFound <= 3 ? 2 : daysFound <= 7 ? 1 : 0
@@ -195,6 +207,7 @@ export function buildSourcedPool(intelligenceSignals, contacts) {
         signals: {},
       }
     })
+    .filter(Boolean)
 }
 
 // No fixed slot count per category, no ceiling on the total. Everything that clears

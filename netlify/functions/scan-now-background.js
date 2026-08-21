@@ -27,10 +27,11 @@
 // suffix to run it this way.
 import { createClient } from '@supabase/supabase-js'
 import { getStore } from '@netlify/blobs'
+import { reportServerError } from './lib/reportError.js'
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, splitToKeywords, extractJson, toEventIso,
   resolveSignalType, discoverHotCompanies, discoverAdzunaJobs, verifyContact, enrichCompany,
-  verifyLeadershipChange, fetchWithTimeout,
+  verifyLeadershipChange, fetchWithRetry, verifySourceUrl,
 } from './lib/scanShared.js'
 
 // How many sector groups to research in parallel, and the minimum number of
@@ -128,7 +129,12 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
   // per signup, not on a recurring schedule, so the extra cost here is
   // small in absolute terms. The recurring cron (intelligence-scan.js)
   // stays on the cheaper model to control cost at scale.
-  const resp = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+  // retries=1: this call already runs with a long timeout for multi-round
+  // web search, and this file runs multiple sector-group calls per customer
+  // (see below) — a full 2-retry budget per group could burn a large chunk
+  // of the 15-minute wall-clock budget on one bad group. One retry still
+  // absorbs a transient 429/5xx.
+  const resp = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
@@ -138,7 +144,7 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
       messages: [{ role: 'user', content: 'Scan for signals now.' }],
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxUses }],
     }),
-  }, 120000) // web search runs multiple search round-trips, needs far more than the 12s default
+  }, 120000, 1) // web search runs multiple search round-trips, needs far more than the 12s default
   if (!resp.ok) throw new Error(`Anthropic ${resp.status}`)
   const data = await resp.json()
   return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
@@ -303,10 +309,11 @@ export default async (req) => {
       if (!s.company || !s.headline) continue
       if (existingKeys.has(normalizeKey(s.company, s.headline))) continue
 
-      const [contact, companyInfo, chVerification] = await Promise.all([
+      const [contact, companyInfo, chVerification, sourceVerified] = await Promise.all([
         verifyContact(apolloKey, s.company, s.titleKeywords, supabase),
         enrichCompany(apolloKey, s.company, supabase),
         s.signalType === 'leadership_change' ? verifyLeadershipChange(companiesHouseKey, s.company) : Promise.resolve(null),
+        verifySourceUrl(s.sourceUrl),
       ])
 
       rows.push({
@@ -323,6 +330,7 @@ export default async (req) => {
         why_it_matters: s.whyItMatters || '',
         source_url: s.sourceUrl || '',
         source_label: s.sourceLabel || '',
+        source_verified: sourceVerified,
         event_at: toEventIso(s.eventDate),
         who_to_approach: s.whoToApproach || '',
         candidate_angle: s.candidateAngle || '',
@@ -354,6 +362,7 @@ export default async (req) => {
     })
   } catch (err) {
     console.error('[scan-now] failed for', userId, err.message)
+    await reportServerError('scan-now-background', err, { userId })
     await setStatus(userId, { status: 'done', reason: 'error', errorMessage: err.message, signalsFound: 0, startedAt, finishedAt: Date.now() })
   }
 }

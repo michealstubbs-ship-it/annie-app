@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 
 export default function Login() {
@@ -131,12 +132,12 @@ export default function Login() {
             <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">
               {error}
               {showResend && (
-                <button type="button" onClick={handleResend} className="block mt-2 text-gold font-semibold hover:underline">
+                <button type="button" onClick={handleResend} className="block mt-2 text-gold-ink font-semibold hover:underline">
                   Resend confirmation email
                 </button>
               )}
               {showExistingAccount && (
-                <button type="button" onClick={() => { setMode('login'); setError(''); setSuccess(''); setShowExistingAccount(false) }} className="block mt-2 text-gold font-semibold hover:underline">
+                <button type="button" onClick={() => { setMode('login'); setError(''); setSuccess(''); setShowExistingAccount(false) }} className="block mt-2 text-gold-ink font-semibold hover:underline">
                   Sign in instead
                 </button>
               )}
@@ -172,7 +173,7 @@ export default function Login() {
                 <div className="flex items-center justify-between">
                   <label className="label">Password</label>
                   {mode === 'login' && (
-                    <button type="button" onClick={() => { setMode('forgot'); setError(''); setSuccess('') }} className="text-xs text-gold font-semibold hover:underline mb-1.5">
+                    <button type="button" onClick={() => { setMode('forgot'); setError(''); setSuccess('') }} className="text-xs text-gold-ink font-semibold hover:underline mb-1.5">
                       Forgot password?
                     </button>
                   )}
@@ -189,22 +190,22 @@ export default function Login() {
           <div className="mt-6 text-center text-sm text-gray-500">
             {mode === 'login' && (
               <>Don't have an account?{' '}
-                <button onClick={() => { setMode('signup'); setError(''); setSuccess('') }} className="text-gold font-semibold hover:underline">Sign up free</button>
+                <button onClick={() => { setMode('signup'); setError(''); setSuccess('') }} className="text-gold-ink font-semibold hover:underline">Sign up free</button>
               </>
             )}
             {mode === 'signup' && (
               <>Already have an account?{' '}
-                <button onClick={() => { setMode('login'); setError(''); setSuccess('') }} className="text-gold font-semibold hover:underline">Sign in</button>
+                <button onClick={() => { setMode('login'); setError(''); setSuccess('') }} className="text-gold-ink font-semibold hover:underline">Sign in</button>
               </>
             )}
             {mode === 'forgot' && (
-              <button onClick={() => { setMode('login'); setError(''); setSuccess('') }} className="text-gold font-semibold hover:underline">Back to sign in</button>
+              <button onClick={() => { setMode('login'); setError(''); setSuccess('') }} className="text-gold-ink font-semibold hover:underline">Back to sign in</button>
             )}
           </div>
         </div>
 
         <p className="text-center text-gray-500 text-xs mt-6">
-          By signing up you agree to our Terms of Service and Privacy Policy
+          By signing up you agree to our <Link to="/terms" className="text-gold-ink hover:underline">Terms of Service</Link> and <Link to="/privacy" className="text-gold-ink hover:underline">Privacy Policy</Link>
         </p>
       </div>
     </div>

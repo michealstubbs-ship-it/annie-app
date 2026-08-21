@@ -6,6 +6,8 @@ import Onboarding from './pages/Onboarding'
 import LinkedInImport from './pages/LinkedInImport'
 import Dashboard from './pages/Dashboard'
 import ResetPassword from './pages/ResetPassword'
+import Terms from './pages/Terms'
+import Privacy from './pages/Privacy'
 import SupportWidget from './components/SupportWidget'
 
 function ProtectedRoute({ children }) {
@@ -84,6 +86,8 @@ function AppRoutes() {
       <Routes>
         <Route path="/login" element={user ? <Navigate to={routeForUser(user, profile)} replace /> : <Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/terms" element={<Terms />} />
+        <Route path="/privacy" element={<Privacy />} />
         <Route path="/onboarding" element={<OnboardingRoute><Onboarding /></OnboardingRoute>} />
         <Route path="/import" element={<ImportRoute><LinkedInImport /></ImportRoute>} />
         <Route path="/dashboard/*" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />

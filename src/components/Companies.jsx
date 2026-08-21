@@ -207,7 +207,7 @@ export default function Companies() {
                 <div className="flex gap-2 flex-shrink-0">
                   <button onClick={() => openEditCo(selected)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
                   <button onClick={() => setShowDeleteConfirm(true)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
-                  <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 ml-2">✕</button>
+                  <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 ml-2" aria-label="Close company details">✕</button>
                 </div>
               </div>
               <div className="flex gap-1 mt-4">

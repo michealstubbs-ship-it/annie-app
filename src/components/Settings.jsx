@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { callChat } from '../lib/callChat'
+import ConfirmDialog from './ConfirmDialog'
 
 export default function Settings() {
   const navigate = useNavigate()
@@ -19,10 +20,35 @@ export default function Settings() {
   const [styleSaving, setStyleSaving] = useState(false)
   const [styleSaved, setStyleSaved] = useState(false)
 
+  // Low/polish item from the pre-launch audit: no self-serve export/delete
+  // flow existed, and the fallback "email support" process didn't exist
+  // either. This is that process — a real intake mechanism (account_requests,
+  // admin-visible) rather than a promise with nothing behind it, even before
+  // a transactional email provider is wired in to notify anyone automatically.
+  const [requestPending, setRequestPending] = useState({ export: false, delete: false })
+  const [requestError, setRequestError] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
   useEffect(() => {
     if (profile) setForm({ full_name: profile.full_name || '', firm_name: profile.firm_name || '', job_title: profile.job_title || '', phone: profile.phone || '' })
     loadOnboarding()
+    loadAccountRequests()
   }, [profile])
+
+  async function loadAccountRequests() {
+    if (!user) return
+    const { data } = await supabase.from('account_requests').select('request_type, status').eq('user_id', user.id).eq('status', 'pending')
+    const pending = { export: false, delete: false }
+    for (const r of data || []) pending[r.request_type] = true
+    setRequestPending(pending)
+  }
+
+  async function fileAccountRequest(requestType) {
+    setRequestError('')
+    const { error } = await supabase.from('account_requests').insert({ user_id: user.id, email: user.email, request_type: requestType })
+    if (error) { setRequestError('Could not submit your request. Please try again, or reach out through support chat.'); return }
+    setRequestPending(prev => ({ ...prev, [requestType]: true }))
+  }
 
   async function loadOnboarding() {
     const { data } = await supabase.from('onboarding').select('*').eq('user_id', user.id).single()
@@ -146,6 +172,50 @@ Only return the style profile text, nothing else.`
           <p className="text-xs text-gray-400 mt-4">To update your BD configuration, contact support or re-run the onboarding flow.</p>
         </div>
       )}
+
+      <div className="card p-6 mt-6">
+        <h2 className="text-lg font-bold text-navy mb-1">Data & privacy</h2>
+        <p className="text-sm text-gray-500 mb-4">Request a copy of your data, or request that your account and data be deleted. We handle these requests manually and will follow up at {user?.email || 'your account email'}.</p>
+
+        {requestError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{requestError}</div>}
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => fileAccountRequest('export')}
+            disabled={requestPending.export}
+            className="btn-ghost text-sm"
+          >
+            {requestPending.export ? 'Export requested' : 'Request data export'}
+          </button>
+
+          <button
+            onClick={() => setConfirmDelete(true)}
+            disabled={requestPending.delete}
+            className="text-sm font-semibold px-4 py-2 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60 disabled:hover:bg-transparent"
+          >
+            {requestPending.delete ? 'Deletion requested' : 'Request account deletion'}
+          </button>
+        </div>
+
+        {(requestPending.export || requestPending.delete) && (
+          <p className="text-xs text-gray-400 mt-3">
+            {requestPending.export && requestPending.delete
+              ? "We've received your export and deletion requests and will be in touch."
+              : requestPending.export
+                ? "We've received your export request and will be in touch."
+                : "We've received your deletion request and will be in touch before anything is removed."}
+          </p>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        onConfirm={() => fileAccountRequest('delete')}
+        title="Request account deletion?"
+        message="This files a request with our team to delete your account and associated data. It doesn't happen instantly — we'll follow up before anything is removed."
+        confirmLabel="Request deletion"
+      />
     </div>
   )
 }

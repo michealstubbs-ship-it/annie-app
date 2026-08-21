@@ -234,6 +234,17 @@ export default function IntelligenceFeed() {
                 <div className="flex items-center gap-3 mb-2.5 flex-wrap">
                   <span className="text-[10px] text-gray-400 bg-page-bg rounded-md px-2 py-1">🔍 Annie found this {timeAgo(s.found_at)}</span>
                   {s.event_at && <span className="text-[10px] text-gray-400 bg-page-bg rounded-md px-2 py-1">📅 Actually happened {timeAgo(s.event_at)}</span>}
+                  {/* Blocker #5 from the pre-launch audit: nothing distinguished an
+                      independently-confirmed signal from pure AI self-report. This
+                      reflects source_verified (the source link actually resolves,
+                      checked server-side before the row was written) so that
+                      distinction is visible per-signal instead of everything looking
+                      equally trustworthy. */}
+                  {s.source_verified ? (
+                    <span className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-2 py-1 font-medium">✓ Source verified</span>
+                  ) : (
+                    <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 font-medium">AI-reported, unverified</span>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between flex-wrap gap-2" onClick={e => e.stopPropagation()}>

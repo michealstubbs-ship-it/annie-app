@@ -54,6 +54,74 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
   }
 }
 
+// Exponential backoff for the external calls where a transient 429/5xx
+// shouldn't mean "customer sees nothing this run." A genuine 4xx other than
+// 429 (bad request, bad key) is NOT retried — retrying that just spends the
+// same budget three times over for the same guaranteed failure. Jittered
+// backoff so a real outage doesn't turn into every customer's retry landing
+// on the provider in the same instant.
+export async function fetchWithRetry(url, options = {}, timeoutMs = 12000, retries = 2) {
+  let lastErr = null
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const resp = await fetchWithTimeout(url, options, timeoutMs)
+      if (resp.ok || (resp.status < 500 && resp.status !== 429)) return resp
+      lastErr = new Error(`HTTP ${resp.status}`)
+    } catch (err) {
+      lastErr = err
+    }
+    if (attempt < retries) {
+      const backoffMs = 500 * Math.pow(2, attempt) + Math.random() * 250
+      await new Promise(r => setTimeout(r, backoffMs))
+    }
+  }
+  throw lastErr
+}
+
+// Blocker #5 from the pre-launch audit: 8 of 9 signal types had zero
+// independent verification, the AI's own word was the entire product. This
+// can't verify the CLAIM is true, but it verifies the one cheap, meaningful
+// thing that stands between "AI-reported" and "actively misleading": that
+// sourceUrl is a real, live page a recruiter could actually go read, not a
+// hallucinated or malformed link. HEAD first (cheap, no body download);
+// falls back to GET only if the server doesn't support HEAD at all (405/501
+// are "method not supported", not "page doesn't exist").
+export async function verifySourceUrl(url) {
+  if (!url) return false
+  try {
+    const head = await fetchWithTimeout(url, { method: 'HEAD', redirect: 'follow' }, 8000)
+    if (head.ok) return true
+    if (head.status !== 405 && head.status !== 501) return false
+    const get = await fetchWithTimeout(url, { method: 'GET', redirect: 'follow' }, 8000)
+    return get.ok
+  } catch (err) {
+    console.error(`[scanShared] source URL verification failed for "${url}":`, err.message)
+    return false
+  }
+}
+
+// Best-effort ops alert for the one failure mode retries can't fix: every
+// customer in a run coming back with zero new signals, which almost always
+// means a systemic problem (a suspended key, an outage) rather than every
+// market genuinely going quiet at once — and previously nothing paged
+// anyone, it just looked like a quiet news day in the logs. No-ops silently
+// if SLACK_WEBHOOK_URL isn't set, since there's no requirement to have one
+// configured — this degrades to "still just a log line" rather than a hard
+// failure.
+export async function alertIfConfigured(message) {
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL
+  if (!webhookUrl) return
+  try {
+    await fetchWithTimeout(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: message }),
+    }, 8000)
+  } catch (err) {
+    console.error('[scanShared] alert webhook failed:', err.message)
+  }
+}
+
 // Global daily cap on Apollo.io API credits, spent from ANY call site
 // (LinkedIn import enrichment, the onboarding scan, the recurring cron).
 // Enforced here rather than trusted to good behaviour at each call site,
@@ -231,7 +299,7 @@ export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, lo
         max_days_old: String(SIGNAL_LOOKBACK_DAYS),
         sort_by: 'date',
       })
-      const resp = await fetchWithTimeout(`https://api.adzuna.com/v1/api/jobs/${country}/search/1?${params.toString()}`)
+      const resp = await fetchWithRetry(`https://api.adzuna.com/v1/api/jobs/${country}/search/1?${params.toString()}`)
       if (!resp.ok) continue
       const data = await resp.json()
       for (const j of data.results || []) {
@@ -272,7 +340,7 @@ export async function discoverHotCompanies(apolloKey, { sectors, functions, loca
 
     if (locations?.length) body.organization_locations = locations.slice(0, 10)
 
-    const resp = await fetchWithTimeout('https://api.apollo.io/v1/mixed_companies/search', {
+    const resp = await fetchWithRetry('https://api.apollo.io/v1/mixed_companies/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
       body: JSON.stringify(body),
@@ -297,7 +365,7 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase)
   if (!apolloKey || !company) return null
   if (!(await reserveApolloCredits(supabase))) return null
   try {
-    const resp = await fetchWithTimeout('https://api.apollo.io/v1/mixed_people/search', {
+    const resp = await fetchWithRetry('https://api.apollo.io/v1/mixed_people/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
       body: JSON.stringify({ q_organization_name: company, person_titles: titleKeywords?.length ? titleKeywords : undefined, page: 1, per_page: 1 }),
@@ -360,7 +428,7 @@ export async function enrichCompany(apolloKey, company, supabase) {
 
   let result = null
   try {
-    const resp = await fetchWithTimeout('https://api.apollo.io/v1/mixed_companies/search', {
+    const resp = await fetchWithRetry('https://api.apollo.io/v1/mixed_companies/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
       body: JSON.stringify({ q_organization_name: company, page: 1, per_page: 1 }),
@@ -420,7 +488,7 @@ export async function verifyLeadershipChange(chApiKey, companyName) {
   try {
     const authHeader = 'Basic ' + Buffer.from(`${chApiKey}:`).toString('base64')
 
-    const searchResp = await fetchWithTimeout(`https://api.company-information.service.gov.uk/search/companies?q=${encodeURIComponent(companyName)}&items_per_page=5`, {
+    const searchResp = await fetchWithRetry(`https://api.company-information.service.gov.uk/search/companies?q=${encodeURIComponent(companyName)}&items_per_page=5`, {
       headers: { Authorization: authHeader },
     })
     if (!searchResp.ok) return null
@@ -429,7 +497,7 @@ export async function verifyLeadershipChange(chApiKey, companyName) {
     const best = items.find(c => c.company_status === 'active') || items[0]
     if (!best?.company_number) return null
 
-    const officersResp = await fetchWithTimeout(`https://api.company-information.service.gov.uk/company/${best.company_number}/officers?items_per_page=50`, {
+    const officersResp = await fetchWithRetry(`https://api.company-information.service.gov.uk/company/${best.company_number}/officers?items_per_page=50`, {
       headers: { Authorization: authHeader },
     })
     if (!officersResp.ok) return null

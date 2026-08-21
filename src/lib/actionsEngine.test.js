@@ -60,17 +60,21 @@ describe('buildRelationshipPool', () => {
   })
 })
 
-describe('buildSourcedPool — the M2 "never ages out" behaviour', () => {
-  it('an unactioned signal keeps scoring above MIN_SCORE (20) no matter how old it gets', () => {
-    // This pins the audit's exact finding: score decays toward an additive
-    // floor (25, or 40 if contact-verified) rather than toward zero, so it
-    // never naturally drops below the 20-point inclusion bar. A future fix
-    // that adds an explicit age cutoff (matching buildRelationshipPool's
-    // SIGNAL_FRESH_DAYS) should make this test start failing — that's the
-    // point, it documents the behaviour so the fix is deliberate, not
-        // accidental.
+describe('buildSourcedPool — the M2 "never ages out" fix', () => {
+  it('excludes a signal past SOURCED_MAX_AGE_DAYS entirely, rather than letting it score forever', () => {
+    // This used to pin the audit's exact finding: score decayed toward an
+    // additive floor (25, or 40 if contact-verified) rather than toward
+    // zero, so a very old signal never naturally dropped below the 20-point
+    // inclusion bar — it just sat there competing for a slot forever. Now
+    // it's excluded outright once it's older than the cutoff.
     const veryOldSignal = [{ id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(400), contact_verified: false, signal_type: 'funding' }]
-    const pool = buildSourcedPool(veryOldSignal, [])
+    expect(buildSourcedPool(veryOldSignal, [])).toEqual([])
+  })
+
+  it('still includes a genuinely fresh signal', () => {
+    const freshSignal = [{ id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(2), contact_verified: false, signal_type: 'funding' }]
+    const pool = buildSourcedPool(freshSignal, [])
+    expect(pool).toHaveLength(1)
     expect(pool[0].score).toBeGreaterThanOrEqual(20)
   })
 

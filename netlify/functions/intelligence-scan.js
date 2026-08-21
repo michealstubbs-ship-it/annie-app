@@ -18,9 +18,10 @@
 // a single AI call per customer instead of parallel sector groups, a hard
 // per-run signal cap, and the cheaper model.
 import { createClient } from '@supabase/supabase-js'
+import { reportServerError } from './lib/reportError.js'
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, extractJson, toEventIso, resolveSignalType,
-  discoverAdzunaJobs, verifyContact, enrichCompany, verifyLeadershipChange, fetchWithTimeout,
+  discoverAdzunaJobs, verifyContact, enrichCompany, verifyLeadershipChange, fetchWithRetry, verifySourceUrl, alertIfConfigured,
 } from './lib/scanShared.js'
 
 // Hard ceiling on how many NEW (never-seen-before) signals get enriched via
@@ -67,7 +68,12 @@ Only return the JSON array, nothing else. If nothing genuinely good was found, r
 }
 
 async function callAnthropic(apiKey, systemPrompt) {
-  const resp = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+  // retries=1, not the fetchWithRetry default of 2: this call already has a
+  // 90s timeout for multi-round web search, so a full 2-retry budget could
+  // cost up to ~4.5 minutes on one customer in a sequential per-customer
+  // loop. One retry still absorbs a transient 429/5xx without risking the
+  // whole run's time budget on a single stuck customer.
+  const resp = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
@@ -77,13 +83,34 @@ async function callAnthropic(apiKey, systemPrompt) {
       messages: [{ role: 'user', content: 'Scan for signals now.' }],
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
     }),
-  }, 90000) // web search runs multiple search round-trips, needs far more than the 12s default
+  }, 90000, 1) // web search runs multiple search round-trips, needs far more than the 12s default
   if (!resp.ok) throw new Error(`Anthropic ${resp.status}`)
   const data = await resp.json()
   return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
 }
 
+// A pre-launch audit flagged this as a public, unauthenticated URL that
+// anyone who found it could call repeatedly to burn real Anthropic/Apollo/
+// Companies House/Adzuna spend across every customer. Checked directly
+// against the live deploy (21 Aug 2026): Netlify does not let scheduled
+// functions (the `config = { schedule }` export below) be invoked by direct
+// URL at all — both `curl .../intelligence-scan` and a POST to the same URL
+// return 403 from Netlify's own edge, before this code ever runs. See
+// https://docs.netlify.com/build/functions/scheduled-functions/ ("you can't
+// invoke scheduled functions directly with a URL"). So this was never
+// actually reachable the way the audit assumed — but that protection comes
+// entirely from keeping this function schedule-only. If this file ever
+// grows a `path` export (making it directly callable, the way chat.js and
+// apollo-enrich-companies.js are), it MUST get its own auth check at that
+// point — don't assume the schedule-only protection still applies.
+//
+// The method check below is just hygiene (Netlify's scheduler always POSTs)
+// — it isn't what's actually keeping this safe.
 export default async (req, context) => {
+  if (req.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 })
+  }
+
   const anthropicKey = process.env.ANTHROPIC_API_KEY
   const apolloKey = process.env.APOLLO_API_KEY
   const companiesHouseKey = process.env.COMPANIES_HOUSE_API_KEY
@@ -100,6 +127,8 @@ export default async (req, context) => {
 
   const { data: onboardingRows } = await supabase.from('onboarding').select('user_id, sectors, functions, locations, tone, firm_name, writing_style')
   if (!onboardingRows?.length) return new Response('No customers to scan', { status: 200 })
+
+  let totalNewSignals = 0
 
   for (const ob of onboardingRows) {
     try {
@@ -145,10 +174,11 @@ export default async (req, context) => {
 
       const rows = []
       for (const s of newSignals) {
-        const [contact, companyInfo, chVerification] = await Promise.all([
+        const [contact, companyInfo, chVerification, sourceVerified] = await Promise.all([
           verifyContact(apolloKey, s.company, s.titleKeywords, supabase),
           enrichCompany(apolloKey, s.company, supabase),
           s.signalType === 'leadership_change' ? verifyLeadershipChange(companiesHouseKey, s.company) : Promise.resolve(null),
+          verifySourceUrl(s.sourceUrl),
         ])
 
         rows.push({
@@ -165,6 +195,7 @@ export default async (req, context) => {
           why_it_matters: s.whyItMatters || '',
           source_url: s.sourceUrl || '',
           source_label: s.sourceLabel || '',
+          source_verified: sourceVerified,
           event_at: toEventIso(s.eventDate),
           who_to_approach: s.whoToApproach || '',
           candidate_angle: s.candidateAngle || '',
@@ -182,11 +213,22 @@ export default async (req, context) => {
 
       if (rows.length) {
         await supabase.from('intelligence_signals').upsert(rows, { onConflict: 'user_id,dedup_key', ignoreDuplicates: true })
+        totalNewSignals += rows.length
       }
     } catch (err) {
       // One customer failing shouldn't stop the rest of the scan
       console.error('intelligence-scan failed for user', ob.user_id, err.message)
+      await reportServerError('intelligence-scan', err, { userId: ob.user_id })
     }
+  }
+
+  // Every market going quiet for every customer in the same 12-hour window
+  // is possible but very unlikely — far more likely is a suspended key or a
+  // provider outage. Retries (see fetchWithRetry) already absorb a
+  // transient blip; this is the safety net for a sustained one, so it
+  // doesn't take a customer noticing "nothing new in weeks" to find out.
+  if (totalNewSignals === 0 && onboardingRows.length > 0) {
+    await alertIfConfigured(`⚠️ intelligence-scan: 0 new signals across all ${onboardingRows.length} customers this run. Likely a suspended API key or provider outage, not a genuinely quiet market — check the function logs.`)
   }
 
   return new Response('Scan complete', { status: 200 })

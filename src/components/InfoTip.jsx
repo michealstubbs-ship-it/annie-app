@@ -1,9 +1,28 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 
 export default function InfoTip({ text }) {
   const [show, setShow] = useState(false)
+  const ref = useRef(null)
+
+  // Low/polish item from the pre-launch audit: this popover had no way to
+  // dismiss it except moving the mouse away, which doesn't exist on a touch
+  // device — a tap opened it and it just stayed open. Escape and a click
+  // outside now both close it, same as any other dismissible popover in
+  // the app.
+  useEffect(() => {
+    if (!show) return
+    function onKeyDown(e) { if (e.key === 'Escape') setShow(false) }
+    function onClickOutside(e) { if (ref.current && !ref.current.contains(e.target)) setShow(false) }
+    document.addEventListener('keydown', onKeyDown)
+    document.addEventListener('mousedown', onClickOutside)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('mousedown', onClickOutside)
+    }
+  }, [show])
+
   return (
-    <span className="relative inline-flex items-center ml-1.5">
+    <span ref={ref} className="relative inline-flex items-center ml-1.5">
       <button
         type="button"
         onMouseEnter={() => setShow(true)}

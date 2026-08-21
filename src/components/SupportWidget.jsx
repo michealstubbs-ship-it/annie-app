@@ -100,7 +100,7 @@ export default function SupportWidget() {
               <div className="text-white text-sm font-semibold leading-tight">Annie support</div>
               <div className="text-gray-400 text-xs">Usually replies instantly</div>
             </div>
-            <button onClick={() => setOpen(false)} className="ml-auto text-gray-400 hover:text-white text-lg leading-none">×</button>
+            <button onClick={() => setOpen(false)} className="ml-auto text-gray-400 hover:text-white text-lg leading-none" aria-label="Close support chat">×</button>
           </div>
 
           <div className="flex-1 overflow-y-auto px-4 py-3 bg-page-bg space-y-2.5">
