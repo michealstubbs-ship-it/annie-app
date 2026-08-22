@@ -9,6 +9,7 @@
 // that is on a given day. Urgency is sorted first, value second, because a moderately
 // good but fast-closing opportunity should always outrank a high-value one that isn't
 // going anywhere today.
+import { RACY_SIGNAL_TYPES } from './signalTypes.js'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const DORMANT_THRESHOLD_DAYS = 60
@@ -183,8 +184,6 @@ export function buildNewClientPool(contacts, deals) {
 // Brand-new companies, not yet in the CRM, found by the scheduled background scan.
 // This used to be its own live AI + web search call inside Today's Actions, it now
 // just reads what the scan already found, no duplicate research, no duplicate cost.
-const RACY_SIGNAL_TYPES = ['job_posting_unclaimed', 'team_building', 'hiring_activity', 'expansion']
-
 export function buildSourcedPool(intelligenceSignals, contacts) {
   const knownCompanies = new Set(contacts.map(c => norm(c.company)).filter(Boolean))
 
@@ -195,9 +194,15 @@ export function buildSourcedPool(intelligenceSignals, contacts) {
       const daysFound = daysSince(s.found_at) ?? 999
       if (daysFound > SOURCED_MAX_AGE_DAYS) return null // see SOURCED_MAX_AGE_DAYS — this is the actual fix for M2
 
-      const score = Math.min(100, decayFall(daysFound, 3, 55) + 25 + (s.contact_verified ? 15 : 0))
+      // live_job: a real, specific open role Annie found and verified, not a
+      // narrative "this company is hiring" mention — the most actionable lead
+      // this pool can surface, so it gets both a score bump and a wider
+      // "still counts as urgent" window than an ordinary racy signal type (an
+      // actual open req stays live longer than a news mention does).
+      const isLiveJob = s.signal_type === 'live_job'
+      const score = Math.min(100, decayFall(daysFound, 3, 55) + 25 + (s.contact_verified ? 15 : 0) + (isLiveJob ? 10 : 0))
       const isRacy = RACY_SIGNAL_TYPES.includes(s.signal_type)
-      const urgency = isRacy && daysFound <= 3 ? 2 : daysFound <= 7 ? 1 : 0
+      const urgency = isLiveJob && daysFound <= 7 ? 2 : isRacy && daysFound <= 3 ? 2 : daysFound <= 7 ? 1 : 0
 
       return {
         category: 'sourced',

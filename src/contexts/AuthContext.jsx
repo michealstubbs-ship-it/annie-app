@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useRef, useState } from 'react'
+import React, { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { withTimeout } from '../lib/withTimeout'
 import { identifyUser, resetAnalytics } from '../lib/analytics'
@@ -51,7 +51,13 @@ export function AuthProvider({ children }) {
     return () => { subscription.unsubscribe(); clearTimeout(fallback) }
   }, [])
 
-  async function fetchProfile(userId) {
+  // Wrapped in useCallback (empty deps — this closes over nothing but stable
+  // setters and imports) so the context value below can actually be
+  // memoized. Without this, `value` would need fresh function references in
+  // its dependency array on every render anyway, defeating the point of
+  // useMemo. See the comment on AuthContext.Provider's value for why this
+  // matters — 24+ files call useAuth().
+  const fetchProfile = useCallback(async (userId) => {
     try {
       // Timeout-guarded like save-onboarding: this still calls supabase.co
       // directly (a GET, so there's nothing to proxy through our own domain
@@ -71,50 +77,60 @@ export function AuthProvider({ children }) {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  async function signUp(email, password, fullName, firmName) {
+  const signUp = useCallback(async (email, password, fullName, firmName) => {
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: { data: { full_name: fullName, firm_name: firmName } },
     })
     return { data, error }
-  }
+  }, [])
 
-  async function signIn(email, password) {
+  const signIn = useCallback(async (email, password) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
     return { data, error }
-  }
+  }, [])
 
-  async function signOut() {
+  const signOut = useCallback(async () => {
     intentionalSignOutRef.current = true
     await supabase.auth.signOut()
-  }
+  }, [])
 
-  async function resetPassword(email) {
+  const resetPassword = useCallback(async (email) => {
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${window.location.origin}/reset-password`,
     })
     return { error }
-  }
+  }, [])
 
-  async function updatePassword(newPassword) {
+  const updatePassword = useCallback(async (newPassword) => {
     const { error } = await supabase.auth.updateUser({ password: newPassword })
     return { error }
-  }
+  }, [])
 
-  async function resendConfirmation(email) {
+  const resendConfirmation = useCallback(async (email) => {
     const { error } = await supabase.auth.resend({ type: 'signup', email })
     return { error }
-  }
+  }, [])
 
-  async function refreshProfile() {
+  const refreshProfile = useCallback(async () => {
     if (user) await fetchProfile(user.id)
-  }
+  }, [user, fetchProfile])
+
+  // Memoized — without this, every consumer of useAuth() (24+ files) would
+  // re-render on every AuthProvider render, since a fresh object literal is
+  // a new reference every time regardless of whether any of its values
+  // actually changed. The functions above are themselves useCallback'd so
+  // this dependency array is meaningful rather than always-fresh too.
+  const value = useMemo(
+    () => ({ user, profile, loading, signUp, signIn, signOut, refreshProfile, resetPassword, updatePassword, resendConfirmation }),
+    [user, profile, loading, signUp, signIn, signOut, refreshProfile, resetPassword, updatePassword, resendConfirmation],
+  )
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signUp, signIn, signOut, refreshProfile, resetPassword, updatePassword, resendConfirmation }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   )

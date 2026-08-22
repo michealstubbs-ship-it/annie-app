@@ -3,6 +3,8 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
+import Modal from './Modal'
+import ErrorBanner from './ErrorBanner'
 
 const STAGES = ['prospect', 'approached', 'meeting_booked', 'pitch_sent', 'negotiating', 'won', 'lost']
 const STAGE_LABELS = { prospect: 'Prospect', approached: 'Approached', meeting_booked: 'Meeting Booked', pitch_sent: 'Pitch Sent', negotiating: 'Negotiating', won: 'Won', lost: 'Lost' }
@@ -113,7 +115,7 @@ export default function Pipeline() {
         <button onClick={openAdd} className="btn-primary">+ Add Deal</button>
       </div>
 
-      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{error}</div>}
+      <ErrorBanner>{error}</ErrorBanner>
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4 mb-6">
@@ -165,10 +167,7 @@ export default function Pipeline() {
         </div>
       )}
 
-      {showModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
-            <h2 className="text-xl font-bold text-navy mb-4">{editId ? 'Edit Deal' : 'Add Deal'}</h2>
+      <Modal open={showModal} onClose={() => setShowModal(false)} title={editId ? 'Edit Deal' : 'Add Deal'} maxWidth="max-w-lg">
             <div className="space-y-3">
               {[['company','Company *','text'],['role','Role/Position','text'],['next_action','Next Action','text']].map(([f,l,t]) => (
                 <div key={f}><label className="label">{l}</label><input className="input" type={t} value={form[f]} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} /></div>
@@ -189,9 +188,7 @@ export default function Pipeline() {
               <button onClick={() => setShowModal(false)} className="btn-ghost">Cancel</button>
               <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
             </div>
-          </div>
-        </div>
-      )}
+      </Modal>
 
       <ConfirmDialog
         open={!!confirmDeleteId}

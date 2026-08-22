@@ -65,6 +65,17 @@ export default async (req) => {
 
   const supabase = createClient(supabaseUrl, serviceKey)
 
+  // Stripe can and does redeliver the same event (network retries, a manual
+  // resend from the dashboard). The subscriptions writes below are already
+  // idempotent-safe via onConflict, but invoice.payment_failed's email send
+  // is not — a redelivered event would re-send "your payment failed" to a
+  // customer who already got it once. Recording event.id here makes the
+  // WHOLE handler idempotent, not just that one branch.
+  const { data: already } = await supabase.from('stripe_webhook_events').select('event_id').eq('event_id', event.id).maybeSingle()
+  if (already) {
+    return new Response('ok (already processed)', { status: 200 })
+  }
+
   try {
     switch (event.type) {
       // First checkout completion — the one moment we have client_reference_id
@@ -78,10 +89,20 @@ export default async (req) => {
         const userId = session.client_reference_id
         if (!userId || !session.subscription) break
         const sub = await stripe.subscriptions.retrieve(session.subscription)
-        await supabase.from('subscriptions').upsert({
+        // Same unchecked-write bug that caused the intelligence_signals
+        // incident, found here during the follow-up sweep: this upsert's
+        // `error` was never checked. The columns happen to match live right
+        // now, so this hasn't silently failed the same way yet — but a
+        // customer who pays and gets no subscription row (RLS hiccup, a
+        // future schema change, a transient DB error) deserves better than
+        // a 200 to Stripe and no trace anywhere. Throwing here routes it
+        // into the same catch below that already reports it and tells
+        // Stripe to retry.
+        const { error } = await supabase.from('subscriptions').upsert({
           user_id: userId,
           ...fieldsFromSubscription(sub),
         }, { onConflict: 'user_id' })
+        if (error) throw new Error(`subscription upsert failed: ${error.message}`)
         break
       }
 
@@ -129,11 +150,25 @@ export default async (req) => {
   } catch (err) {
     console.error('[stripe-webhook] failed handling', event.type, err.message)
     await reportServerError('stripe-webhook', err, { eventType: event.type, eventId: event.id })
-    // Still 200: a 4xx/5xx here makes Stripe retry, which is right for a
-    // transient DB hiccup, but reportServerError already gives ops a real
-    // trace to act on rather than silently losing the event to retries
-    // that could eventually exhaust and drop it.
+    // A production-readiness audit (2026-08-22) found this always returned
+    // 200 even here — meaning the checkout.session.completed comment above
+    // ("throwing here... tells Stripe to retry") was describing intended
+    // behavior the code didn't actually implement: Stripe only retries on a
+    // non-2xx response, so a paying customer whose subscription upsert
+    // failed got a 200 back regardless, no retry ever happened, and
+    // error_logs was the only trace — nobody would recover that customer's
+    // subscription row without a human noticing the log first. A 500 here
+    // makes Stripe actually retry (its own delivery is idempotent-safe for
+    // every case this file handles — see fieldsFromSubscription's onConflict
+    // usage), which is strictly better recovery than relying on a human to
+    // read error_logs before the customer notices anything's wrong.
+    return new Response('Webhook handler error', { status: 500 })
   }
+
+  // Only recorded on the success path — a failed attempt returns 500 above
+  // without reaching here, so Stripe's retry actually gets a fresh attempt
+  // instead of being silently marked "already processed."
+  await supabase.from('stripe_webhook_events').insert({ event_id: event.id, event_type: event.type }).then(() => {}, () => {})
 
   return new Response('ok', { status: 200 })
 }

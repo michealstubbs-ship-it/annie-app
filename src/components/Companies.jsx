@@ -7,6 +7,8 @@ import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
 import JobFormModal from './JobFormModal'
 import ConfirmDialog from './ConfirmDialog'
+import Modal from './Modal'
+import ErrorBanner from './ErrorBanner'
 
 const EMPTY_CO = { name: '', industry: '', location: '', website: '', notes: '' }
 const STATUS_COLOR = { hot: 'bg-red-100 text-red-700', warm: 'bg-amber-100 text-amber-700', cold: 'bg-blue-100 text-blue-700', client: 'bg-green-100 text-green-700', inactive: 'bg-gray-100 text-gray-500' }
@@ -170,44 +172,37 @@ export default function Companies() {
       )}
 
       {/* Add/Edit company modal */}
-      {showCoModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <h2 className="text-xl font-bold text-navy mb-4">{editCo ? 'Edit Company' : 'Add Company'}</h2>
-            {coError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{coError}</div>}
-            <div className="space-y-3">
-              <div><label className="label">Company name *</label><input className="input" value={coForm.name} onChange={e => setCoForm(p => ({ ...p, name: e.target.value }))} autoFocus /></div>
-              <div><label className="label">Industry</label><input className="input" value={coForm.industry} onChange={e => setCoForm(p => ({ ...p, industry: e.target.value }))} /></div>
-              <div><label className="label">Location</label><input className="input" value={coForm.location} onChange={e => setCoForm(p => ({ ...p, location: e.target.value }))} /></div>
-              <div><label className="label">Website</label><input className="input" value={coForm.website} onChange={e => setCoForm(p => ({ ...p, website: e.target.value }))} /></div>
-              <div><label className="label">Notes</label><textarea className="input resize-none" rows={3} value={coForm.notes} onChange={e => setCoForm(p => ({ ...p, notes: e.target.value }))} /></div>
-            </div>
-            <div className="flex gap-3 justify-end mt-5">
-              <button onClick={() => setShowCoModal(false)} className="btn-ghost">Cancel</button>
-              <button onClick={saveCo} disabled={coSaving} className="btn-primary">{coSaving ? 'Saving...' : 'Save'}</button>
-            </div>
-          </div>
+      <Modal open={showCoModal} onClose={() => setShowCoModal(false)} title={editCo ? 'Edit Company' : 'Add Company'} maxWidth="max-w-md">
+        <ErrorBanner>{coError}</ErrorBanner>
+        <div className="space-y-3">
+          <div><label className="label">Company name *</label><input className="input" value={coForm.name} onChange={e => setCoForm(p => ({ ...p, name: e.target.value }))} autoFocus /></div>
+          <div><label className="label">Industry</label><input className="input" value={coForm.industry} onChange={e => setCoForm(p => ({ ...p, industry: e.target.value }))} /></div>
+          <div><label className="label">Location</label><input className="input" value={coForm.location} onChange={e => setCoForm(p => ({ ...p, location: e.target.value }))} /></div>
+          <div><label className="label">Website</label><input className="input" value={coForm.website} onChange={e => setCoForm(p => ({ ...p, website: e.target.value }))} /></div>
+          <div><label className="label">Notes</label><textarea className="input resize-none" rows={3} value={coForm.notes} onChange={e => setCoForm(p => ({ ...p, notes: e.target.value }))} /></div>
         </div>
-      )}
+        <div className="flex gap-3 justify-end mt-5">
+          <button onClick={() => setShowCoModal(false)} className="btn-ghost">Cancel</button>
+          <button onClick={saveCo} disabled={coSaving} className="btn-primary">{coSaving ? 'Saving...' : 'Save'}</button>
+        </div>
+      </Modal>
 
       {/* Company detail panel */}
-      {selected && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4 py-8" onClick={() => setSelected(null)}>
-          <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+      <Modal open={!!selected} onClose={() => setSelected(null)} title={selected?.name || ''} maxWidth="max-w-2xl">
+        {selected && (
+          <div className="-m-6">
             <div className="p-6 border-b border-gray-100">
               {coNote && <div className="bg-gray-50 border border-gray-200 text-gray-600 rounded-lg px-3 py-2 text-sm mb-3">{coNote}</div>}
-              {delError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{delError}</div>}
+              <ErrorBanner>{delError}</ErrorBanner>
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h2 className="text-2xl font-bold text-navy">{selected.name}</h2>
-                  <p className="text-sm text-gray-500 mt-1">{[selected.industry, selected.location].filter(Boolean).join(' · ') || 'No details yet'}</p>
+                  <p className="text-sm text-gray-500">{[selected.industry, selected.location].filter(Boolean).join(' · ') || 'No details yet'}</p>
                   {selected.website && <a href={selected.website.startsWith('http') ? selected.website : `https://${selected.website}`} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">{selected.website}</a>}
                   {selected.notes && <p className="text-sm text-gray-600 mt-2">{selected.notes}</p>}
                 </div>
                 <div className="flex gap-2 flex-shrink-0">
                   <button onClick={() => openEditCo(selected)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
                   <button onClick={() => setShowDeleteConfirm(true)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
-                  <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 ml-2" aria-label="Close company details">✕</button>
                 </div>
               </div>
               <div className="flex gap-1 mt-4">
@@ -257,8 +252,8 @@ export default function Companies() {
               )}
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </Modal>
 
       <ContactFormModal
         open={showContactModal}

@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import CompanySelect from './CompanySelect'
+import Modal from './Modal'
+import ErrorBanner from './ErrorBanner'
 
 const STATUSES = ['hot', 'warm', 'cold', 'client', 'inactive']
 const EMPTY = { name: '', email: '', phone: '', title: '', linkedin_url: '', status: 'warm', notes: '', company_id: '', company: '' }
@@ -31,8 +33,6 @@ export default function ContactFormModal({ open, editContact, lockedCompanyId, l
     }
     setError('')
   }, [open, editContact, lockedCompanyId, lockedCompanyName])
-
-  if (!open) return null
 
   async function save(e) {
     e.preventDefault()
@@ -72,45 +72,42 @@ export default function ContactFormModal({ open, editContact, lockedCompanyId, l
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
-      <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
-        <h2 className="text-xl font-bold text-navy mb-4">{editContact ? 'Edit Contact' : 'Add Contact'}</h2>
-        {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{error}</div>}
-        {/* A real <form onSubmit> so the `required`/type="email"/type="url"
-            constraints on these fields actually fire — they were previously
-            inert because "Save" called save() directly via onClick instead
-            of submitting a form. */}
-        <form onSubmit={save}>
-          <div className="space-y-3">
-            <div><label className="label">Name *</label><input className="input" value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} autoFocus required /></div>
-            <div><label className="label">Email</label><input className="input" type="email" value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} /></div>
-            <div><label className="label">Phone</label><input className="input" type="tel" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
+    <Modal open={open} onClose={onClose} title={editContact ? 'Edit Contact' : 'Add Contact'} maxWidth="max-w-lg">
+      <ErrorBanner>{error}</ErrorBanner>
+      {/* A real <form onSubmit> so the `required`/type="email"/type="url"
+          constraints on these fields actually fire — they were previously
+          inert because "Save" called save() directly via onClick instead
+          of submitting a form. */}
+      <form onSubmit={save}>
+        <div className="space-y-3">
+          <div><label className="label">Name *</label><input className="input" value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} autoFocus required /></div>
+          <div><label className="label">Email</label><input className="input" type="email" value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} /></div>
+          <div><label className="label">Phone</label><input className="input" type="tel" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
 
-            {lockedCompanyId ? (
-              <div>
-                <label className="label">Company</label>
-                <div className="input bg-gray-50 text-gray-600 flex items-center">{lockedCompanyName}</div>
-              </div>
-            ) : (
-              <CompanySelect value={form.company_id} onChange={(id, name) => setForm(p => ({ ...p, company_id: id, company: name }))} />
-            )}
-
-            <div><label className="label">Job Title</label><input className="input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} /></div>
-            <div><label className="label">LinkedIn URL</label><input className="input" type="url" value={form.linkedin_url} onChange={e => setForm(p => ({ ...p, linkedin_url: e.target.value }))} /></div>
+          {lockedCompanyId ? (
             <div>
-              <label className="label">Status</label>
-              <select className="input" value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}>
-                {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
+              <label className="label">Company</label>
+              <div className="input bg-gray-50 text-gray-600 flex items-center">{lockedCompanyName}</div>
             </div>
-            <div><label className="label">Notes</label><textarea className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
+          ) : (
+            <CompanySelect value={form.company_id} onChange={(id, name) => setForm(p => ({ ...p, company_id: id, company: name }))} />
+          )}
+
+          <div><label className="label">Job Title</label><input className="input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} /></div>
+          <div><label className="label">LinkedIn URL</label><input className="input" type="url" value={form.linkedin_url} onChange={e => setForm(p => ({ ...p, linkedin_url: e.target.value }))} /></div>
+          <div>
+            <label className="label">Status</label>
+            <select className="input" value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}>
+              {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
           </div>
-          <div className="flex gap-3 justify-end mt-5">
-            <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
-            <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
-          </div>
-        </form>
-      </div>
-    </div>
+          <div><label className="label">Notes</label><textarea className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
+        </div>
+        <div className="flex gap-3 justify-end mt-5">
+          <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
+          <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
+        </div>
+      </form>
+    </Modal>
   )
 }

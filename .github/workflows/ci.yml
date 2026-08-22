@@ -1,0 +1,29 @@
+# Runs the test suite on every PR and push to main, independent of a
+# Netlify deploy — added 2026-08-22 after an audit found the ONLY gate was
+# Netlify's own build-time `npm test && npm run build`, which only fires at
+# deploy time, not on a PR, and can't be a required check before merge.
+#
+# This file only takes effect once this codebase lives in a GitHub
+# repository with Actions enabled — it's written and ready, but there was
+# no connected git repo in the environment this was authored in to verify
+# it actually runs. Once pushed to a real repo, set this as a required
+# status check in the repo's branch protection settings.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build

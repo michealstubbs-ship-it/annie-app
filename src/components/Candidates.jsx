@@ -6,6 +6,8 @@ import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import { logSignalOutcome } from '../lib/signalOutcomes'
 import { companiesMatch } from '../lib/companyMatch'
+import Modal from './Modal'
+import ErrorBanner from './ErrorBanner'
 
 const STAGES = ['sourced', 'screening', 'shortlisted', 'presented', 'interviewing', 'offer', 'placed', 'rejected', 'withdrawn']
 const STAGE_LABEL = { sourced: 'Sourced', screening: 'Screening', shortlisted: 'Shortlisted', presented: 'Presented', interviewing: 'Interviewing', offer: 'Offer', placed: 'Placed', rejected: 'Rejected', withdrawn: 'Withdrawn' }
@@ -268,11 +270,8 @@ export default function Candidates() {
         </div>
       )}
 
-      {showModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4 py-8">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
-            <h2 className="text-xl font-bold text-navy mb-4">{editId ? 'Edit Candidate' : 'Add Candidate'}</h2>
-            {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{error}</div>}
+      <Modal open={showModal} onClose={() => setShowModal(false)} title={editId ? 'Edit Candidate' : 'Add Candidate'} maxWidth="max-w-2xl">
+            <ErrorBanner>{error}</ErrorBanner>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2">
@@ -369,9 +368,7 @@ export default function Candidates() {
               <button onClick={() => setShowModal(false)} className="btn-ghost">Cancel</button>
               <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save candidate'}</button>
             </div>
-          </div>
-        </div>
-      )}
+      </Modal>
 
       <ConfirmDialog
         open={!!confirmDeleteId}

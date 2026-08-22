@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 export default function Insights() {
   const [topics, setTopics] = useState([])
   const [conversations, setConversations] = useState([])
+  const [errors, setErrors] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [tab, setTab] = useState('topics')
@@ -14,14 +15,17 @@ export default function Insights() {
     setLoading(true)
     setError('')
     try {
-      const [{ data: topicData, error: topicErr }, { data: convoData, error: convoErr }] = await Promise.all([
+      const [{ data: topicData, error: topicErr }, { data: convoData, error: convoErr }, { data: errorData, error: errorErr }] = await Promise.all([
         supabase.rpc('get_support_insights'),
         supabase.rpc('get_support_conversations'),
+        supabase.rpc('get_error_logs'),
       ])
       if (topicErr) throw topicErr
       if (convoErr) throw convoErr
+      if (errorErr) throw errorErr
       setTopics(topicData || [])
       setConversations(convoData || [])
+      setErrors(errorData || [])
     } catch (err) {
       setError(err.message || 'Could not load insights.')
     } finally {
@@ -43,6 +47,9 @@ export default function Insights() {
       <div className="flex gap-2 mb-5">
         <button onClick={() => setTab('topics')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'topics' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>Topics</button>
         <button onClick={() => setTab('conversations')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'conversations' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>Recent conversations</button>
+        <button onClick={() => setTab('errors')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'errors' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>
+          Errors{errors.length > 0 && <span className="ml-1.5 text-xs opacity-75">({errors.length})</span>}
+        </button>
       </div>
 
       {loading ? (
@@ -69,7 +76,7 @@ export default function Insights() {
             ))}
           </div>
         )
-      ) : (
+      ) : tab === 'conversations' ? (
         conversations.length === 0 ? (
           <div className="card p-12 text-center">
             <h3 className="font-bold text-navy mb-1">No conversations yet</h3>
@@ -84,6 +91,28 @@ export default function Insights() {
                 </div>
                 <p className="text-xs text-gray-600">{c.content}</p>
                 {c.topic && <span className="inline-block mt-1.5 text-[10px] bg-yellow-50 text-navy px-2 py-0.5 rounded-full font-medium capitalize">{c.topic}</span>}
+              </div>
+            ))}
+          </div>
+        )
+      ) : (
+        errors.length === 0 ? (
+          <div className="card p-12 text-center">
+            <h3 className="font-bold text-navy mb-1">No errors logged</h3>
+            <p className="text-gray-500 text-sm max-w-sm mx-auto">Client and server errors will show up here as soon as anything breaks.</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {errors.map(e => (
+              <div key={e.id} className="card p-3.5 border-l-4 border-red-400">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-semibold text-navy">
+                    {e.source === 'function' ? e.fn_name || 'function' : 'client'}
+                  </span>
+                  <span className="text-[11px] text-gray-400">{new Date(e.created_at).toLocaleString('en-GB')}</span>
+                </div>
+                <p className="text-xs text-red-700">{e.message}</p>
+                {e.url && <p className="text-[11px] text-gray-400 mt-1 truncate">{e.url}</p>}
               </div>
             ))}
           </div>

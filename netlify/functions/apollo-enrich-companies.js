@@ -4,6 +4,9 @@
 // so the same company is never enriched twice, only cache misses spend a credit.
 import { createClient } from '@supabase/supabase-js'
 import { reserveApolloCredits } from './lib/scanShared.js'
+import { reportServerError } from './lib/reportError.js'
+import { getAuthedUser } from './lib/auth.js'
+import { jsonError } from './lib/httpError.js'
 
 function normalize(name) {
   return (name || '').trim().toLowerCase()
@@ -11,7 +14,7 @@ function normalize(name) {
 
 export default async (req, context) => {
   if (req.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 })
+    return jsonError(405, 'Method not allowed')
   }
 
   const apiKey = process.env.APOLLO_API_KEY
@@ -34,21 +37,9 @@ export default async (req, context) => {
   // a caller with no token at all. Previously this had no auth check
   // whatsoever, an unauthenticated request from anywhere on the internet
   // could run up Apollo spend indefinitely.
-  const authHeader = req.headers.get('authorization') || ''
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim()
-  if (!token) {
-    return new Response(JSON.stringify({ results: [], error: 'Missing session token' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  }
-  const authClient = createClient(supabaseUrl, anonKey, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-    auth: { persistSession: false, autoRefreshToken: false },
-  })
-  const { data: userData, error: userErr } = await authClient.auth.getUser(token)
-  if (userErr || !userData?.user) {
-    return new Response(JSON.stringify({ results: [], error: 'Invalid session' }), {
+  const { error: authError } = await getAuthedUser(req, supabaseUrl, anonKey)
+  if (authError) {
+    return new Response(JSON.stringify({ results: [], error: authError === 'missing_token' ? 'Missing session token' : 'Invalid session' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' },
     })
@@ -61,6 +52,22 @@ export default async (req, context) => {
     const names = Array.isArray(companies) ? [...new Set(companies.map(c => (c || '').trim()).filter(Boolean))] : []
     if (!names.length) {
       return new Response(JSON.stringify({ results: [], configured: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    // Matches LinkedInImport.jsx's own cap on a single CSV import
+    // (toImport.slice(0, 1000)) — this endpoint should never legitimately
+    // see more unique companies than that in one request. The cap isn't
+    // about being user-hostile, it's so a request from somewhere OTHER than
+    // that one bounded flow can't single-handedly build an unbounded
+    // IN(...) query against company_enrichment or monopolize the whole
+    // day's Apollo credit cap by itself (reserveApolloCredits stops the
+    // Apollo spend, but not the DB query size or function runtime before
+    // that point).
+    const MAX_COMPANIES_PER_REQUEST = 1000
+    if (names.length > MAX_COMPANIES_PER_REQUEST) {
+      return new Response(JSON.stringify({ error: `Too many companies in one request (max ${MAX_COMPANIES_PER_REQUEST}, got ${names.length}) — split into smaller batches.` }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      })
     }
 
     // 1. Check the shared cache first, this is what keeps Apollo cost sustainable
@@ -143,6 +150,7 @@ export default async (req, context) => {
       headers: { 'Content-Type': 'application/json' },
     })
   } catch (err) {
+    await reportServerError('apollo-enrich-companies', err)
     return new Response(JSON.stringify({ results: [], error: err.message }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },

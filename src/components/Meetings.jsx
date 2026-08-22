@@ -4,6 +4,8 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
+import Modal from './Modal'
+import ErrorBanner from './ErrorBanner'
 
 const TYPE_LABEL = { call: 'Call', video: 'Video', in_person: 'In person' }
 const TYPE_ICON = { call: '📞', video: '💻', in_person: '🤝' }
@@ -171,11 +173,8 @@ export default function Meetings() {
         </div>
       )}
 
-      {showModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4 py-8">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
-            <h2 className="text-xl font-bold text-navy mb-4">{editId ? 'Edit Meeting' : 'Log Meeting'}</h2>
-            {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{error}</div>}
+      <Modal open={showModal} onClose={() => setShowModal(false)} title={editId ? 'Edit Meeting' : 'Log Meeting'} maxWidth="max-w-lg">
+            <ErrorBanner>{error}</ErrorBanner>
             <form onSubmit={e => { e.preventDefault(); save() }}>
               <div className="space-y-3">
                 <div>
@@ -223,9 +222,7 @@ export default function Meetings() {
                 <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
+      </Modal>
 
       <ConfirmDialog
         open={!!confirmDeleteId}

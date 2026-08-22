@@ -3,8 +3,9 @@
 // guessing off a fixed timer. A fast, cheap, synchronous read of the status
 // blob that scan-now-background.js writes — this function does no research
 // itself, no Anthropic/Apollo calls, just a lookup.
-import { createClient } from '@supabase/supabase-js'
 import { getStore } from '@netlify/blobs'
+import { reportServerError } from './lib/reportError.js'
+import { getAuthedUser } from './lib/auth.js'
 
 export default async (req) => {
   const unknown = () => new Response(JSON.stringify({ status: 'unknown' }), {
@@ -12,24 +13,15 @@ export default async (req) => {
     headers: { 'Content-Type': 'application/json' },
   })
 
-  const authHeader = req.headers.get('authorization') || ''
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim()
-  if (!token) return unknown()
-
   const supabaseUrl = process.env.VITE_SUPABASE_URL
   const anonKey = process.env.VITE_SUPABASE_ANON_KEY
-  if (!supabaseUrl || !anonKey) return unknown()
 
-  const authClient = createClient(supabaseUrl, anonKey, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-    auth: { persistSession: false, autoRefreshToken: false },
-  })
-  const { data: userData, error } = await authClient.auth.getUser(token)
-  if (error || !userData?.user) return unknown()
+  const { user, error } = await getAuthedUser(req, supabaseUrl, anonKey)
+  if (error) return unknown()
 
   try {
     const store = getStore({ name: 'annie-scan-status', consistency: 'strong' })
-    const record = await store.get(userData.user.id, { type: 'json' })
+    const record = await store.get(user.id, { type: 'json' })
 
     // scan-now-background.js has a 15-minute wall-clock budget. If it gets
     // hard-killed mid-run (a hung external call, an unhandled error before
@@ -54,6 +46,7 @@ export default async (req) => {
     })
   } catch (err) {
     console.error('[scan-status] failed to read status blob:', err.message)
+    await reportServerError('scan-status', err)
     return unknown()
   }
 }

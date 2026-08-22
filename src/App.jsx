@@ -1,28 +1,30 @@
-import React from 'react'
+import React, { Suspense, lazy } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
-import Login from './pages/Login'
-import Onboarding from './pages/Onboarding'
-import LinkedInImport from './pages/LinkedInImport'
-import Dashboard from './pages/Dashboard'
-import ResetPassword from './pages/ResetPassword'
-import Terms from './pages/Terms'
-import Privacy from './pages/Privacy'
-import SupportWidget from './components/SupportWidget'
+import PageLoader from './components/PageLoader'
+
+// A scale-readiness audit (2026-08-22) found these six top-level routes
+// were all statically imported here, shipping in the main bundle regardless
+// of which route a visitor actually hit — a returning logged-in user never
+// sees Login/Onboarding/Terms/Privacy, but paid for their JS anyway. Worse,
+// LinkedInImport was ALSO dynamically imported from Dashboard.jsx, which
+// Vite can't split into its own chunk while this file statically imported
+// the same module — confirmed by the build's own warning. Converting all
+// six to React.lazy() fixes both: a smaller main chunk, and LinkedInImport
+// finally gets a real chunk of its own.
+const Login = lazy(() => import('./pages/Login'))
+const Onboarding = lazy(() => import('./pages/Onboarding'))
+const LinkedInImport = lazy(() => import('./pages/LinkedInImport'))
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const ResetPassword = lazy(() => import('./pages/ResetPassword'))
+const Terms = lazy(() => import('./pages/Terms'))
+const Privacy = lazy(() => import('./pages/Privacy'))
+const SupportWidget = lazy(() => import('./components/SupportWidget'))
 
 function ProtectedRoute({ children }) {
   const { user, profile, loading } = useAuth()
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-page-bg">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-gold border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-gray-500 font-medium">Loading Annie...</p>
-        </div>
-      </div>
-    )
-  }
+  if (loading) return <PageLoader label="Loading Annie..." />
 
   if (!user) return <Navigate to="/login" replace />
   if (!profile?.onboarding_completed) return <Navigate to="/onboarding" replace />
@@ -33,13 +35,7 @@ function ProtectedRoute({ children }) {
 function OnboardingRoute({ children }) {
   const { user, profile, loading } = useAuth()
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-page-bg">
-        <div className="w-12 h-12 border-4 border-gold border-t-transparent rounded-full animate-spin mx-auto" />
-      </div>
-    )
-  }
+  if (loading) return <PageLoader />
 
   if (!user) return <Navigate to="/login" replace />
   if (profile?.onboarding_completed) return <Navigate to="/dashboard" replace />
@@ -49,13 +45,7 @@ function OnboardingRoute({ children }) {
 function ImportRoute({ children }) {
   const { user, profile, loading } = useAuth()
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-page-bg">
-        <div className="w-12 h-12 border-4 border-gold border-t-transparent rounded-full animate-spin mx-auto" />
-      </div>
-    )
-  }
+  if (loading) return <PageLoader />
 
   if (!user) return <Navigate to="/login" replace />
   if (!profile?.onboarding_completed) return <Navigate to="/onboarding" replace />
@@ -73,16 +63,10 @@ function routeForUser(user, profile) {
 function AppRoutes() {
   const { user, profile, loading } = useAuth()
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-page-bg">
-        <div className="w-12 h-12 border-4 border-gold border-t-transparent rounded-full animate-spin mx-auto" />
-      </div>
-    )
-  }
+  if (loading) return <PageLoader />
 
   return (
-    <>
+    <Suspense fallback={<PageLoader />}>
       <Routes>
         <Route path="/login" element={user ? <Navigate to={routeForUser(user, profile)} replace /> : <Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
@@ -94,7 +78,7 @@ function AppRoutes() {
         <Route path="/" element={<Navigate to={routeForUser(user, profile)} replace />} />
       </Routes>
       {user && <SupportWidget />}
-    </>
+    </Suspense>
   )
 }
 

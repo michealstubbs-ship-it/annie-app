@@ -14,8 +14,15 @@
 // scanShared.test.js can import it directly, no live API calls, no Netlify
 // runtime required.
 import { normalizeCompanyName } from '../../../src/lib/companyMatch.js'
+import { extractJson } from '../../../src/lib/jsonExtract.js'
+import { SIGNAL_TYPES } from '../../../src/lib/signalTypes.js'
+import { reportServerError } from './reportError.js'
 
-export const SIGNAL_TYPES = ['funding', 'leadership_change', 'hiring_activity', 'expansion', 'team_building', 'public_commentary', 'job_posting_unclaimed', 'm_and_a', 'regulatory']
+// Re-exported so every existing backend caller (scan-now-background.js,
+// intelligence-scan.js) keeps importing these from here unchanged — both
+// now live in src/lib because they're genuinely shared with the frontend
+// too, not backend-only. See jsonExtract.js and signalTypes.js for why.
+export { extractJson, SIGNAL_TYPES }
 
 // How far back Apollo/Adzuna discovery counts as "actively happening right
 // now", and how the AI prompts describe their own main search window. One
@@ -170,6 +177,37 @@ export function normalizeKey(company, headline) {
   return `${companyKey}::${headlineKey}`
 }
 
+// Same company-name normalization as normalizeKey, without the headline —
+// used to group/compare entries by company alone (e.g. deciding whether a
+// generic hiring_activity signal should yield to specific live_job entries
+// found for that same company in the same run).
+export function normalizeCompanyKey(company) {
+  return normalizeCompanyName(company) || (company || '').trim().toLowerCase()
+}
+
+// Implements the "replace, don't supplement" product decision for Live
+// Jobs: when Annie found actual, specific open roles (live_job entries) at a
+// company, the generic "this company is hiring" narrative signal for that
+// same company is now redundant, and confusing side-by-side with the real
+// roles behind it. Enforced here, once, on the merged list — rather than
+// only as a prompt instruction the model might not follow consistently
+// across several parallel sector-group calls that don't see each other's
+// output — so the behaviour is guaranteed regardless of what any single AI
+// call decided to also mention.
+const GENERIC_HIRING_SIGNAL_TYPES = ['hiring_activity', 'job_posting_unclaimed']
+
+export function dropGenericHiringWhereLiveJobsExist(entries) {
+  const companiesWithLiveJobs = new Set(
+    entries.filter(e => e.entryType === 'live_job').map(e => normalizeCompanyKey(e.company))
+  )
+  if (!companiesWithLiveJobs.size) return entries
+  return entries.filter(e => {
+    if (e.entryType === 'live_job') return true
+    if (!GENERIC_HIRING_SIGNAL_TYPES.includes(e.signalType)) return true
+    return !companiesWithLiveJobs.has(normalizeCompanyKey(e.company))
+  })
+}
+
 // Turns a compound label like "Strategy & Corporate Development" into loose
 // keyword fragments for Apollo/Adzuna's fuzzy keyword matching.
 export function splitToKeywords(label) {
@@ -177,49 +215,6 @@ export function splitToKeywords(label) {
     .split(/&|\//)
     .map(s => s.trim())
     .filter(Boolean)
-}
-
-// Bracket-balanced JSON-array extraction from a model's free-text response.
-// Replaces a greedy regex (`/\[[\s\S]*\]/`) that matched from the first '['
-// to the LAST ']' in the ENTIRE response — web-search tool-use responses
-// commonly interleave narration text between searches ("Let me check X's
-// funding history...", sometimes itself containing a bracketed aside), and
-// the greedy match would span across it, producing invalid JSON and
-// silently returning []. This walks forward from the first '[', tracking
-// string state (so a bracket character inside a quoted headline is never
-// mistaken for structure) and nesting depth, and parses only the balanced
-// array it actually finds. Also strips a ```json ... ``` fence first, since
-// models frequently wrap JSON in one despite being asked not to.
-export function extractJson(text) {
-  if (!text) return []
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-  const candidate = fenced ? fenced[1] : text
-
-  const start = candidate.indexOf('[')
-  if (start === -1) return []
-
-  let depth = 0
-  let inString = false
-  let escaped = false
-  for (let i = start; i < candidate.length; i++) {
-    const ch = candidate[i]
-    if (inString) {
-      if (escaped) escaped = false
-      else if (ch === '\\') escaped = true
-      else if (ch === '"') inString = false
-      continue
-    }
-    if (ch === '"') { inString = true; continue }
-    if (ch === '[') depth++
-    else if (ch === ']') {
-      depth--
-      if (depth === 0) {
-        const slice = candidate.slice(start, i + 1)
-        try { return JSON.parse(slice) } catch { return [] }
-      }
-    }
-  }
-  return []
 }
 
 // Validates a model-reported eventDate is plausible before it's trusted:
@@ -358,20 +353,120 @@ export async function discoverHotCompanies(apolloKey, { sectors, functions, loca
   }
 }
 
+// A verified hiring-manager contact is close to a company-level fact, but
+// NOT purely one — it depends on which role/title was actually being
+// searched for. This TTL balances "don't re-verify every single scan run"
+// against "a contact from 6 months ago might have moved on."
+const CONTACT_CACHE_TTL_DAYS = 60
+
+// The cache key needs a title dimension, not just the company: an earlier
+// version of this cache keyed purely on company, so the FIRST contact ever
+// resolved for a company (say, a CFO found for a funding signal) would be
+// served back as "the verified contact" for a completely different role at
+// the same company later — confidently wrong, not just missing. Latent
+// until Live Jobs made "several different open roles at the same company in
+// one run" a real, common case. Order-independent (so ['CFO','VP Finance']
+// and ['VP Finance','CFO'] hit the same cache entry) and case-insensitive;
+// no titleKeywords at all buckets under 'general' rather than colliding with
+// an empty string key.
+export function titleBucketKey(titleKeywords) {
+  if (!titleKeywords?.length) return 'general'
+  return [...titleKeywords].map(t => (t || '').trim().toLowerCase()).filter(Boolean).sort().join('|') || 'general'
+}
+
 // Contact info is only ever trusted from Apollo. An AI-mentioned name is
 // reasoning, not a fact, it stays in who_to_approach, never in the verified
 // contact fields.
-export async function verifyContact(apolloKey, company, titleKeywords, supabase) {
+//
+// apolloOrgId is required, not optional in practice: as of August 2026,
+// Apollo deprecated the old mixed_people/search endpoint for API callers
+// entirely (confirmed live in production — every single call was coming
+// back 422 "This endpoint is deprecated for API callers", which is the
+// actual reason 0 of a real customer's 12 signals ever got a verified
+// contact, not a bad key or a plan restriction). Its replacement,
+// mixed_people/api_search, doesn't accept a free-text company name at all —
+// only organization_ids or a domain — so callers must resolve the company
+// via enrichCompany() FIRST and pass its apolloOrgId through here. Without
+// one, there's no way to search people by company any more, so this
+// returns null rather than guessing.
+export async function verifyContact(apolloKey, company, titleKeywords, supabase, apolloOrgId) {
   if (!apolloKey || !company) return null
+
+  const cacheKey = enrichmentCacheKey(company)
+  const titleKey = titleBucketKey(titleKeywords)
+
+  // 1. Check the shared cache first — company_contacts, one row per
+  // (company, title bucket), NOT company_enrichment's older one-contact-
+  // per-company columns (see titleBucketKey's header for why that was
+  // wrong). Covers a negative result too (contact_verified: false means
+  // "we already looked for this exact kind of role, nobody findable") so a
+  // company/role combination that never yields a contact isn't retried on
+  // every single run either.
+  if (supabase) {
+    try {
+      const { data: cached } = await supabase
+        .from('company_contacts')
+        .select('contact_name, contact_title, contact_linkedin_url, contact_email, contact_verified, checked_at')
+        .eq('company_name_key', cacheKey)
+        .eq('title_key', titleKey)
+        .maybeSingle()
+      if (cached?.checked_at) {
+        const ageDays = (Date.now() - new Date(cached.checked_at).getTime()) / (24 * 60 * 60 * 1000)
+        if (ageDays <= CONTACT_CACHE_TTL_DAYS) {
+          return cached.contact_verified
+            ? { name: cached.contact_name, title: cached.contact_title || '', linkedin_url: cached.contact_linkedin_url || '', email: cached.contact_email || null }
+            : null
+        }
+      }
+    } catch (err) {
+      console.error(`[scanShared] contact cache lookup failed for "${company}" (${titleKey}):`, err.message)
+    }
+  }
+
+  // 2. Cache miss (or stale) — only now does this spend anything, and only
+  // now does the lack of a resolved org id actually matter.
+  if (!apolloOrgId) return null
   if (!(await reserveApolloCredits(supabase))) return null
+
+  const result = await lookupContact(apolloKey, company, titleKeywords, supabase, apolloOrgId)
+
+  // 3. Write through regardless of hit or miss — a negative result is a
+  // cache-worthy fact too, see the comment on step 1.
+  if (supabase) {
+    try {
+      await supabase.from('company_contacts').upsert({
+        company_name_key: cacheKey,
+        title_key: titleKey,
+        contact_name: result?.name || null,
+        contact_title: result?.title || null,
+        contact_linkedin_url: result?.linkedin_url || null,
+        contact_email: result?.email || null,
+        contact_verified: !!result,
+        checked_at: new Date().toISOString(),
+      }, { onConflict: 'company_name_key,title_key' })
+    } catch (err) {
+      console.error(`[scanShared] contact cache write failed for "${company}" (${titleKey}):`, err.message)
+    }
+  }
+
+  return result
+}
+
+async function lookupContact(apolloKey, company, titleKeywords, supabase, apolloOrgId) {
   try {
-    const resp = await fetchWithRetry('https://api.apollo.io/v1/mixed_people/search', {
+    const resp = await fetchWithRetry('https://api.apollo.io/api/v1/mixed_people/api_search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
-      body: JSON.stringify({ q_organization_name: company, person_titles: titleKeywords?.length ? titleKeywords : undefined, page: 1, per_page: 1 }),
+      body: JSON.stringify({ organization_ids: [apolloOrgId], person_titles: titleKeywords?.length ? titleKeywords : undefined, page: 1, per_page: 1 }),
     })
     if (!resp.ok) {
+      // This used to only go to console.error — invisible the same way the
+      // intelligence_signals write failures were, just in a different file.
+      const bodyPreview = await resp.text().catch(() => '')
       console.error(`[scanShared] verifyContact non-ok response for "${company}": ${resp.status}`)
+      await reportServerError('scanShared:verifyContact', new Error(`Apollo mixed_people/api_search returned ${resp.status}`), {
+        company, apolloOrgId, titleKeywords, status: resp.status, bodyPreview: bodyPreview.slice(0, 500),
+      })
       return null
     }
     const data = await resp.json()
@@ -379,9 +474,39 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase)
     if (!p) return null
     const name = [p.first_name, p.last_name].filter(Boolean).join(' ').trim()
     if (!name) return null
-    return { name, title: p.title || '', linkedin_url: p.linkedin_url || '' }
+
+    // Apollo's search endpoint never returns a usable email, it comes back
+    // masked (e.g. "email_not_unlocked@domain.com"). Getting a real one
+    // requires a separate reveal call against the match/enrich endpoint,
+    // which spends its own Apollo credit — worth it here specifically,
+    // since "here's the CFO's name but no way to actually reach them" isn't
+    // a usable lead, that's the whole point of the contact being verified.
+    let email = null
+    if (p.id && (await reserveApolloCredits(supabase))) {
+      try {
+        const matchResp = await fetchWithRetry('https://api.apollo.io/v1/people/match', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
+          body: JSON.stringify({ id: p.id, reveal_personal_emails: true }),
+        }, 12000, 1)
+        if (matchResp.ok) {
+          const matchData = await matchResp.json()
+          const revealed = matchData?.person?.email
+          if (revealed && !revealed.includes('email_not_unlocked') && !revealed.includes('locked')) email = revealed
+        } else {
+          console.error(`[scanShared] email reveal non-ok response for "${company}"/"${name}": ${matchResp.status}`)
+        }
+      } catch (err) {
+        // Never let a failed email reveal cost the contact itself, a real
+        // verified name+title+LinkedIn is still valuable without an email.
+        console.error(`[scanShared] email reveal failed for "${company}"/"${name}":`, err.message)
+      }
+    }
+
+    return { name, title: p.title || '', linkedin_url: p.linkedin_url || '', email }
   } catch (err) {
     console.error(`[scanShared] verifyContact failed for "${company}":`, err.message)
+    await reportServerError('scanShared:verifyContact', err, { company, titleKeywords })
     return null
   }
 }
@@ -409,12 +534,17 @@ export async function enrichCompany(apolloKey, company, supabase) {
     try {
       const { data: cached } = await supabase
         .from('company_enrichment')
-        .select('domain, industry, city, state, country, logo_url, matched')
+        .select('domain, industry, city, state, country, logo_url, matched, apollo_org_id')
         .eq('company_name_key', cacheKey)
         .maybeSingle()
-      if (cached) {
+      // A cache row from before apollo_org_id existed (matched=true but the
+      // new column is still null) is treated as a miss, not a hit — falls
+      // through to a fresh lookup so it gets backfilled, rather than
+      // returning apolloOrgId: null forever and silently breaking
+      // verifyContact for every company enriched before today's fix.
+      if (cached && (!cached.matched || cached.apollo_org_id)) {
         return cached.matched
-          ? { domain: cached.domain, industry: cached.industry, city: cached.city, state: cached.state, country: cached.country, logo_url: cached.logo_url }
+          ? { domain: cached.domain, industry: cached.industry, city: cached.city, state: cached.state, country: cached.country, logo_url: cached.logo_url, apolloOrgId: cached.apollo_org_id || null }
           : null
       }
     } catch (err) {
@@ -435,6 +565,7 @@ export async function enrichCompany(apolloKey, company, supabase) {
     })
     if (!resp.ok) {
       console.error(`[scanShared] enrichCompany non-ok response for "${company}": ${resp.status}`)
+      await reportServerError('scanShared:enrichCompany', new Error(`Apollo mixed_companies/search returned ${resp.status}`), { company })
     } else {
       const data = await resp.json()
       const org = (data.organizations && data.organizations[0]) || (data.accounts && data.accounts[0])
@@ -446,6 +577,11 @@ export async function enrichCompany(apolloKey, company, supabase) {
           state: org.state || null,
           country: org.country || null,
           logo_url: org.logo_url || null,
+          // Needed by verifyContact — see that function's header. Captured
+          // here so the one companies/search credit this call already
+          // spends also resolves people search, instead of a second,
+          // separate lookup for the same company.
+          apolloOrgId: org.id || org.organization_id || null,
         }
       }
     }
@@ -467,6 +603,7 @@ export async function enrichCompany(apolloKey, company, supabase) {
         state: result?.state || null,
         country: result?.country || null,
         logo_url: result?.logo_url || null,
+        apollo_org_id: result?.apolloOrgId || null,
         matched: !!result,
         enriched_at: new Date().toISOString(),
       }, { onConflict: 'company_name_key' })
@@ -524,4 +661,128 @@ export async function verifyLeadershipChange(chApiKey, companyName) {
     console.error('[scanShared] Companies House verification failed:', err.message)
     return null
   }
+}
+
+// Builds one intelligence_signals row from a raw scan entry (an AI-written
+// signal, or an Adzuna-sourced live_job entry), running every enrichment
+// call the row depends on: company info + Apollo org id (enrichCompany), a
+// verified contact (verifyContact — cached at the company level, see that
+// function's own header), Companies House confirmation for
+// leadership_change signals, and a liveness check on the source URL.
+//
+// This used to be a ~35-line block pasted independently into both
+// scan-now-background.js and intelligence-scan.js, differing only in which
+// user_id to attribute rows to and which log prefix to attribute an
+// unrecognised signalType to. Every field this session added (intro_message,
+// bench_strength_angle, the live_job branch) had to be hand-applied to both
+// copies — exactly the drift risk the rest of this file already exists to
+// avoid for the orchestration logic, just not yet for this part.
+//
+// signal_type is forced to 'live_job' in code from the entry's own
+// entryType field for live_job entries, never trusted to the AI's own
+// signalType choice — see dropGenericHiringWhereLiveJobsExist above and
+// both scan files' prompts.
+export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix }) {
+  // enrichCompany runs first, not in parallel with verifyContact: Apollo's
+  // people-search now requires a resolved organization_id (see
+  // verifyContact's header), which only enrichCompany's own company lookup
+  // can provide — running them in parallel would mean verifyContact never
+  // has an id to search with.
+  const [companyInfo, chVerification, sourceVerified] = await Promise.all([
+    enrichCompany(apolloKey, s.company, supabase),
+    s.signalType === 'leadership_change' ? verifyLeadershipChange(companiesHouseKey, s.company) : Promise.resolve(null),
+    verifySourceUrl(s.sourceUrl),
+  ])
+  const contact = await verifyContact(apolloKey, s.company, s.titleKeywords, supabase, companyInfo?.apolloOrgId)
+
+  const isLiveJob = s.entryType === 'live_job'
+
+  return {
+    user_id: userId,
+    company_name: s.company,
+    company_domain: companyInfo?.domain || null,
+    company_industry: companyInfo?.industry || null,
+    company_city: companyInfo?.city || null,
+    company_state: companyInfo?.state || null,
+    company_country: companyInfo?.country || null,
+    company_logo_url: companyInfo?.logo_url || null,
+    signal_type: isLiveJob ? 'live_job' : resolveSignalType(s.signalType, logPrefix),
+    headline: s.headline,
+    why_it_matters: s.whyItMatters || '',
+    source_url: s.sourceUrl || '',
+    source_label: s.sourceLabel || '',
+    source_verified: sourceVerified,
+    event_at: toEventIso(s.eventDate),
+    who_to_approach: s.whoToApproach || '',
+    intro_message: s.introMessage || '',
+    candidate_angle: s.candidateAngle || '',
+    bench_strength_angle: s.benchStrengthAngle || '',
+    contact_name: contact?.name || null,
+    contact_title: contact?.title || null,
+    contact_linkedin_url: contact?.linkedin_url || null,
+    contact_email: contact?.email || null,
+    contact_verified: !!contact,
+    title_keywords: Array.isArray(s.titleKeywords) ? s.titleKeywords.slice(0, 6) : [],
+    ch_verified: !!chVerification,
+    ch_verified_detail: chVerification?.detail || null,
+    dedup_key: normalizeKey(s.company, s.headline),
+    status: 'new',
+  }
+}
+
+// Runs `fn` over `items` with at most `limit` in flight at once, resolving
+// to an array in the SAME order as `items` regardless of finishing order.
+// Plain code, no library — the concurrency need here is small and narrow
+// enough not to justify a dependency.
+export async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length)
+  let nextIndex = 0
+  async function worker() {
+    for (;;) {
+      const i = nextIndex++
+      if (i >= items.length) return
+      results[i] = await fn(items[i], i)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker))
+  return results
+}
+
+// Runs buildEnrichedSignalRow across every entry, in parallel where it's
+// actually safe to do so. Before this, both scan files' row-building loops
+// ran one entry fully to completion (enrichCompany → verifyContact, at
+// least one Apollo round trip each) before starting the next — pure wall-
+// clock waste once MAX_TOTAL_SIGNALS was raised this session, since most
+// entries are for entirely unrelated companies with no dependency on each
+// other.
+//
+// Entries are grouped by company and each company's own entries are run
+// strictly in order within their group — this is the part that has to stay
+// sequential. Two live_job entries for the SAME company (exactly the
+// scenario Live Jobs introduces) must not both race a cache miss on
+// verifyContact's company-level contact cache and both spend an Apollo
+// credit; running the same company's entries one after another guarantees
+// the second one always sees the first one's cache write. Different
+// companies have no such dependency, so those groups run concurrently.
+//
+// Output order becomes "grouped by company" rather than strict input order
+// — harmless, since the result is only ever used as a set for a bulk
+// upsert, never rendered in array order.
+export async function buildEnrichedSignalRows(entries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, concurrency = 4 }) {
+  const groups = new Map()
+  for (const s of entries) {
+    const key = normalizeCompanyKey(s.company)
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(s)
+  }
+
+  const groupRows = await mapWithConcurrency([...groups.values()], concurrency, async (group) => {
+    const rows = []
+    for (const s of group) {
+      rows.push(await buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix }))
+    }
+    return rows
+  })
+
+  return groupRows.flat()
 }

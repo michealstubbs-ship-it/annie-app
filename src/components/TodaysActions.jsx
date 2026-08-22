@@ -4,6 +4,21 @@ import { supabase } from '../lib/supabase'
 import { buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool, buildSourcedPool, selectDailyItems } from '../lib/actionsEngine'
 import { buildEnrichmentPrompt } from '../lib/actionsCopy'
 import { callChat } from '../lib/callChat'
+import { extractJson } from '../lib/jsonExtract'
+import ApproachPicker from './ApproachPicker'
+
+// Same two "recommended approach" angles as IntelligenceFeed's version of
+// this — see buildApproaches there and ApproachPicker's own header for why
+// this exists as a picker instead of stacking both texts at once. Today's
+// Actions doesn't currently surface a "candidates already in your pipeline"
+// match for sourced items the way the Intelligence Feed does, so there's no
+// third 'pipeline' option here — only what this view already had.
+function buildApproaches(action) {
+  const approaches = []
+  if (action.candidateAngle) approaches.push({ key: 'candidate', icon: '🎯', label: 'Lead with a candidate', tone: 'default', content: action.candidateAngle })
+  if (action.benchStrengthAngle) approaches.push({ key: 'bench', icon: '💪', label: 'Lead with our bench', tone: 'default', content: action.benchStrengthAngle })
+  return approaches
+}
 
 const BADGE = {
   dormant: { label: 're-engage', className: 'bg-amber-100 text-amber-700' },
@@ -11,11 +26,7 @@ const BADGE = {
   relationship: { label: 'relationship', className: 'bg-purple-100 text-purple-700' },
   new_client: { label: 'new client', className: 'bg-blue-100 text-blue-700' },
   sourced: { label: 'sourced by annie', className: 'bg-navy text-gold' },
-}
-
-function extractJson(text) {
-  const match = text.match(/\[[\s\S]*\]/)
-  return JSON.parse(match ? match[0] : text)
+  live_job: { label: 'live role', className: 'bg-emerald-100 text-emerald-700' },
 }
 
 export default function TodaysActions() {
@@ -26,6 +37,8 @@ export default function TodaysActions() {
   const [error, setError] = useState('')
   const [onboarding, setOnboarding] = useState(null)
   const [openIndex, setOpenIndex] = useState(null)
+  const [copiedIndex, setCopiedIndex] = useState(null)
+  const [approachChoice, setApproachChoice] = useState({})
 
   useEffect(() => {
     loadCachedActions()
@@ -115,6 +128,7 @@ export default function TodaysActions() {
           return {
             source: 'sourced',
             category: 'sourced',
+            signalType: s.signal_type,
             urgency: item.urgency,
             headline: s.headline,
             detail: s.why_it_matters,
@@ -123,8 +137,10 @@ export default function TodaysActions() {
             sourceUrl: s.source_url,
             sourceLabel: s.source_label,
             whoToApproach: s.who_to_approach,
+            introMessage: s.intro_message,
             candidateAngle: s.candidate_angle,
-            verifiedContact: s.contact_verified ? { name: s.contact_name, title: s.contact_title, linkedin_url: s.contact_linkedin_url } : null,
+            benchStrengthAngle: s.bench_strength_angle,
+            verifiedContact: s.contact_verified ? { name: s.contact_name, title: s.contact_title, linkedin_url: s.contact_linkedin_url, email: s.contact_email } : null,
             signalId: s.id,
           }
         }
@@ -159,6 +175,24 @@ export default function TodaysActions() {
     } finally {
       setLoading(false)
     }
+  }
+
+  // Safety net for signals written before introMessage existed — still
+  // usable, so the copy button always has something worth copying.
+  function fallbackIntroMessage(action) {
+    return `Hi — I saw the news about ${action.headline} at ${action.company}. ${action.detail || ''} Would it be worth a quick conversation?`.trim()
+  }
+
+  async function copyIntroMessage(action, index) {
+    const text = action.introMessage || fallbackIntroMessage(action)
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // Clipboard permission can fail quietly in some browsers/contexts —
+      // the message is still shown right above the button either way.
+    }
+    setCopiedIndex(index)
+    setTimeout(() => setCopiedIndex(c => (c === index ? null : c)), 2000)
   }
 
   async function markDone(action, index) {
@@ -210,7 +244,7 @@ export default function TodaysActions() {
           <p className="text-sm text-gray-500 mb-2">Annie found <span className="font-semibold text-navy">{actions.length} thing{actions.length === 1 ? '' : 's'} worth your attention today</span>, ranked by what's most time-sensitive first, sized by what's genuinely urgent, not a fixed number.</p>
 
           {actions.map((action, i) => {
-            const badge = BADGE[action.category] || BADGE.new_client
+            const badge = action.signalType === 'live_job' ? BADGE.live_job : (BADGE[action.category] || BADGE.new_client)
             const isOpen = openIndex === i
             const isSourced = action.source === 'sourced'
             return (
@@ -253,20 +287,41 @@ export default function TodaysActions() {
                                   <span className="text-[9px] font-bold text-green-700 uppercase tracking-wider">Verified via Apollo</span>
                                 </div>
                                 <p className="text-xs font-semibold text-navy">{action.verifiedContact.name}{action.verifiedContact.title ? `, ${action.verifiedContact.title}` : ''}</p>
-                                {action.verifiedContact.linkedin_url && (
-                                  <a href={action.verifiedContact.linkedin_url} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline">View LinkedIn profile</a>
-                                )}
+                                <div className="flex items-center gap-2.5 mt-0.5 flex-wrap">
+                                  {action.verifiedContact.email && (
+                                    <a href={`mailto:${action.verifiedContact.email}`} className="text-[11px] text-blue-600 hover:underline">{action.verifiedContact.email}</a>
+                                  )}
+                                  {action.verifiedContact.linkedin_url && (
+                                    <a href={action.verifiedContact.linkedin_url} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline">View LinkedIn profile</a>
+                                  )}
+                                </div>
                                 <p className="text-xs text-gray-600 mt-1.5">{action.whoToApproach}</p>
                               </div>
                             ) : (
                               <p className="text-xs text-gray-600 mb-3">{action.whoToApproach} <span className="text-gray-400">(no verified contact found yet, approach by role)</span></p>
                             )}
-                            {action.candidateAngle && (
-                              <>
-                                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Candidate angle</div>
-                                <p className="text-xs text-navy italic border-l-2 border-gold pl-3 mb-3">{action.candidateAngle}</p>
-                              </>
-                            )}
+                            <ApproachPicker
+                              approaches={buildApproaches(action)}
+                              selectedKey={approachChoice[i]}
+                              onSelect={key => setApproachChoice(prev => ({ ...prev, [i]: key }))}
+                            />
+                            {/* The one thing here meant to be used as-is, not
+                                just read — a distinct navy block with a bold
+                                gold action button so it reads as "push this"
+                                rather than blending into the text above it. */}
+                            <div className="bg-navy rounded-lg px-4 py-3 mb-1">
+                              <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                                <span className="text-[10px] font-bold text-gold uppercase tracking-wider">✉️ Ready-to-send message</span>
+                                <button
+                                  onClick={() => copyIntroMessage(action, i)}
+                                  title="Copies this message to your clipboard, ready to paste into an email or LinkedIn message — nothing to draft, nothing to leave this page for."
+                                  className="text-xs font-bold px-4 py-2 rounded-md bg-gold text-navy hover:bg-gold/90 flex-shrink-0 transition-colors"
+                                >
+                                  {copiedIndex === i ? '✓ Copied!' : '📋 Copy message'}
+                                </button>
+                              </div>
+                              <p className="text-white/90 text-[11.5px] leading-relaxed">{action.introMessage || fallbackIntroMessage(action)}</p>
+                            </div>
                           </>
                         ) : (
                           <>

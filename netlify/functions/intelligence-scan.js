@@ -19,9 +19,11 @@
 // per-run signal cap, and the cheaper model.
 import { createClient } from '@supabase/supabase-js'
 import { reportServerError } from './lib/reportError.js'
+import { reserveAnthropicTokens } from './lib/aiUsage.js'
 import {
-  SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, extractJson, toEventIso, resolveSignalType,
-  discoverAdzunaJobs, verifyContact, enrichCompany, verifyLeadershipChange, fetchWithRetry, verifySourceUrl, alertIfConfigured,
+  SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, extractJson,
+  discoverAdzunaJobs, fetchWithRetry, alertIfConfigured,
+  dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows,
 } from './lib/scanShared.js'
 
 // Hard ceiling on how many NEW (never-seen-before) signals get enriched via
@@ -37,21 +39,22 @@ Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
 Functions this recruiter places candidates into: ${functions || 'All functions, no specific focus given'}.
 Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Communication tone: ${onboarding?.tone || 'professional'}.
-${onboarding?.writing_style ? `The recruiter's real writing style, follow this closely when writing the candidateAngle text:\n${onboarding.writing_style}\n` : ''}
+${onboarding?.writing_style ? `The recruiter's real writing style, follow this closely when writing the introMessage, candidateAngle, and benchStrengthAngle text:\n${onboarding.writing_style}\n` : ''}
 Use web search to find genuine, timely BD-relevant signals in these sectors and markets right now: funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity.
-Also actively look for layoffs, redundancies, or restructuring news. This cuts both ways and both are worth surfacing: a company doing layoffs sometimes still needs to quietly backfill specific roles (frame the signal around that need), and separately, a real layoff or redundancy event puts a pool of genuinely available, often strong candidates on the market at once, worth surfacing on its own even with no obvious open role at that company, in which case candidateAngle should describe that available talent pool specifically. Classify these as signalType "regulatory" and make the headline clearly say layoffs or redundancy so it's not confused with an ordinary hiring signal.
+Also actively look for layoffs, redundancies, or restructuring news. This cuts both ways and both are worth surfacing: a company doing layoffs sometimes still needs to quietly backfill specific roles (frame the signal around that need), and separately, a real layoff or redundancy event puts a pool of genuinely available, often strong candidates on the market at once, worth surfacing on its own even with no obvious open role at that company, in which case candidateAngle should describe that available talent pool. Classify these as signalType "regulatory" and make the headline clearly say layoffs or redundancy so it's not confused with an ordinary hiring signal.
 Search thoroughly before concluding there is nothing. Run multiple distinct searches, try each sector and each function by name, try combinations of sector + "funding" / "hiring" / "appoints" / "expansion" / "acquires", try the specified markets by name, and try recent news generally in these sectors before narrowing. Do not stop after one or two searches, a real, live-news industry genuinely has more happening in it than that.
 ${functions ? `This recruiter places into the functions listed above. When you find a strong, genuine signal, connect it to whichever of those functions it most plausibly affects, even if the reasoning takes a small logical step (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring, a new market launch signals Government/Regulatory Affairs hiring, an M&A deal signals Corporate Development or Legal hiring). Make your best reasonable case for the closest function rather than discarding a real, well-sourced signal purely because the function match isn't perfect. Only leave a strong signal out entirely if you genuinely cannot connect it to any of the functions listed, even loosely.` : ''}
 
 Bias against obvious, oversaturated, famous names everyone already targets when a quieter, equally strong alternative exists, but do not discard a genuinely strong, well-sourced signal just because the company is well known, a real opportunity is better than an artificially obscure one.
 
-${opts.adzunaLeads?.length ? `\nAdzuna's live jobs board shows these real, recent job postings that may match this recruiter's sectors and functions: ${opts.adzunaLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. For any of these that reads as posted directly by the company itself (no recruitment agency name, no "on behalf of our client" language, no agency branding) rather than through a recruiter or agency, this is strong, verifiable evidence for signalType "job_posting_unclaimed", a company trying to fill this role itself right now with no recruiter attached, a genuine opportunity to pitch this recruiter's own candidates and service directly. Use the real posting URL as sourceUrl when you use one of these. Skip any that clearly look agency-posted.\n` : ''}
+${opts.adzunaLeads?.length ? `\nAdzuna's live jobs board shows these real, recent job postings that may match this recruiter's sectors and functions: ${opts.adzunaLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. For any of these that reads as posted directly by the company itself (no recruitment agency name, no "on behalf of our client" language, no agency branding) rather than through a recruiter or agency, this is a genuine open role with no recruiter attached — do NOT write this up as a generic "signal" entry. Instead, write it as its own "live_job" entry (see the separate live_job field list below), one per specific role, with the real posting URL as sourceUrl. Skip any that clearly look agency-posted. If a company has one or more of these live_job entries, do not also write a separate hiring_activity or job_posting_unclaimed signal entry about that same company being on a hiring push in general — the specific role entries replace that, they don't sit alongside it.\n` : ''}
 
 Companies already surfaced recently, don't re-report the same event for these unless there is a brand new development: ${recentCompanies.join(', ') || 'None yet'}.
 
-Every signal must have a real, citable source you actually found via search. Do not invent anything. Return up to 5 signals, fewer if you can't find genuinely good ones after searching thoroughly, never pad with weak filler.
+Every signal must have a real, citable source you actually found via search. Do not invent anything. Return up to 5 entries total (signal and live_job entries combined), fewer if you can't find genuinely good ones after searching thoroughly, never pad with weak filler.
 
 For each signal, determine:
+- entryType: "signal"
 - company: the company name
 - signalType: one of ${SIGNAL_TYPES.join(', ')}
 - headline: max 10 words
@@ -61,13 +64,37 @@ For each signal, determine:
 - eventDate: your best estimate of when this actually happened or was posted, as YYYY-MM-DD, based on the source
 - whoToApproach: the specific person or role to approach and why, bypass generic HR/Head of Talent unless they're genuinely the right door, and keep them within this recruiter's target functions above
 - titleKeywords: 2-4 likely job title strings for the right decision-maker, used afterwards to look up a real verified contact
-- candidateAngle: a specific, credible candidate profile to lead with (background, seniority, source companies), matching the target functions above, not a generic pitch, written in the recruiter's communication tone above. Leave blank if this signal isn't the kind that calls for a candidate pitch (e.g. a pure leadership-change or funding note with no obvious opening).
+- introMessage: a ready-to-send opening outreach message (3-5 sentences) the recruiter can copy and send as-is to the person in whoToApproach, referencing this specific signal so it reads as informed rather than a cold generic pitch, written in the recruiter's communication tone above. Write finished, sendable text, not a template with placeholder brackets.
+- candidateAngle: a specific, credible candidate pitch to lead with — background, seniority, source companies — matching the target functions above. Phrase it as an opening gambit, not an unconditional promise (e.g. "I'm working with a [seniority] who..." rather than "I have the perfect candidate"), so the recruiter still has room to say that exact person has just gone off-market if the hiring manager responds and it doesn't pan out — the point of this angle is opening the conversation, not guaranteeing one specific person. Leave blank if this signal isn't the kind that calls for a candidate pitch (e.g. a pure leadership-change or funding note with no obvious opening).
+- benchStrengthAngle: a positioning pitch that does NOT name a single candidate — instead, say the recruiter works with several people who have direct, relevant experience in this exact niche, naming 1-2 real, specific companies that are genuine competitors or close peers to ${'`company`'} in this space (never vague phrasing like "similar companies"), so it reads as informed market knowledge rather than a generic claim. Leave blank if you cannot confidently name genuine, relevant peer companies.
 
-Return a JSON array, each object with exactly these fields: company, signalType, headline, whyItMatters, sourceUrl, sourceLabel, eventDate, whoToApproach, titleKeywords, candidateAngle.
-Only return the JSON array, nothing else. If nothing genuinely good was found, return an empty array.`
+For each genuine, directly-posted open role you found via the Adzuna list above, write a SEPARATE entry with these fields instead (do not mix these into a signal entry):
+- entryType: "live_job"
+- company: the company name, exactly as Adzuna gave it
+- headline: the exact, specific role title (e.g. "Senior Finance Manager", not "Hiring across Finance") — this is what makes it a live job entry rather than a company-level narrative
+- whyItMatters: 1 sentence on why this specific open role is a genuine BD opportunity right now (e.g. posted directly with no recruiter attached, matches this recruiter's placement functions)
+- sourceUrl: the real Adzuna posting URL from the list above
+- sourceLabel: short label, e.g. adzuna.com
+- eventDate: the posting date if you can tell, else your best estimate, as YYYY-MM-DD
+- whoToApproach: the specific person or role to approach about this exact opening
+- titleKeywords: 2-4 likely job title strings for the right decision-maker, used afterwards to look up a real verified contact
+- introMessage: a ready-to-send opening message referencing this exact open role, written in the recruiter's communication tone above
+- candidateAngle: same as above, tailored to this exact role. Leave blank if it doesn't call for one.
+- benchStrengthAngle: same as above, tailored to this exact role's niche. Leave blank if you cannot confidently name genuine peer companies.
+
+Return a single JSON array mixing both kinds of entries, each tagged with its entryType. Only return the JSON array, nothing else. If nothing genuinely good was found, return an empty array.`
 }
 
-async function callAnthropic(apiKey, systemPrompt) {
+const DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP = 2_000_000
+
+async function callAnthropic(apiKey, systemPrompt, supabase) {
+  // Anthropic spend had no cap anywhere in this codebase — mirrors the
+  // existing Apollo daily-credit-cap pattern (reserveApolloCredits in
+  // scanShared.js). Checked before the network call fires, same as Apollo's.
+  const dailyTokenCap = parseInt(process.env.ANTHROPIC_DAILY_TOKEN_CAP, 10) || DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP
+  if (!(await reserveAnthropicTokens(supabase, 4096, dailyTokenCap))) {
+    throw new Error('Anthropic daily token cap reached — skipping this call')
+  }
   // retries=1, not the fetchWithRetry default of 2: this call already has a
   // 90s timeout for multi-round web search, so a full 2-retry budget could
   // cost up to ~4.5 minutes on one customer in a sequential per-customer
@@ -106,11 +133,28 @@ async function callAnthropic(apiKey, systemPrompt) {
 //
 // The method check below is just hygiene (Netlify's scheduler always POSTs)
 // — it isn't what's actually keeping this safe.
+// How long this run is allowed to spend working through customers before it
+// stops starting new ones and returns cleanly. Netlify's background-function
+// budget is 15 minutes; this stops well short of that so an in-flight
+// customer's own Anthropic/Apollo calls (each with their own retry timeouts)
+// have room to finish rather than getting hard-killed mid-write. Whatever
+// wasn't reached this run gets covered by the NEXT scheduled run 12 hours
+// later — not ideal at high customer counts (see the comment on `config`
+// below), but far better than the previous behaviour of this being a
+// schedule-only function with NO background budget at all, silently capped
+// at Netlify's 30-second scheduled-function limit — meaning in practice only
+// the first customer or so per run (however far a single Anthropic call plus
+// enrichment got in 30 seconds) was ever actually being scanned, with every
+// customer after that never reached, run after run, and nothing surfacing
+// that this was happening.
+const RUN_BUDGET_MS = 12 * 60 * 1000
+
 export default async (req, context) => {
   if (req.method !== 'POST') {
     return new Response('Method not allowed', { status: 405 })
   }
 
+  const runStartedAt = Date.now()
   const anthropicKey = process.env.ANTHROPIC_API_KEY
   const apolloKey = process.env.APOLLO_API_KEY
   const companiesHouseKey = process.env.COMPANIES_HOUSE_API_KEY
@@ -125,12 +169,31 @@ export default async (req, context) => {
 
   const supabase = createClient(supabaseUrl, serviceKey)
 
-  const { data: onboardingRows } = await supabase.from('onboarding').select('user_id, sectors, functions, locations, tone, firm_name, writing_style')
+  // Ordered so that which customers get scanned first is deterministic run
+  // to run, not whatever order Postgres happens to return — matters once
+  // RUN_BUDGET_MS below means a given run might not reach every row.
+  const { data: onboardingRows } = await supabase.from('onboarding').select('user_id, sectors, functions, locations, tone, firm_name, writing_style').order('user_id')
   if (!onboardingRows?.length) return new Response('No customers to scan', { status: 200 })
 
   let totalNewSignals = 0
+  let processedCount = 0
 
   for (const ob of onboardingRows) {
+    if (Date.now() - runStartedAt > RUN_BUDGET_MS) {
+      // Stop starting new customers, not mid-write on the current one —
+      // the loop only checks this at the top, between customers. The
+      // remaining rows get picked up by the next scheduled run; logged
+      // clearly (not silently) so a shrinking per-run coverage percentage
+      // as the customer base grows is visible before it becomes a support
+      // ticket instead of after. See the `config`/RUN_BUDGET_MS comments —
+      // once this consistently can't reach the full list, it's the signal
+      // to move this to a real queue/fan-out rather than one long loop.
+      const remaining = onboardingRows.length - processedCount
+      console.log(`[intelligence-scan] time budget reached after ${processedCount}/${onboardingRows.length} customers — ${remaining} deferred to the next run`)
+      await alertIfConfigured(`⚠️ intelligence-scan: hit its time budget after ${processedCount}/${onboardingRows.length} customers this run — ${remaining} deferred to the next scheduled run. If this keeps happening, the scan needs to move from one long loop to a real queue.`)
+      break
+    }
+    processedCount++
     try {
       const { data: recentSignals } = await supabase
         .from('intelligence_signals')
@@ -142,8 +205,11 @@ export default async (req, context) => {
 
       const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
 
-      const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads }))
-      const found = extractJson(text)
+      const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads }), supabase)
+      // Enforce "replace, not supplement" here in code — see the function's
+      // own comment in scanShared.js for why this can't just be a prompt
+      // instruction alone.
+      const found = dropGenericHiringWhereLiveJobsExist(extractJson(text))
       if (!found.length) {
         // Same reasoning as scan-now-background.js: log a preview so a
         // zero-result customer is diagnosable from the log, not guessed at.
@@ -172,47 +238,24 @@ export default async (req, context) => {
         continue
       }
 
-      const rows = []
-      for (const s of newSignals) {
-        const [contact, companyInfo, chVerification, sourceVerified] = await Promise.all([
-          verifyContact(apolloKey, s.company, s.titleKeywords, supabase),
-          enrichCompany(apolloKey, s.company, supabase),
-          s.signalType === 'leadership_change' ? verifyLeadershipChange(companiesHouseKey, s.company) : Promise.resolve(null),
-          verifySourceUrl(s.sourceUrl),
-        ])
-
-        rows.push({
-          user_id: ob.user_id,
-          company_name: s.company,
-          company_domain: companyInfo?.domain || null,
-          company_industry: companyInfo?.industry || null,
-          company_city: companyInfo?.city || null,
-          company_state: companyInfo?.state || null,
-          company_country: companyInfo?.country || null,
-          company_logo_url: companyInfo?.logo_url || null,
-          signal_type: resolveSignalType(s.signalType, '[intelligence-scan]'),
-          headline: s.headline,
-          why_it_matters: s.whyItMatters || '',
-          source_url: s.sourceUrl || '',
-          source_label: s.sourceLabel || '',
-          source_verified: sourceVerified,
-          event_at: toEventIso(s.eventDate),
-          who_to_approach: s.whoToApproach || '',
-          candidate_angle: s.candidateAngle || '',
-          contact_name: contact?.name || null,
-          contact_title: contact?.title || null,
-          contact_linkedin_url: contact?.linkedin_url || null,
-          contact_verified: !!contact,
-          title_keywords: Array.isArray(s.titleKeywords) ? s.titleKeywords.slice(0, 6) : [],
-          ch_verified: !!chVerification,
-          ch_verified_detail: chVerification?.detail || null,
-          dedup_key: normalizeKey(s.company, s.headline),
-          status: 'new',
-        })
-      }
+      // Row-building itself now lives once in scanShared.js, shared with
+      // scan-now-background.js, and runs with bounded concurrency across
+      // different companies instead of one entry at a time — see
+      // buildEnrichedSignalRows's own comment for why that's safe even with
+      // Live Jobs' multiple-entries-per-company case.
+      const rows = await buildEnrichedSignalRows(newSignals, { userId: ob.user_id, apolloKey, companiesHouseKey, supabase, logPrefix: '[intelligence-scan]' })
 
       if (rows.length) {
-        await supabase.from('intelligence_signals').upsert(rows, { onConflict: 'user_id,dedup_key', ignoreDuplicates: true })
+        // See the matching comment in scan-now-background.js — the same
+        // unchecked-upsert bug lived here too, meaning the recurring cron
+        // has been silently failing to write signals for every customer
+        // for exactly the same reason (columns missing on the live table,
+        // now fixed). Throwing here (rather than swallowing) is deliberate:
+        // this function's own per-customer try/catch already reports to
+        // error_logs and moves on to the next customer, which is exactly
+        // the right handling for a write failure too.
+        const { error } = await supabase.from('intelligence_signals').upsert(rows, { onConflict: 'user_id,dedup_key', ignoreDuplicates: true })
+        if (error) throw new Error(`signal upsert failed: ${error.message}`)
         totalNewSignals += rows.length
       }
     } catch (err) {
@@ -234,4 +277,17 @@ export default async (req, context) => {
   return new Response('Scan complete', { status: 200 })
 }
 
-export const config = { schedule: '0 */12 * * *' }
+// `background: true` added alongside the existing schedule — verified
+// against Netlify's own docs (docs.netlify.com/build/functions/scheduled-
+// functions and .../background-functions, checked 22 Aug 2026): a scheduled
+// function with no background config is capped at Netlify's flat 30-SECOND
+// execution limit, full stop, regardless of the work inside it. This
+// function calls Anthropic with its own 90-second timeout (see
+// callAnthropic/fetchWithRetry above) and loops over every customer — it was
+// being hard-killed by the platform well before even one customer's call
+// could realistically complete, every single run, silently (a killed
+// invocation doesn't throw into this file's own try/catch or
+// reportServerError — it just stops existing). `background: true` raises
+// that ceiling to Netlify's 15-minute background budget, which is what
+// RUN_BUDGET_MS above is paced against.
+export const config = { schedule: '0 */12 * * *', background: true }

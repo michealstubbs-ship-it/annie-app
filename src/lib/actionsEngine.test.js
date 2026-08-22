@@ -90,6 +90,25 @@ describe('buildSourcedPool — the M2 "never ages out" fix', () => {
     const [verified] = buildSourcedPool([{ ...base, contact_verified: true }], [])
     expect(verified.score).toBeGreaterThan(unverified.score)
   })
+
+  it('a live_job entry scores higher than an otherwise-identical generic signal — a specific real open role is the strongest lead this pool surfaces', () => {
+    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(1), contact_verified: false }
+    const [generic] = buildSourcedPool([{ ...base, signal_type: 'funding' }], [])
+    const [liveJob] = buildSourcedPool([{ ...base, signal_type: 'live_job' }], [])
+    expect(liveJob.score).toBeGreaterThan(generic.score)
+  })
+
+  it('a live_job entry still counts as urgent up to 7 days old, wider than the 3-day window an ordinary racy signal gets — a real open req stays live longer than a news mention', () => {
+    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'live_job', contact_verified: false }
+    const [recent] = buildSourcedPool([{ ...base, found_at: daysAgoIso(6) }], [])
+    expect(recent.urgency).toBe(2)
+  })
+
+  it('an ordinary racy signal (hiring_activity) drops to urgency 1 past 3 days, unlike live_job', () => {
+    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'hiring_activity', contact_verified: false }
+    const [older] = buildSourcedPool([{ ...base, found_at: daysAgoIso(6) }], [])
+    expect(older.urgency).toBe(1)
+  })
 })
 
 describe('buildNewClientPool', () => {

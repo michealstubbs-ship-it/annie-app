@@ -1,6 +1,8 @@
 import React, { Suspense, lazy } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import Sidebar from '../components/Sidebar'
+import Spinner from '../components/Spinner'
+import ErrorBoundary from '../components/ErrorBoundary'
 import { useAuth } from '../contexts/AuthContext'
 
 const TodaysActions = lazy(() => import('../components/TodaysActions'))
@@ -19,10 +21,10 @@ const Jobs = lazy(() => import('../components/Jobs'))
 const Overview = lazy(() => import('../components/Overview'))
 const Billing = lazy(() => import('../components/Billing'))
 
-function PageLoader() {
+function RoutePageLoader() {
   return (
     <div className="flex-1 flex items-center justify-center">
-      <div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" />
+      <Spinner />
     </div>
   )
 }
@@ -49,25 +51,34 @@ export default function Dashboard() {
       {/* pt-14 clears the fixed mobile top bar Sidebar renders below md;
           md:pt-0 restores today's desktop layout exactly. */}
       <main className="flex-1 overflow-auto pt-14 md:pt-0">
-        <Suspense fallback={<PageLoader />}>
-          <Routes>
-            <Route index element={<Overview />} />
-            <Route path="actions" element={<TodaysActions />} />
-            <Route path="intelligence-feed" element={<IntelligenceFeed />} />
-            <Route path="candidates" element={<Candidates />} />
-            <Route path="meetings" element={<Meetings />} />
-            <Route path="tasks" element={<Tasks />} />
-            <Route path="companies" element={<Companies />} />
-            <Route path="jobs" element={<Jobs />} />
-            <Route path="contacts" element={<Contacts />} />
-            <Route path="pipeline" element={<Pipeline />} />
-            <Route path="chat" element={<Chat />} />
-            <Route path="settings" element={<Settings />} />
-            <Route path="billing" element={<Billing />} />
-            <Route path="import-linkedin" element={<LinkedInImport embedded />} />
-            <Route path="insights" element={<AdminRoute><Insights /></AdminRoute>} />
-          </Routes>
-        </Suspense>
+        {/* Scoped here, not at the app root (see main.jsx for that one) —
+            a scale-readiness audit (2026-08-22) found a single crashing
+            dashboard page used to take the whole app down, Sidebar
+            included, since only one app-wide boundary existed. This one
+            catches a page-level render error without unmounting Sidebar,
+            which sits outside it as a sibling — the rest of the app stays
+            usable while just this one page shows the error card. */}
+        <ErrorBoundary>
+          <Suspense fallback={<RoutePageLoader />}>
+            <Routes>
+              <Route index element={<Overview />} />
+              <Route path="actions" element={<TodaysActions />} />
+              <Route path="intelligence-feed" element={<IntelligenceFeed />} />
+              <Route path="candidates" element={<Candidates />} />
+              <Route path="meetings" element={<Meetings />} />
+              <Route path="tasks" element={<Tasks />} />
+              <Route path="companies" element={<Companies />} />
+              <Route path="jobs" element={<Jobs />} />
+              <Route path="contacts" element={<Contacts />} />
+              <Route path="pipeline" element={<Pipeline />} />
+              <Route path="chat" element={<Chat />} />
+              <Route path="settings" element={<Settings />} />
+              <Route path="billing" element={<Billing />} />
+              <Route path="import-linkedin" element={<LinkedInImport embedded />} />
+              <Route path="insights" element={<AdminRoute><Insights /></AdminRoute>} />
+            </Routes>
+          </Suspense>
+        </ErrorBoundary>
       </main>
     </div>
   )

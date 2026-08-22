@@ -13,6 +13,7 @@ import { createClient } from '@supabase/supabase-js'
 import Stripe from 'stripe'
 import { reportServerError } from './lib/reportError.js'
 import { priceIdFor } from './lib/stripeShared.js'
+import { getAuthedUser } from './lib/auth.js'
 
 // Team is sold with a 3-seat minimum (mirrors how Apollo structures its own
 // Organization tier) — Checkout starts at that quantity and lets the buyer
@@ -34,21 +35,10 @@ export default async (req) => {
     return new Response(JSON.stringify({ error: 'Billing is not configured yet' }), { status: 503, headers: { 'Content-Type': 'application/json' } })
   }
 
-  const authHeader = req.headers.get('authorization') || ''
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim()
-  if (!token) {
+  const { user, error: authError } = await getAuthedUser(req, supabaseUrl, anonKey)
+  if (authError) {
     return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401, headers: { 'Content-Type': 'application/json' } })
   }
-
-  const authClient = createClient(supabaseUrl, anonKey, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-    auth: { persistSession: false, autoRefreshToken: false },
-  })
-  const { data: userData, error: userErr } = await authClient.auth.getUser(token)
-  if (userErr || !userData?.user) {
-    return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401, headers: { 'Content-Type': 'application/json' } })
-  }
-  const user = userData.user
 
   let body
   try {

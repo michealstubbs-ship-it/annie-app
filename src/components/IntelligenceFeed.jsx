@@ -1,26 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import InfoTip from './InfoTip'
+import ApproachPicker from './ApproachPicker'
 import { matchCandidatesToSignal } from '../lib/candidateMatch'
 import { findWarmContacts } from '../lib/companyMatch'
 import { logSignalOutcome } from '../lib/signalOutcomes'
+import { confirmContact } from '../lib/confirmContact'
 import { trackEvent } from '../lib/analytics'
-
-const TYPE_META = {
-  funding: { label: 'Funding', icon: '💰', color: 'text-amber-700 bg-amber-100' },
-  leadership_change: { label: 'Leadership change', icon: '👤', color: 'text-blue-700 bg-blue-100' },
-  hiring_activity: { label: 'Hiring activity', icon: '📈', color: 'text-green-700 bg-green-100' },
-  expansion: { label: 'Expansion', icon: '🌍', color: 'text-teal-700 bg-teal-100' },
-  team_building: { label: 'Team building', icon: '💬', color: 'text-fuchsia-700 bg-fuchsia-100' },
-  public_commentary: { label: 'Public commentary', icon: '🎙️', color: 'text-purple-700 bg-purple-100' },
-  job_posting_unclaimed: { label: 'Unclaimed role', icon: '📋', color: 'text-orange-700 bg-orange-100' },
-  m_and_a: { label: 'M&A', icon: '🤝', color: 'text-indigo-700 bg-indigo-100' },
-  regulatory: { label: 'Regulatory', icon: '📜', color: 'text-slate-700 bg-slate-100' },
-}
-
-const RACY_TYPES = ['job_posting_unclaimed', 'team_building', 'hiring_activity', 'expansion']
+import { SIGNAL_TYPE_META as TYPE_META, RACY_SIGNAL_TYPES as RACY_TYPES } from '../lib/signalTypes'
 
 function timeAgo(dateStr) {
   if (!dateStr) return null
@@ -47,14 +35,38 @@ function logoColor(name) {
   return colors[Math.abs(hash) % colors.length]
 }
 
+// The "recommended approach" options for one signal, in priority order —
+// see ApproachPicker for how these render. A real pipeline match always
+// takes the candidate slot over the AI's speculative candidate_angle pitch,
+// same priority the card already gave it before this was a picker.
+function buildApproaches(s, matches) {
+  const approaches = []
+  if (matches.length > 0) {
+    approaches.push({
+      key: 'pipeline',
+      icon: '✓',
+      label: `${matches.length} in your pipeline`,
+      tone: 'match',
+      content: `You already have ${matches.length} candidate${matches.length === 1 ? '' : 's'} in your pipeline who could fit this: ${matches.map(c => c.name).join(', ')}`,
+    })
+  } else if (s.candidate_angle) {
+    approaches.push({ key: 'candidate', icon: '🎯', label: 'Lead with a candidate', tone: 'default', content: s.candidate_angle })
+  }
+  if (s.bench_strength_angle) {
+    approaches.push({ key: 'bench', icon: '💪', label: 'Lead with our bench', tone: 'default', content: s.bench_strength_angle })
+  }
+  return approaches
+}
+
 export default function IntelligenceFeed() {
   const { user } = useAuth()
-  const navigate = useNavigate()
   const [signals, setSignals] = useState([])
   const [candidates, setCandidates] = useState([])
   const [contacts, setContacts] = useState([])
   const [loading, setLoading] = useState(true)
   const [typeFilter, setTypeFilter] = useState('all')
+  const [copiedId, setCopiedId] = useState(null)
+  const [approachChoice, setApproachChoice] = useState({})
 
   useEffect(() => { load() }, [user])
 
@@ -66,6 +78,11 @@ export default function IntelligenceFeed() {
         .select('*')
         .eq('user_id', user.id)
         .neq('status', 'actioned')
+        // live_job rows are specific open roles behind a hiring push —
+        // Today's Actions only, per the product decision: they replace the
+        // generic hiring_activity narrative signal there rather than
+        // appearing in both places.
+        .neq('signal_type', 'live_job')
         .order('found_at', { ascending: false })
         .limit(200),
       // Lightweight, just enough to match against, not the full candidate
@@ -84,6 +101,23 @@ export default function IntelligenceFeed() {
   const newCount = useMemo(() => signals.filter(s => s.status === 'new').length, [signals])
   const visible = useMemo(() => typeFilter === 'all' ? signals : signals.filter(s => s.signal_type === typeFilter), [signals, typeFilter])
   const presentTypes = useMemo(() => [...new Set(signals.map(s => s.signal_type))], [signals])
+
+  // Was computed inline inside the .map() below, for every visible signal,
+  // on every render — including a render triggered by clicking "Mark seen"
+  // on a single card, which re-ran matchCandidatesToSignal/findWarmContacts
+  // (O(signals × candidates) and O(signals × contacts)) for every OTHER
+  // card too, not just the one that changed. Memoized here so it only
+  // recomputes when the actual inputs change.
+  const matchesById = useMemo(() => {
+    const map = new Map()
+    for (const s of visible) map.set(s.id, matchCandidatesToSignal(s, candidates))
+    return map
+  }, [visible, candidates])
+  const warmContactsById = useMemo(() => {
+    const map = new Map()
+    for (const s of visible) map.set(s.id, findWarmContacts(s.company_name, contacts))
+    return map
+  }, [visible, contacts])
 
   async function markSeen(s) {
     if (s.status !== 'new') return
@@ -115,23 +149,45 @@ export default function IntelligenceFeed() {
       company: s.company_name,
       title: s.contact_title || null,
       linkedin_url: s.contact_linkedin_url || null,
+      email: s.contact_email || null,
       status: 'warm',
       tags: ['from-intelligence-feed'],
     })
     await markActioned(s)
     logSignalOutcome(user, s, 'added_to_crm')
+    // A customer accepting this contact into their own CRM is a real human
+    // confirming Apollo's guess was right — feed that back into the shared
+    // cache so it's both cheaper and more trustworthy for the next customer
+    // who hits this same company + role.
+    confirmContact(s)
   }
 
-  function draftOutreach(s, matches, warmContacts) {
-    const matchLine = matches?.length
-      ? ` I already have these candidates in my pipeline who could fit: ${matches.map(c => c.name).join(', ')}, lead with whichever fits best.`
-      : ''
-    const warmLine = warmContacts?.length
-      ? ` I already know ${warmContacts.map(c => c.name).join(', ')} at ${s.company_name}, help me draft a warm intro-style message to them instead of a cold one.`
-      : ''
-    const prefill = `Help me draft outreach about this: ${s.headline} at ${s.company_name}. ${s.why_it_matters || ''} ${s.who_to_approach ? 'Who to approach: ' + s.who_to_approach : ''}${warmLine}${matchLine}`.trim()
+  // Safety net for signals written before introMessage existed (or on the
+  // rare case the AI left it blank) — not as good as a real one, but still
+  // usable, so "Copy message" always has something worth copying.
+  function fallbackIntroMessage(s, matches, warmContacts) {
+    const matchLine = matches?.length ? ` I'm currently working with candidates who'd be a strong fit for this.` : ''
+    const warmLine = warmContacts?.length ? ` We're already connected, so wanted to reach out directly rather than cold.` : ''
+    return `Hi — I saw the news about ${s.headline} at ${s.company_name}. ${s.why_it_matters || ''}${matchLine}${warmLine} Would it be worth a quick conversation?`.trim()
+  }
+
+  // Copies the ready-to-send message to the clipboard right where the
+  // recruiter is reading it — this used to hand off to the chat assistant
+  // on a different page to draft something from scratch, but now that
+  // Annie already writes a finished message as part of the signal itself,
+  // there's nothing left to draft, just something to send.
+  async function copyIntroMessage(s, matches, warmContacts) {
+    const text = s.intro_message || fallbackIntroMessage(s, matches, warmContacts)
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // Clipboard permission can fail quietly in some browsers/contexts —
+      // the message is still shown on the card either way, so it can
+      // always be selected and copied by hand even if the button can't.
+    }
+    setCopiedId(s.id)
     logSignalOutcome(user, s, 'outreach_drafted')
-    navigate('/dashboard/chat', { state: { prefill } })
+    setTimeout(() => setCopiedId(c => (c === s.id ? null : c)), 2000)
   }
 
   return (
@@ -147,14 +203,25 @@ export default function IntelligenceFeed() {
         {newCount > 0 && <span className="bg-navy text-gold text-xs font-bold px-3.5 py-2 rounded-full whitespace-nowrap">{newCount} new</span>}
       </div>
 
+      {/* A row of one pill per signal type got crowded and wrapped onto a
+          second line once a customer's feed had enough variety in it (8+
+          types) — a single compact dropdown stays one line and scales to
+          however many types show up, present or future, without needing a
+          redesign at some new count. */}
       {presentTypes.length > 1 && (
-        <div className="flex flex-wrap gap-1.5 mb-5">
-          <button onClick={() => setTypeFilter('all')} className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 ${typeFilter === 'all' ? 'bg-navy border-navy text-white' : 'border-gray-200 text-gray-600'}`}>All</button>
-          {presentTypes.map(t => (
-            <button key={t} onClick={() => setTypeFilter(t)} className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 ${typeFilter === t ? 'bg-navy border-navy text-white' : 'border-gray-200 text-gray-600'}`}>
-              {TYPE_META[t]?.label || t}
-            </button>
-          ))}
+        <div className="flex items-center gap-2 mb-5">
+          <label htmlFor="signal-type-filter" className="text-xs font-semibold text-gray-500">Filter by type</label>
+          <select
+            id="signal-type-filter"
+            value={typeFilter}
+            onChange={e => setTypeFilter(e.target.value)}
+            className="text-xs font-semibold border-2 border-gray-200 rounded-lg pl-3 pr-8 py-2 text-navy bg-white hover:border-gray-300 focus:outline-none focus:border-navy cursor-pointer"
+          >
+            <option value="all">All ({signals.length})</option>
+            {presentTypes.map(t => (
+              <option key={t} value={t}>{(TYPE_META[t]?.icon ? TYPE_META[t].icon + ' ' : '') + (TYPE_META[t]?.label || t)}</option>
+            ))}
+          </select>
         </div>
       )}
 
@@ -172,8 +239,8 @@ export default function IntelligenceFeed() {
             const meta = TYPE_META[s.signal_type] || { label: s.signal_type, icon: '📌', color: 'text-gray-700 bg-gray-100' }
             const unread = s.status === 'new'
             const timeSensitive = RACY_TYPES.includes(s.signal_type) && (Date.now() - new Date(s.found_at).getTime()) < 3 * 86400000
-            const matches = matchCandidatesToSignal(s, candidates)
-            const warmContacts = findWarmContacts(s.company_name, contacts)
+            const matches = matchesById.get(s.id) || []
+            const warmContacts = warmContactsById.get(s.id) || []
             return (
               <div
                 key={s.id}
@@ -221,17 +288,40 @@ export default function IntelligenceFeed() {
                   </div>
                 )}
 
-                {matches.length > 0 ? (
-                  <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mb-2.5">
-                    <p className="text-[11px] font-semibold text-emerald-800">
-                      ✓ You already have {matches.length} candidate{matches.length === 1 ? '' : 's'} in your pipeline who could fit this: {matches.map(c => c.name).join(', ')}
-                    </p>
-                  </div>
-                ) : s.candidate_angle && (
-                  <div className="bg-page-bg rounded-lg px-3 py-2 mb-2.5">
-                    <p className="text-[11px] text-gray-500"><span className="font-semibold text-navy">Candidate angle to lead with:</span> {s.candidate_angle}</p>
+                {s.contact_verified && (
+                  <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 mb-2.5">
+                    <span className="text-[9px] font-bold text-green-700 uppercase tracking-wider">Verified via Apollo</span>
+                    <p className="text-xs font-semibold text-navy mt-0.5">{s.contact_name}{s.contact_title ? `, ${s.contact_title}` : ''}</p>
+                    <div className="flex items-center gap-2.5 mt-0.5 flex-wrap" onClick={e => e.stopPropagation()}>
+                      {s.contact_email && <a href={`mailto:${s.contact_email}`} className="text-[11px] text-blue-600 hover:underline">{s.contact_email}</a>}
+                      {s.contact_linkedin_url && <a href={s.contact_linkedin_url} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline">View LinkedIn profile</a>}
+                    </div>
                   </div>
                 )}
+
+                <ApproachPicker
+                  approaches={buildApproaches(s, matches)}
+                  selectedKey={approachChoice[s.id]}
+                  onSelect={key => setApproachChoice(prev => ({ ...prev, [s.id]: key }))}
+                />
+
+                {/* This is the one thing on the card meant to be used
+                    as-is, not just read — a distinct navy block with a
+                    bold gold action button so it reads as "push this",
+                    not as another line among the small text links below. */}
+                <div className="bg-navy rounded-lg px-4 py-3 mb-2.5" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                    <span className="text-[10px] font-bold text-gold uppercase tracking-wider">✉️ Ready-to-send message</span>
+                    <button
+                      onClick={() => copyIntroMessage(s, matches, warmContacts)}
+                      title="Copies this message to your clipboard, ready to paste into an email or LinkedIn message — nothing to draft, nothing to leave this page for."
+                      className="text-xs font-bold px-4 py-2 rounded-md bg-gold text-navy hover:bg-gold/90 flex-shrink-0 transition-colors"
+                    >
+                      {copiedId === s.id ? '✓ Copied!' : '📋 Copy message'}
+                    </button>
+                  </div>
+                  <p className="text-white/90 text-[11.5px] leading-relaxed">{s.intro_message || fallbackIntroMessage(s, matches, warmContacts)}</p>
+                </div>
 
                 <div className="flex items-center gap-3 mb-2.5 flex-wrap">
                   <span className="text-[10px] text-gray-400 bg-page-bg rounded-md px-2 py-1">🔍 Annie found this {timeAgo(s.found_at)}</span>
@@ -256,7 +346,6 @@ export default function IntelligenceFeed() {
                   <div className="flex gap-1.5">
                     <button onClick={() => dismiss(s)} className="text-[10px] font-semibold px-2.5 py-1.5 rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50">Mark seen</button>
                     <button onClick={() => addToCrm(s)} className="text-[10px] font-semibold px-2.5 py-1.5 rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50">Add to CRM</button>
-                    <button onClick={() => draftOutreach(s, matches, warmContacts)} className="text-[10px] font-semibold px-2.5 py-1.5 rounded-md bg-navy text-white hover:bg-navy/90">Draft outreach</button>
                   </div>
                 </div>
               </div>

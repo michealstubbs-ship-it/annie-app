@@ -29,6 +29,19 @@ export default function Settings() {
   const [requestError, setRequestError] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
 
+  // "Run a new scan": until this existed, scan-now-background.js (the
+  // research pass) only ever had one caller — the onboarding "Launch Annie"
+  // button — and could only ever fire once per account, ever. A customer
+  // whose first pass came back empty (a transient API failure, a quiet
+  // first attempt, anything) had no self-serve way to ask Annie to try
+  // again; someone had to reset a database column by hand. This is that
+  // self-serve path. The backend now cooldown-gates it (see
+  // RESCAN_COOLDOWN_MS in scan-now-background.js) instead of blocking
+  // forever, so repeated use is throttled, not permanently locked out.
+  const [scanState, setScanState] = useState('idle') // 'idle' | 'starting' | 'running' | 'done'
+  const [scanResult, setScanResult] = useState(null)
+  const [scanError, setScanError] = useState('')
+
   useEffect(() => {
     if (profile) setForm({ full_name: profile.full_name || '', firm_name: profile.firm_name || '', job_title: profile.job_title || '', phone: profile.phone || '' })
     loadOnboarding()
@@ -101,6 +114,63 @@ Only return the style profile text, nothing else.`
     setTimeout(() => setStyleSaved(false), 3000)
   }
 
+  async function runNewScan() {
+    setScanState('starting')
+    setScanError('')
+    setScanResult(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) throw new Error('Your session has expired. Please log in again.')
+
+      // Fire-and-forget, same pattern as Onboarding.jsx: this is a
+      // background function with up to a 15-minute wall-clock budget, the
+      // response to this POST doesn't carry the result.
+      fetch('/.netlify/functions/scan-now-background', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      }).catch(() => {})
+
+      // Same flag Overview.jsx already watches for the post-onboarding scan
+      // — setting it here means the "Annie is researching" banner shows up
+      // there too if the user navigates over, for free, no separate wiring.
+      try { localStorage.setItem('annie_scan_started_' + user.id, String(Date.now())) } catch {}
+
+      setScanState('running')
+      pollScanStatus(Date.now())
+    } catch (err) {
+      setScanState('idle')
+      setScanError(err.message || 'Could not start a new scan. Please try again.')
+    }
+  }
+
+  async function pollScanStatus(startedAt) {
+    // Local feedback on this page for up to 3 minutes, matching how long a
+    // scan usually takes to at least report *something*. If it's still
+    // running after that, Overview's own longer-lived poll (up to the
+    // scan's real 15-minute budget) picks up the same status via the same
+    // localStorage flag, so nothing is lost by not waiting here forever.
+    const LOCAL_POLL_WINDOW_MS = 3 * 60 * 1000
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) { setScanState('idle'); return }
+
+    const resp = await fetch('/.netlify/functions/scan-status', {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    }).then(r => r.json()).catch(() => ({ status: 'unknown' }))
+
+    if (resp?.status === 'done') {
+      setScanState('done')
+      setScanResult(resp)
+      try { localStorage.removeItem('annie_scan_started_' + user.id) } catch {}
+      return
+    }
+    if (Date.now() - startedAt > LOCAL_POLL_WINDOW_MS) {
+      setScanState('done')
+      setScanResult({ status: 'done', reason: 'still_running' })
+      return
+    }
+    setTimeout(() => pollScanStatus(startedAt), 5000)
+  }
+
   return (
     <div className="p-8 max-w-2xl">
       <div className="mb-6">
@@ -169,7 +239,33 @@ Only return the style profile text, nothing else.`
             <div><span className="font-semibold text-gray-600">Markets:</span> <span className="text-gray-700">{onboarding.locations?.join(', ') || 'Not set'}</span></div>
             <div><span className="font-semibold text-gray-600">Tone:</span> <span className="text-gray-700 capitalize">{onboarding.tone || 'Professional'}</span></div>
           </div>
-          <p className="text-xs text-gray-400 mt-4">To update your BD configuration, contact support or re-run the onboarding flow.</p>
+          <p className="text-xs text-gray-400 mt-4">To change your sectors, functions, or markets, contact support — this isn't self-serve editable yet.</p>
+
+          <div className="border-t border-gray-100 mt-5 pt-5">
+            <h3 className="text-sm font-bold text-navy mb-1">Research scan</h3>
+            <p className="text-sm text-gray-500 mb-3">Ask Annie to research your market again right now, instead of waiting for her automatic scan.</p>
+
+            {scanError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{scanError}</div>}
+
+            <button
+              onClick={runNewScan}
+              disabled={scanState === 'starting' || scanState === 'running'}
+              className="btn-primary"
+            >
+              {scanState === 'starting' || scanState === 'running' ? 'Annie is researching...' : 'Run a new scan'}
+            </button>
+
+            {scanState === 'done' && scanResult && (
+              <p className="text-sm mt-3">
+                {scanResult.reason === 'ok' && `Found ${scanResult.signalsFound} new signal${scanResult.signalsFound === 1 ? '' : 's'} — check your Intelligence Feed.`}
+                {scanResult.reason === 'no_results' && "Annie searched your sectors and markets thoroughly but didn't find anything strong enough to flag right now. Worth trying again later — news cycles shift."}
+                {scanResult.reason === 'cooldown' && `Annie already ran a scan for you recently. You can run another after ${scanResult.retryAfter ? new Date(scanResult.retryAfter).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : 'a short wait'}.`}
+                {scanResult.reason === 'error' && "Annie hit an error reaching her research tools. This has been logged — if it keeps happening, let support know."}
+                {scanResult.reason === 'still_running' && "Still researching — this can take a few minutes for a broad market. Check your Overview or Intelligence Feed shortly; no need to keep this page open."}
+                {!['ok', 'no_results', 'cooldown', 'error', 'still_running'].includes(scanResult.reason) && "Scan finished. Check your Intelligence Feed for results."}
+              </p>
+            )}
+          </div>
         </div>
       )}
 

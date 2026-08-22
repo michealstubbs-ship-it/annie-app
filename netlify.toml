@@ -31,3 +31,26 @@
     X-Frame-Options = "SAMEORIGIN"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
+    # Scoped to what the app actually calls from the browser (confirmed via
+    # grep, not guessed): Supabase (auth/DB/storage/edge functions), Google
+    # Fonts (index.html's <link>), and PostHog (analytics.js) — everything
+    # else (Anthropic, Apollo, Stripe's server API) is only ever called
+    # server-side from Netlify functions, never directly from the browser.
+    # Stripe's hosted Checkout/Portal pages are full-page redirects, not an
+    # embedded frame or script, so no stripe.com entry is needed here.
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://us.i.posthog.com https://eu.i.posthog.com; frame-ancestors 'self'"
+
+# A scale-readiness audit (2026-08-22) found every push building straight
+# against production with no rehearsal environment. This context override
+# is a real step toward that — Netlify's own deploy-preview/branch-deploy
+# builds already run in an isolated URL — but it only fully protects
+# production once DEPLOY_PREVIEW-scoped env vars are set in the Netlify UI
+# pointing at a SEPARATE Supabase project and Stripe test-mode keys (a real
+# infra/cost decision, not something to provision silently). Until that
+# second Supabase project exists, previews still share production's
+# database — this block is the wiring, not the isolation itself.
+[context.deploy-preview]
+  command = "npm test && npm run build"
+
+[context.branch-deploy]
+  command = "npm test && npm run build"
