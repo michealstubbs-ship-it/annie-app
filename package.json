@@ -9,7 +9,15 @@
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "db:login": "npx --yes supabase@2 login",
+    "db:link": "npx --yes supabase@2 link --project-ref tsnthomwislodczhshpt",
+    "db:repair-baseline": "npx --yes supabase@2 migration repair --status reverted 20260819094332 20260819123303 20260819125319 20260819161937 20260819163156 20260819165258 20260819165413 20260819165645 20260819171716 20260819172726 20260819174537 20260819174548 20260819174556 20260819174714 20260820113937 20260820114007 20260821092832 20260821092856 20260821093930 20260821093943 20260821100830 20260821103107 20260821110441 20260821142928 20260821142940 20260821170849 20260821174750 20260821181008 20260822083943 20260822085304 20260822093357 20260822093422 20260822095856 20260822101852 20260822103451 20260822103535 20260822103628 20260822103836 20260822111512",
+    "db:pull": "npx --yes supabase@2 db pull",
+    "db:dump-baseline": "npx --yes supabase@2 db dump --linked --schema public -f supabase/migrations/20260822135842_remote_schema.sql",
+    "db:mark-baseline-applied": "npx --yes supabase@2 migration repair --status applied 20260822135842",
+    "db:push": "npx --yes supabase@2 db push",
+    "db:new": "npx --yes supabase@2 migration new"
   },
   "dependencies": {
     "@netlify/blobs": "^8.1.0",

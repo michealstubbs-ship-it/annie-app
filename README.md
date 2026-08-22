@@ -28,7 +28,7 @@ npm test          # vitest — pure-logic library files (src/lib, netlify/functi
 npm run build     # vite build — also what Netlify runs on every deploy
 ```
 
-`netlify.toml`'s build command is `npm test && npm run build` — a failing test stops the build before it ever reaches `vite build`, so a real regression can't reach production just because the frontend still compiles. Test coverage is concentrated in pure-logic library files, plus the highest-stakes HTTP handlers added or covered during the 2026-08-22 scale-readiness pass (`stripe-webhook.js`, the only writer of `public.subscriptions`; `health.js`; `error-rate-monitor.js`; `data-retention.js`; `chat.js`'s auth/rate-limit/cost-cap/error-handling branches; `verify-turnstile.js`). Most other Netlify function handlers (onboarding, scans, the remaining billing endpoints) are still untested and remain the next place to add coverage.
+`netlify.toml`'s build command is `npm test && npm run build` — a failing test stops the build before it ever reaches `vite build`, so a real regression can't reach production just because the frontend still compiles. Test coverage spans pure-logic library files (`src/lib`, `netlify/functions/lib`) and every Netlify function handler: the highest-stakes ones covered during the 2026-08-22 scale-readiness pass (`stripe-webhook.js`, the only writer of `public.subscriptions`; `health.js`; `error-rate-monitor.js`; `data-retention.js`; `chat.js`'s auth/rate-limit/cost-cap/error-handling branches; `verify-turnstile.js`), plus the remaining eight added in this pass: `scan-now-background.js`, `intelligence-scan.js`, `confirm-contact.js`, `scan-status.js`, `stripe-portal.js`, `stripe-checkout.js`, `apollo-enrich-companies.js`, and `save-onboarding.js`. Every Netlify function in the app now has at least a method/auth/config-guard test alongside its core logic paths.
 
 ## Observability
 
@@ -56,16 +56,36 @@ Signup is gated by Cloudflare Turnstile: `src/components/Turnstile.jsx` renders 
 
 ## Known gaps needing a decision, not silently implemented
 
-A few findings from the 2026-08-22 audit need Michael's own account/cost decisions rather than being built quietly:
+A finding from the 2026-08-22 audit needs Michael's own account/cost decision rather than being built quietly:
 
 - **A second Supabase project for real staging isolation** — a recurring cost, see "Deploying" above.
-- **Supabase CLI migration tooling** — needs an actual git repo to drive it; see "Database schema & migrations" above.
 
 ## Database schema & migrations
 
-Every schema change lives as a plain, timestamped `.sql` file in `supabase-migrations/` — applied directly against the live Supabase project (via the Supabase MCP or the SQL Editor), then committed here for the record. Each file's header comment explains what it does and why. To set up a fresh environment, run every file in `supabase-migrations/` in filename order — they're all written to be safe to re-run (`if not exists`, `create or replace`).
+The project is now wired for the Supabase CLI's own migration tooling (`supabase/config.toml`, `supabase/migrations/`), now that there's a real git repo to drive it from — the blocker noted in earlier versions of this doc is resolved. The Supabase project's migration history (`supabase_migrations.schema_migrations`) already goes back to project creation (2026-08-19): every schema change made through the Supabase MCP's `apply_migration` tool registers there automatically, CLI-compatible, whether or not this repo existed at the time.
 
-This is a deliberate, audited tradeoff, not an oversight: there's no Supabase CLI migration history or connected git repo driving deploys in this project today. If/when this codebase moves to a real git-tracked repo, adopting the Supabase CLI's own migration format (`supabase db push`) is the natural next step — it gives machine-enforced ordering and history instead of "run these files in order by hand."
+**One-time setup**, from a machine with a browser (this can't be done headlessly):
+
+```bash
+npm run db:login             # opens a browser to authenticate the CLI against your Supabase account
+npm run db:link              # links this repo to the annie-app project (tsnthomwislodczhshpt)
+npm run db:repair-baseline   # see note below — needed once
+npm run db:dump-baseline     # writes today's live schema as one baseline migration file
+npm run db:mark-baseline-applied  # registers that file as the new applied history — no drift
+```
+
+`db:repair-baseline` exists because the project's migration history already went back to 2026-08-19 (every schema change made through a Claude session registers there automatically) before this local CLI setup existed — so there's history with no matching local file. It marks those 39 pre-CLI entries as `reverted` in Supabase's own bookkeeping table only; it runs no SQL against your actual schema and changes no data. That clears the way for a fresh baseline to become the new starting point.
+
+`db:dump-baseline` + `db:mark-baseline-applied` do together what Supabase's own docs describe as a single `supabase db pull` — but `db pull` additionally spins up a temporary local "shadow" Postgres via Docker to compute its diff, so it hard-requires Docker Desktop to be installed and running. Rather than adding a Docker Desktop install as a prerequisite for a one-time setup step, `db dump --linked` does the equivalent job with a direct `pg_dump` against the live project (no Docker needed), and `migration repair --status applied` does what `db pull` would otherwise register automatically. If Docker Desktop is ever installed later, `npm run db:pull` (already wired up) works too and is the more idiomatic path for anyone following Supabase's own docs from scratch.
+
+After `db:dump-baseline` finishes, skim the generated `supabase/migrations/20260822135842_remote_schema.sql` before committing — a raw `pg_dump` occasionally includes a stray statement like `SET` session config lines or role ownership statements that don't matter for a from-scratch restore; safe to leave as-is unless something looks clearly wrong.
+
+**Day to day, going forward**, either of these works and both write to the same shared history table, so they interoperate cleanly:
+
+- From a Claude session: ask for the schema change — it goes through the Supabase MCP's `apply_migration`, same as always.
+- From the CLI directly: `npm run db:new <name>` to scaffold a timestamped file in `supabase/migrations/`, write the SQL, then `npm run db:push` to apply it and commit the file.
+
+`supabase-migrations/` (no CLI involved, plain `.sql` files) is the pre-CLI historical record of the 2026-08-21/22 audit's own schema work — kept as-is for that record, not added to going forward. Every file in it was already applied via `apply_migration` at the time, so it's already captured in the CLI-tracked history above; nothing there needs replaying.
 
 ## Environment variables
 
@@ -86,16 +106,17 @@ src/                      React frontend
                           shared between frontend and backend (see the
                           comments in scanShared.js for which and why)
     data/                  one file per Supabase table (contacts.js,
-                          candidates.js, companies.js, jobs.js) — every raw
-                          query for that table, so a schema change touches
-                          one file instead of every component that reads or
-                          writes it. Pairs with useSupabaseQuery.js, which
-                          owns the loading/error/refetch lifecycle around
-                          whatever fetcher a page passes it. Contacts,
-                          Candidates, and Companies are migrated onto this;
-                          the rest of the list pages (Jobs, Meetings,
-                          Pipeline, Tasks, IntelligenceFeed) still fetch
-                          inline and are the next candidates.
+                          candidates.js, companies.js, jobs.js, meetings.js,
+                          deals.js, tasks.js, signals.js, onboarding.js) —
+                          every raw query for that table, so a schema change
+                          touches one file instead of every component that
+                          reads or writes it. Pairs with useSupabaseQuery.js,
+                          which owns the loading/error/refetch lifecycle
+                          around whatever fetcher a page passes it. Every
+                          list page (Contacts, Candidates, Companies, Jobs,
+                          Meetings, Pipeline, Tasks, IntelligenceFeed) is
+                          migrated onto this — none fetch from Supabase
+                          inline anymore.
   contexts/                AuthContext (the only global state today)
 
 netlify/functions/         backend — one file per HTTP endpoint or scheduled/background job
@@ -104,5 +125,8 @@ netlify/functions/         backend — one file per HTTP endpoint or scheduled/b
   lib/                     shared backend logic (auth, env validation, Apollo/Anthropic
                           usage caps, error reporting, the scan pipeline's shared row-building)
 
-supabase-migrations/        every schema change, timestamped, in order — see above
+supabase-migrations/        pre-CLI historical record of the 2026-08-21/22 audit's
+                          schema work — see "Database schema & migrations" above
+supabase/                  Supabase CLI project files — config.toml, migrations/
+                          (populated by `npm run db:pull` after one-time setup)
 ```
