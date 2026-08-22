@@ -28,18 +28,36 @@ npm test          # vitest — pure-logic library files (src/lib, netlify/functi
 npm run build     # vite build — also what Netlify runs on every deploy
 ```
 
-`netlify.toml`'s build command is `npm test && npm run build` — a failing test stops the build before it ever reaches `vite build`, so a real regression can't reach production just because the frontend still compiles. Test coverage is concentrated in pure-logic library files, plus the highest-stakes HTTP handlers added during the 2026-08-22 scale-readiness pass (`stripe-webhook.js`, the only writer of `public.subscriptions`; `health.js`; `error-rate-monitor.js`). Most other Netlify function handlers (chat, onboarding, scans) are still untested and remain the next place to add coverage.
+`netlify.toml`'s build command is `npm test && npm run build` — a failing test stops the build before it ever reaches `vite build`, so a real regression can't reach production just because the frontend still compiles. Test coverage is concentrated in pure-logic library files, plus the highest-stakes HTTP handlers added or covered during the 2026-08-22 scale-readiness pass (`stripe-webhook.js`, the only writer of `public.subscriptions`; `health.js`; `error-rate-monitor.js`; `data-retention.js`; `chat.js`'s auth/rate-limit/cost-cap/error-handling branches; `verify-turnstile.js`). Most other Netlify function handlers (onboarding, scans, the remaining billing endpoints) are still untested and remain the next place to add coverage.
 
 ## Observability
 
-`GET /api/health` (`netlify/functions/health.js`) is public, checks real Supabase connectivity, and returns 200/503 for an external uptime monitor to poll. `error-rate-monitor.js` runs hourly and posts to Slack (`SLACK_WEBHOOK_URL`, see `.env.example`) if `error_logs` sees a spike. Neither is a substitute for a real error tracker/APM (Sentry or similar) — see "Known gaps" below.
+`GET /api/health` (`netlify/functions/health.js`) is public, checks real Supabase connectivity, and returns 200/503 for an external uptime monitor to poll. `error-rate-monitor.js` runs hourly and posts to Slack (`SLACK_WEBHOOK_URL`, see `.env.example`) if `error_logs` sees a spike. Real error tracking — stack traces, history, grouping — is Sentry, wired in via `reportError.js`; see "Error tracking" below.
+
+## API response conventions
+
+Every Netlify function returns JSON with a `Content-Type: application/json` header, via the shared `jsonError(status, message, extra)` helper in `netlify/functions/lib/httpError.js` (`{ error: message, ...extra }` at the given status). Two functions still return plain text by design, not by oversight: `stripe-webhook.js` (Stripe is its only caller — a webhook, not the frontend) and `intelligence-scan.js`'s cron-only responses. Both were deliberately left alone during the 2026-08-22 consistency pass to avoid touching live, billing-critical code for a purely cosmetic gain.
+
+"Not configured" (a required env var is missing) is reported with different status codes on purpose, not inconsistently — pick based on what's actually true about that endpoint:
+
+- **500** — `chat.js`, `save-onboarding.js`, `verify-turnstile.js`. These should always be configured in any real deployment, so a missing var is a genuine server misconfiguration.
+- **503** — `stripe-checkout.js`, `stripe-portal.js`. Billing keys only exist once Stripe setup is complete, so an unset var means "not available right now," which is what 503 signals to a caller, rather than 500's "something is broken."
+- **200 with `{ configured: false }`** — `apollo-enrich-companies.js`. Apollo is optional forever — Annie falls back to a keyword heuristic when it isn't set up — so a missing key isn't an error at all, and returning a 4xx/5xx here would make the frontend show an error banner for expected, graceful degradation.
+
+When a new endpoint gates on optional configuration, ask the same question: required in every real deployment (500), optional but blocking one feature until set up (503), or optional forever with a working fallback (200 + a `configured` flag)?
+
+## Bot protection
+
+Signup is gated by Cloudflare Turnstile: `src/components/Turnstile.jsx` renders the widget, and `netlify/functions/verify-turnstile.js` checks the resulting token against Cloudflare's `siteverify` API server-side before `Login.jsx` calls `supabase.auth.signUp` — the client-side widget alone proves nothing, since anyone can skip calling it. Optional in the sense that it degrades gracefully: unset `VITE_TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY` and the widget doesn't render and verification is skipped entirely, exactly like Apollo's optional-forever pattern above — useful for local dev without a Turnstile account.
+
+## Error tracking
+
+`netlify/functions/lib/reportError.js` is the one place every function already funnels its errors through (11 of the 14 functions call it), so it's the one place Sentry needed wiring in — `reportServerError` now calls `Sentry.captureException` alongside its existing `error_logs` write, tagged with the function name and whatever context that call site passed. Error tracking only (`tracesSampleRate: 0`) — no performance tracing/spans, since nothing here asked for that and it would meter volume this app doesn't need. `error-rate-monitor.js`'s hourly Slack alert stays as-is; Sentry is the actual tool for digging into a specific error's stack trace and history, the Slack alert is just the "something's wrong, go look" trigger. Optional forever like everything else in this section: unset `SENTRY_DSN` and `error_logs` keeps working exactly as before, just without also reaching Sentry.
 
 ## Known gaps needing a decision, not silently implemented
 
 A few findings from the 2026-08-22 audit need Michael's own account/cost decisions rather than being built quietly:
 
-- **Bot protection** (CAPTCHA/Turnstile) on signup — needs a Cloudflare Turnstile or similar account.
-- **A real error tracker/APM** (Sentry or similar) — `error-rate-monitor.js` is a stopgap, not a replacement; needs its own account.
 - **A second Supabase project for real staging isolation** — a recurring cost, see "Deploying" above.
 - **Supabase CLI migration tooling** — needs an actual git repo to drive it; see "Database schema & migrations" above.
 
@@ -67,9 +85,22 @@ src/                      React frontend
                           netlify/functions/lib for the pieces genuinely
                           shared between frontend and backend (see the
                           comments in scanShared.js for which and why)
+    data/                  one file per Supabase table (contacts.js,
+                          candidates.js, companies.js, jobs.js) — every raw
+                          query for that table, so a schema change touches
+                          one file instead of every component that reads or
+                          writes it. Pairs with useSupabaseQuery.js, which
+                          owns the loading/error/refetch lifecycle around
+                          whatever fetcher a page passes it. Contacts,
+                          Candidates, and Companies are migrated onto this;
+                          the rest of the list pages (Jobs, Meetings,
+                          Pipeline, Tasks, IntelligenceFeed) still fetch
+                          inline and are the next candidates.
   contexts/                AuthContext (the only global state today)
 
 netlify/functions/         backend — one file per HTTP endpoint or scheduled/background job
+                          (verify-turnstile.js checks a signup's Turnstile token
+                          server-side — see "Bot protection" above)
   lib/                     shared backend logic (auth, env validation, Apollo/Anthropic
                           usage caps, error reporting, the scan pipeline's shared row-building)
 

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@netlify/blobs": "^8.1.0",
+    "@sentry/node": "^10.70.0",
     "@supabase/supabase-js": "^2.39.0",
     "posthog-js": "^1.418.9",
     "react": "^18.2.0",
