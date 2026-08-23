@@ -91,36 +91,49 @@ export default function IntelligenceFeed() {
 
   return (
     <div className="p-8 max-w-3xl">
-      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
+      <div className="mb-4 flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-3xl font-bold text-navy flex items-center">
+          <h1 className="text-xl font-extrabold text-navy flex items-center">
             Intelligence Feed
             <InfoTip text="Annie researches your sectors and markets in the background every few hours, this is everything she's found, newest first. Today's Actions pulls its best picks from the same list." />
           </h1>
-          <p className="text-gray-500 mt-1">Newest first, exactly when it happened. Annie's already watching, even when you're not looking.</p>
+          <p className="text-gray-500 text-[13px] mt-0.5">Newest first, exactly when it happened. Annie's already watching, even when you're not looking.</p>
         </div>
         {newCount > 0 && <span className="bg-navy text-gold text-xs font-bold px-3.5 py-2 rounded-full whitespace-nowrap">{newCount} new</span>}
       </div>
 
-      {/* A row of one pill per signal type got crowded and wrapped onto a
-          second line once a customer's feed had enough variety in it (8+
-          types) — a single compact dropdown stays one line and scales to
-          however many types show up, present or future, without needing a
-          redesign at some new count. */}
+      {/* The "this feed is just the news" explainer — matches Today's Actions
+          having the same signal available manually, tells the person up
+          front that nothing here demands a reply the way an action does. */}
+      <div className="flex gap-3.5 items-center mb-4 px-5 py-4 rounded-2xl bg-gradient-to-br from-navy to-navy-light shadow-[0_6px_20px_rgba(13,27,62,0.22)]">
+        <div className="w-10 h-10 rounded-full bg-gold flex items-center justify-center text-lg flex-shrink-0 shadow-[0_2px_8px_rgba(201,168,76,0.4)]">⚡</div>
+        <div>
+          <p className="text-white text-sm font-extrabold mb-0.5 tracking-tight">This feed is just the news, no prompts live here.</p>
+          <p className="text-white/80 text-[12.5px] leading-relaxed max-w-[600px]">Found something worth pursuing? Tap <b className="text-gold font-bold">Add to Today's BD Actions</b> on any post, Annie already wrote the full recommendation when she found it, so it moves over instantly: who to approach, a candidate profile to search for, and a ready-to-send message.</p>
+        </div>
+      </div>
+
+      {/* A chip per signal type, same idea as a dropdown (scales to however
+          many types show up, present or future) but scannable at a glance
+          and matches the rest of this page's "scroll a timeline" feel
+          better than a form control does. */}
       {presentTypes.length > 1 && (
-        <div className="flex items-center gap-2 mb-5">
-          <label htmlFor="signal-type-filter" className="text-xs font-semibold text-gray-500">Filter by type</label>
-          <select
-            id="signal-type-filter"
-            value={typeFilter}
-            onChange={e => setTypeFilter(e.target.value)}
-            className="text-xs font-semibold border-2 border-gray-200 rounded-lg pl-3 pr-8 py-2 text-navy bg-white hover:border-gray-300 focus:outline-none focus:border-navy cursor-pointer"
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 mb-4">
+          <button
+            onClick={() => setTypeFilter('all')}
+            className={`flex-shrink-0 text-[12.5px] font-bold px-3.5 py-1.5 rounded-full border transition-colors whitespace-nowrap ${typeFilter === 'all' ? 'bg-navy text-gold border-navy' : 'bg-page-bg text-gray-600 border-gray-200 hover:border-gray-300'}`}
           >
-            <option value="all">All ({signals.length})</option>
-            {presentTypes.map(t => (
-              <option key={t} value={t}>{(TYPE_META[t]?.icon ? TYPE_META[t].icon + ' ' : '') + (TYPE_META[t]?.label || t)}</option>
-            ))}
-          </select>
+            All ({signals.length})
+          </button>
+          {presentTypes.map(t => (
+            <button
+              key={t}
+              onClick={() => setTypeFilter(t)}
+              className={`flex-shrink-0 text-[12.5px] font-bold px-3.5 py-1.5 rounded-full border transition-colors whitespace-nowrap ${typeFilter === t ? 'bg-navy text-gold border-navy' : 'bg-page-bg text-gray-600 border-gray-200 hover:border-gray-300'}`}
+            >
+              {(TYPE_META[t]?.icon ? TYPE_META[t].icon + ' ' : '') + (TYPE_META[t]?.label || t)}
+            </button>
+          ))}
         </div>
       )}
 
@@ -133,7 +146,7 @@ export default function IntelligenceFeed() {
           <p className="text-gray-500 text-sm max-w-sm mx-auto">Annie scans your sectors and markets every few hours in the background. Check back soon, or import your LinkedIn contacts so she has more to watch.</p>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="bg-white rounded-2xl shadow-[0_1px_2px_rgba(13,27,62,0.06),0_1px_6px_rgba(13,27,62,0.04)] overflow-hidden">
           {visible.map(s => {
             const meta = TYPE_META[s.signal_type] || { label: s.signal_type, icon: '📌', color: 'text-gray-700 bg-gray-100' }
             const unread = s.status === 'new'
@@ -142,72 +155,63 @@ export default function IntelligenceFeed() {
               <div
                 key={s.id}
                 onClick={() => markSeen(s)}
-                className={`card p-4 relative cursor-pointer ${unread ? 'bg-yellow-50/40 border-gold/40' : ''}`}
+                className={`relative cursor-pointer px-4 py-3.5 border-b border-gray-200 last:border-b-0 ${unread ? 'bg-gold/[0.045]' : ''}`}
               >
-                {unread && <div className="absolute left-0 top-3 bottom-3 w-[3px] bg-gold rounded-full" />}
-                <div className="flex items-center gap-2.5 mb-2.5">
-                  <CompanyLogo name={s.company_name} logoUrl={s.company_logo_url} />
+                {unread && <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-gold" />}
+                <div className="flex gap-3">
+                  <CompanyLogo name={s.company_name} logoUrl={s.company_logo_url} size="w-[42px] h-[42px]" textSize="text-[13px]" rounded="rounded-full" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-navy text-sm font-bold">{s.company_name}</span>
+                      <span className="text-navy text-sm font-extrabold">{s.company_name}</span>
+                      {s.ch_verified && (
+                        <span
+                          className="w-[15px] h-[15px] rounded-full bg-gold text-navy text-[9px] font-extrabold flex items-center justify-center flex-shrink-0"
+                          title={s.ch_verified_detail || 'Verified, Companies House'}
+                        >✓</span>
+                      )}
+                      <span className="text-gray-400 text-sm">· {[s.company_industry, [s.company_city, s.company_country].filter(Boolean).join(', ')].filter(Boolean).join(', ') || 'Company'}</span>
                       {unread && <span className="text-[8px] font-bold text-white bg-gold rounded-full px-1.5 py-0.5 uppercase">New</span>}
+                      <span className="text-gray-400 text-xs font-semibold ml-auto flex-shrink-0 whitespace-nowrap">Found {timeAgo(s.found_at)}</span>
                     </div>
-                    {(s.company_industry || s.company_city || s.company_country) && (
-                      <div className="text-[11px] text-gray-400">{[s.company_industry, [s.company_city, s.company_country].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}</div>
-                    )}
-                  </div>
-                  <span className={`text-[9px] font-bold uppercase tracking-wide px-2 py-1 rounded-md flex-shrink-0 ${meta.color}`}>{meta.icon} {meta.label}</span>
-                </div>
 
-                <h3 className="text-navy text-[13px] font-semibold leading-snug mb-1.5 flex items-center gap-1.5 flex-wrap">
-                  {s.headline}
-                  {s.ch_verified && (
-                    <span className="text-[9px] font-bold text-white bg-emerald-600 rounded-full px-2 py-0.5 uppercase tracking-wide" title={s.ch_verified_detail || ''}>
-                      ✓ Verified, Companies House
-                    </span>
-                  )}
-                </h3>
-                {s.why_it_matters && <p className="text-gray-600 text-xs italic border-l-2 border-gold pl-2.5 mb-2.5 leading-relaxed">{s.why_it_matters}</p>}
-                {s.ch_verified_detail && <p className="text-[10.5px] text-emerald-700 mb-2.5">🏛️ {s.ch_verified_detail}</p>}
-                {timeSensitive && <p className="text-[10px] text-amber-700 font-semibold mb-2.5">⚡ Time-sensitive, worth acting on before someone else does</p>}
+                    <div className="mt-1.5">
+                      <span className="inline-block text-[10.5px] font-bold px-2 py-0.5 rounded-full bg-[#eef1fb] text-navy-light mr-1.5">{meta.icon} {meta.label}</span>
+                      {s.event_at && <span className="text-[11px] font-semibold text-gray-400">📅 {timeSensitive ? 'Happened' : 'Happened'} {timeAgo(s.event_at)}</span>}
+                    </div>
 
-                {/* Pure news from here down — no contact box, no candidate
-                    profile, no ready-to-send message. Those only live in
-                    Today's BD Actions now, once a signal actually moves
-                    there, so nothing here duplicates what that page shows. */}
-                <div className="flex items-center gap-3 mb-2.5 flex-wrap">
-                  <span className="text-[10px] text-gray-400 bg-page-bg rounded-md px-2 py-1">🔍 Annie found this {timeAgo(s.found_at)}</span>
-                  {s.event_at && <span className="text-[10px] text-gray-400 bg-page-bg rounded-md px-2 py-1">📅 Actually happened {timeAgo(s.event_at)}</span>}
-                  {/* Blocker #5 from the pre-launch audit: nothing distinguished an
-                      independently-confirmed signal from pure AI self-report. This
-                      reflects source_verified (the source link actually resolves,
-                      checked server-side before the row was written) so that
-                      distinction is visible per-signal instead of everything looking
-                      equally trustworthy. */}
-                  {s.source_verified ? (
-                    <span className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-2 py-1 font-medium">✓ Source verified</span>
-                  ) : (
-                    <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 font-medium">AI-reported, unverified</span>
-                  )}
-                </div>
+                    <p className="text-gray-800 text-[14.5px] leading-snug mt-1">{s.headline}</p>
+                    {s.why_it_matters && <p className="text-gray-500 text-[13px] leading-relaxed mt-1">{s.why_it_matters}</p>}
+                    {s.ch_verified_detail && <p className="text-[10.5px] text-emerald-700 mt-1.5">🏛️ {s.ch_verified_detail}</p>}
+                    {timeSensitive && <p className="text-[10px] text-amber-700 font-semibold mt-1.5">⚡ Time-sensitive, worth acting on before someone else does</p>}
 
-                <div className="flex items-center justify-between flex-wrap gap-2" onClick={e => e.stopPropagation()}>
-                  {s.source_url ? (
-                    <a href={s.source_url} target="_blank" rel="noreferrer" className="text-[10px] text-blue-600 hover:underline">🔗 {s.source_label || s.source_url}</a>
-                  ) : <span />}
-                  <div className="flex gap-1.5">
-                    <button onClick={() => dismiss(s)} className="text-[10px] font-semibold px-2.5 py-1.5 rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50">Mark seen</button>
-                    {s.manually_added_at ? (
-                      <span className="text-[10px] font-semibold px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-green-700">✓ In Today's BD Actions</span>
-                    ) : (
-                      <button
-                        onClick={() => addToTodaysActions(s)}
-                        title="Moves this into Today's BD Actions with the full recommendation already prepared: who to approach, a candidate profile to search for, and a ready-to-send message."
-                        className={`text-[10px] font-bold px-2.5 py-1.5 rounded-md border transition-colors ${addedId === s.id ? 'border-green-200 bg-green-50 text-green-700' : 'border-gold/40 bg-yellow-50 text-gold-ink hover:bg-yellow-100'}`}
-                      >
-                        {addedId === s.id ? '✓ Added, nothing to generate' : '＋ Add to Today\'s BD Actions'}
-                      </button>
-                    )}
+                    {/* Blocker #5 from the pre-launch audit: nothing distinguished an
+                        independently-confirmed signal from pure AI self-report. This
+                        reflects source_verified (the source link actually resolves,
+                        checked server-side before the row was written) so that
+                        distinction is visible per-signal instead of everything looking
+                        equally trustworthy. */}
+                    <div className="flex items-center gap-5 flex-wrap mt-2.5" onClick={e => e.stopPropagation()}>
+                      {s.source_verified ? (
+                        <span className="flex items-center gap-1.5 text-green-700 text-xs font-semibold">✓ Source verified</span>
+                      ) : (
+                        <span className="flex items-center gap-1.5 text-gray-400 text-xs font-semibold">📰 AI-reported</span>
+                      )}
+                      {s.manually_added_at ? (
+                        <span className="flex items-center gap-1.5 text-green-700 bg-green-50 border border-green-200 font-bold text-xs px-2.5 py-1.5 rounded-full">✓ In Today's BD Actions</span>
+                      ) : (
+                        <button
+                          onClick={() => addToTodaysActions(s)}
+                          title="Moves this into Today's BD Actions with the full recommendation already prepared: who to approach, a candidate profile to search for, and a ready-to-send message."
+                          className={`flex items-center gap-1.5 font-bold text-xs px-2.5 py-1.5 rounded-full border transition-colors ${addedId === s.id ? 'border-green-200 bg-green-50 text-green-700' : 'border-transparent bg-[#fbf4e2] text-gold-ink hover:bg-[#f5e9c8]'}`}
+                        >
+                          {addedId === s.id ? '✓ Added, nothing to generate' : '＋ Add to Today\'s BD Actions'}
+                        </button>
+                      )}
+                      {s.source_url && (
+                        <a href={s.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-gray-400 text-xs font-semibold hover:underline">🔗 {s.source_label || 'Source'}</a>
+                      )}
+                      <button onClick={() => dismiss(s)} className="ml-auto flex items-center gap-1.5 text-gray-400 text-xs font-semibold hover:text-navy">Mark seen</button>
+                    </div>
                   </div>
                 </div>
               </div>

@@ -31,10 +31,13 @@ export async function listCandidateJobLinks(userId) {
   return data || []
 }
 
-// IntelligenceFeed.jsx's pipeline-match check (see matchCandidatesToSignal)
-// — every candidate, just enough fields to match a signal against.
+// Today's Actions' pipeline-match check (see matchCandidatesToSignal) —
+// every candidate, just enough fields to match a signal against and to
+// show a real name/role/company on a matched card. `company` added
+// 2026-08-23 so the pipeline-match box can show a matched candidate's
+// actual current employer instead of just a bare name.
 export async function listCandidatesForMatching(userId) {
-  const { data } = await supabase.from('candidates').select('id, name, role, industry, status').eq('user_id', userId)
+  const { data } = await supabase.from('candidates').select('id, name, role, industry, status, company').eq('user_id', userId)
   return data || []
 }
 

@@ -24,7 +24,12 @@ function logoColor(name) {
 // Shared by IntelligenceFeed and TodaysActions so "every company gets a
 // real logo, and the same graceful fallback either way" is guaranteed by
 // one component rather than two components trying to agree.
-export default function CompanyLogo({ name, logoUrl, size = 'w-8 h-8', textSize = 'text-[11px]' }) {
+// `rounded` defaults to the square tile every existing caller expects
+// (Today's Actions, Contacts, Companies). The Intelligence Feed's
+// social-timeline redesign (2026-08-23) is the one place this needs a
+// circular avatar instead — pass rounded="rounded-full" there rather than
+// forking a second logo component for one shape difference.
+export default function CompanyLogo({ name, logoUrl, size = 'w-8 h-8', textSize = 'text-[11px]', rounded = 'rounded-lg' }) {
   const [failed, setFailed] = useState(false)
 
   if (logoUrl && !failed) {
@@ -32,7 +37,7 @@ export default function CompanyLogo({ name, logoUrl, size = 'w-8 h-8', textSize 
       <img
         src={logoUrl}
         alt=""
-        className={`${size} rounded-lg object-cover flex-shrink-0 bg-white border border-gray-100`}
+        className={`${size} ${rounded} object-cover flex-shrink-0 bg-white border border-gray-100`}
         onError={() => setFailed(true)}
       />
     )
@@ -40,7 +45,7 @@ export default function CompanyLogo({ name, logoUrl, size = 'w-8 h-8', textSize 
 
   return (
     <div
-      className={`${size} rounded-lg flex items-center justify-center text-white ${textSize} font-bold flex-shrink-0`}
+      className={`${size} ${rounded} flex items-center justify-center text-white ${textSize} font-bold flex-shrink-0`}
       style={{ backgroundColor: logoColor(name) }}
     >
       {initials(name)}
