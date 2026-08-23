@@ -6,22 +6,45 @@ import { buildEnrichmentPrompt } from '../lib/actionsCopy'
 import { callChat } from '../lib/callChat'
 import { extractJson } from '../lib/jsonExtract'
 import { buildOutreachMessage, firstNameOf } from '../lib/outreachMessage'
+import { listCandidatesForMatching } from '../lib/data/candidates'
+import { matchCandidatesToSignal } from '../lib/candidateMatch'
+import { createContact } from '../lib/data/contacts'
+import { confirmContact } from '../lib/confirmContact'
 import ApproachPicker from './ApproachPicker'
 import CompanyLogo from './CompanyLogo'
 import CandidateProfileBox from './CandidateProfileBox'
 
-// Same two "recommended approach" angles as IntelligenceFeed's version of
-// this — see buildApproaches there and ApproachPicker's own header for why
-// this exists as a picker instead of stacking both texts at once. Today's
-// Actions doesn't currently surface a "candidates already in your pipeline"
-// match for sourced items the way the Intelligence Feed does, so there's no
-// third 'pipeline' option here — only what this view already had.
+// Same three "recommended approach" angles as IntelligenceFeed's version of
+// this — see ApproachPicker's own header for why this exists as a picker
+// instead of stacking every text at once. A real pipeline match (candidates
+// already in the user's own CRM, computed once at generate() time and baked
+// into the cached action as `pipelineMatches`) always takes the slot over
+// the AI's speculative candidate_angle pitch, same priority Intelligence
+// Feed already gives it.
 function buildApproaches(action) {
   const approaches = []
-  if (action.candidateAngle) approaches.push({ key: 'candidate', icon: '🎯', label: 'Lead with a candidate', tone: 'default', content: action.candidateAngle })
+  if (action.pipelineMatches?.length > 0) {
+    approaches.push({
+      key: 'pipeline',
+      icon: '✓',
+      label: `${action.pipelineMatches.length} in your pipeline`,
+      tone: 'match',
+      content: `You already have ${action.pipelineMatches.length} candidate${action.pipelineMatches.length === 1 ? '' : 's'} in your pipeline who could fit this: ${action.pipelineMatches.join(', ')}`,
+    })
+  } else if (action.candidateAngle) {
+    approaches.push({ key: 'candidate', icon: '🎯', label: 'Lead with a candidate', tone: 'default', content: action.candidateAngle })
+  }
   if (action.benchStrengthAngle) approaches.push({ key: 'bench', icon: '💪', label: 'Lead with our experience', tone: 'default', content: action.benchStrengthAngle })
   return approaches
 }
+
+// Today's BD Actions = anything driven by a real signal Annie found
+// (sourced: a brand-new company; relationship: fresh news about a company
+// already in the CRM). Worth your follow up = pure CRM housekeeping with no
+// news behind it (dormant/meeting/new_client). See the mock discussion this
+// session for why the split runs along "has a signal" rather than "is the
+// company already known".
+const BD_CATEGORIES = ['sourced', 'relationship']
 
 const BADGE = {
   dormant: { label: 're-engage', className: 'bg-amber-100 text-amber-700' },
@@ -42,6 +65,8 @@ export default function TodaysActions() {
   const [openIndex, setOpenIndex] = useState(null)
   const [copiedIndex, setCopiedIndex] = useState(null)
   const [approachChoice, setApproachChoice] = useState({})
+  const [tab, setTab] = useState('bd')
+  const [crmAdded, setCrmAdded] = useState({})
 
   useEffect(() => {
     loadCachedActions()
@@ -80,12 +105,17 @@ export default function TodaysActions() {
     setLoading(true)
     setError('')
     try {
-      const [{ data: contacts }, { data: deals }, { data: intelSignals }, { data: freshOnboarding }] = await Promise.all([
+      const [{ data: contacts }, { data: deals }, { data: intelSignals }, { data: freshOnboarding }, candidates] = await Promise.all([
         supabase.from('contacts').select('*').eq('user_id', user.id).limit(500),
         supabase.from('deals').select('*').eq('user_id', user.id).limit(200),
         // Reads what the background scan already found, no search happens here.
         supabase.from('intelligence_signals').select('*').eq('user_id', user.id).neq('status', 'actioned').order('found_at', { ascending: false }).limit(300),
         supabase.from('onboarding').select('*').eq('user_id', user.id).single(),
+        // Same lightweight pipeline-match check IntelligenceFeed.jsx already
+        // does, computed once here at generate() time and baked into each
+        // cached action below (see pipelineMatches), so a cache-hit read on
+        // page load never needs the candidate list at all.
+        listCandidatesForMatching(user.id),
       ])
 
       const ob = freshOnboarding || onboarding
@@ -145,6 +175,10 @@ export default function TodaysActions() {
             benchStrengthAngle: s.bench_strength_angle,
             candidateProfile: s.candidate_profile,
             verifiedContact: s.contact_verified ? { name: s.contact_name, title: s.contact_title, linkedin_url: s.contact_linkedin_url, email: s.contact_email } : null,
+            // Plain names, not the full candidate objects — this is what
+            // actually gets stored in actions_cache's jsonb column, so it
+            // stays small and serializes cleanly.
+            pipelineMatches: matchCandidatesToSignal(s, candidates).map(c => c.name),
             signalId: s.id,
           }
         }
@@ -160,6 +194,12 @@ export default function TodaysActions() {
           company: item.contact?.company || item.deal?.company || item.signal?.company_name,
           contact: item.contact?.name || item.deal?.contact_name || '',
           title: item.contact?.title || '',
+          // Relationship-category items render through the generic
+          // AI-enriched follow-up card below (moveForward), not the
+          // ApproachPicker/pipeline-match UI sourced items use, so there's
+          // nothing to compute a match for here yet — see the plan note on
+          // this being a deliberate, separate follow-up rather than in
+          // scope for this pass.
           signalId: item.category === 'relationship' ? item.signal?.id : null,
         }
       })
@@ -218,6 +258,32 @@ export default function TodaysActions() {
     setTimeout(() => setCopiedIndex(c => (c === index ? null : c)), 2000)
   }
 
+  // Only ever called from the verifiedContact block below, which only
+  // renders when a real name is present — so this never falls back to
+  // creating a "contact" that's just a company name the way the Feed's old
+  // unconditional Add to CRM button used to.
+  async function addContactToCrm(action, index) {
+    if (crmAdded[index]) return
+    await createContact({
+      name: action.verifiedContact.name,
+      company: action.company,
+      title: action.verifiedContact.title || null,
+      linkedin_url: action.verifiedContact.linkedin_url || null,
+      email: action.verifiedContact.email || null,
+      status: 'warm',
+      tags: ['from-todays-actions'],
+    }, user.id)
+    setCrmAdded(prev => ({ ...prev, [index]: true }))
+    // Same feedback loop as the Feed's old addToCrm — a human confirming
+    // Apollo's guess was right, bumps the shared company_contacts cache's
+    // confidence for the next customer who hits this company + role.
+    confirmContact({
+      contact_name: action.verifiedContact.name,
+      company_name: action.company,
+      title_keywords: action.verifiedContact.title ? [action.verifiedContact.title] : [],
+    })
+  }
+
   async function markDone(action, index) {
     if (action.signalId) {
       await supabase.from('intelligence_signals').update({ status: 'actioned' }).eq('id', action.signalId)
@@ -262,11 +328,45 @@ export default function TodaysActions() {
         <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">{error}</div>
       )}
 
-      {generated && actions.length > 0 && (
+      {generated && actions.length > 0 && (() => {
+        const rows = actions.map((action, i) => ({ action, i }))
+        const bdRows = rows.filter(r => BD_CATEGORIES.includes(r.action.category))
+        const followUpRows = rows.filter(r => !BD_CATEGORIES.includes(r.action.category))
+        const activeRows = tab === 'bd' ? bdRows : followUpRows
+        return (
         <div className="space-y-3">
-          <p className="text-sm text-gray-500 mb-2">Annie found <span className="font-semibold text-navy">{actions.length} thing{actions.length === 1 ? '' : 's'} worth your attention today</span>, ranked by what's most time-sensitive first, sized by what's genuinely urgent, not a fixed number.</p>
+          <div className="flex gap-1 border-b-2 border-gray-100 mb-1">
+            <button
+              onClick={() => setTab('bd')}
+              className={`px-1 pb-2.5 mr-6 text-sm font-bold border-b-2 -mb-0.5 transition-colors ${tab === 'bd' ? 'text-navy border-gold' : 'text-gray-400 border-transparent hover:text-gray-600'}`}
+            >
+              Today's BD Actions {bdRows.length > 0 && <span className="text-xs">({bdRows.length})</span>}
+            </button>
+            <button
+              onClick={() => setTab('followup')}
+              className={`px-1 pb-2.5 text-sm font-bold border-b-2 -mb-0.5 transition-colors ${tab === 'followup' ? 'text-navy border-gold' : 'text-gray-400 border-transparent hover:text-gray-600'}`}
+            >
+              Worth your follow up {followUpRows.length > 0 && <span className="text-xs">({followUpRows.length})</span>}
+            </button>
+          </div>
 
-          {actions.map((action, i) => {
+          {activeRows.length === 0 ? (
+            <div className="card p-8 text-center">
+              <p className="text-gray-500 text-sm max-w-sm mx-auto">
+                {tab === 'bd'
+                  ? "No new BD signals right now, check Worth your follow up, or check back soon, Annie's still watching in the background."
+                  : "Nothing needs following up right now, your pipeline is current."}
+              </p>
+            </div>
+          ) : (
+          <>
+          <p className="text-sm text-gray-500 mb-2">
+            {tab === 'bd'
+              ? <>Annie found <span className="font-semibold text-navy">{activeRows.length} new signal{activeRows.length === 1 ? '' : 's'} worth acting on</span>, ranked by what's most time-sensitive first.</>
+              : <><span className="font-semibold text-navy">{activeRows.length} thing{activeRows.length === 1 ? '' : 's'}</span> worth a routine follow-up, no new research behind these.</>}
+          </p>
+
+          {activeRows.map(({ action, i }) => {
             const badge = action.signalType === 'live_job' ? BADGE.live_job : (BADGE[action.category] || BADGE.new_client)
             const isOpen = openIndex === i
             const isSourced = action.source === 'sourced'
@@ -307,8 +407,20 @@ export default function TodaysActions() {
                             <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Who to approach, and why</div>
                             {action.verifiedContact ? (
                               <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 mb-3">
-                                <div className="flex items-center gap-1.5 mb-1">
+                                <div className="flex items-center justify-between gap-2 mb-1">
                                   <span className="text-[9px] font-bold text-green-700 uppercase tracking-wider">Verified via Apollo</span>
+                                  {/* Only rendered here, where a real name and (usually) email actually
+                                      exist — the Feed's old unconditional Add to CRM button used to fall
+                                      back to just the company name when there was no real contact, which
+                                      created junk CRM entries. This can't do that: no verifiedContact,
+                                      no button. */}
+                                  <button
+                                    onClick={() => addContactToCrm(action, i)}
+                                    disabled={crmAdded[i]}
+                                    className={`text-[10px] font-bold px-2.5 py-1 rounded-full border transition-colors flex-shrink-0 ${crmAdded[i] ? 'text-gray-400 border-gray-200 bg-white cursor-default' : 'text-green-700 border-green-300 bg-white hover:bg-green-50'}`}
+                                  >
+                                    {crmAdded[i] ? `✓ Added to CRM` : `＋ Add ${firstNameOf(action.verifiedContact.name)} to CRM`}
+                                  </button>
                                 </div>
                                 <p className="text-xs font-semibold text-navy">{action.verifiedContact.name}{action.verifiedContact.title ? `, ${action.verifiedContact.title}` : ''}</p>
                                 <div className="flex items-center gap-2.5 mt-0.5 flex-wrap">
@@ -339,7 +451,7 @@ export default function TodaysActions() {
                                 <span className="text-[10px] font-bold text-gold uppercase tracking-wider">✉️ Ready-to-send message</span>
                                 <button
                                   onClick={() => copyIntroMessage(action, i)}
-                                  title="Copies this message to your clipboard, ready to paste into an email or LinkedIn message — nothing to draft, nothing to leave this page for."
+                                  title="Copies this message to your clipboard, ready to paste into an email or LinkedIn message: nothing to draft, nothing to leave this page for."
                                   className="text-xs font-bold px-4 py-2 rounded-md bg-gold text-navy hover:bg-gold/90 flex-shrink-0 transition-colors"
                                 >
                                   {copiedIndex === i ? '✓ Copied!' : '📋 Copy message'}
@@ -383,8 +495,11 @@ export default function TodaysActions() {
           <button onClick={generate} disabled={loading} className="btn-ghost text-sm mt-2">
             Refresh
           </button>
+          </>
+          )}
         </div>
-      )}
+        )
+      })()}
 
       {generated && actions.length === 0 && !loading && (
         <div className="card p-10 text-center">

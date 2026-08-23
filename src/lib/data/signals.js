@@ -27,3 +27,11 @@ export function markSignalSeen(id) {
 export function markSignalActioned(id) {
   return supabase.from('intelligence_signals').update({ status: 'actioned' }).eq('id', id)
 }
+
+// The Feed's "Add to Today's BD Actions" button — a real human explicitly
+// chose to pursue this signal, so it needs to reliably show up in Today's
+// Actions regardless of score/age/urgency. See actionsEngine.js's
+// buildSourcedPool/buildRelationshipPool for the bypass rule this enables.
+export function markSignalManuallyAdded(id) {
+  return supabase.from('intelligence_signals').update({ manually_added_at: new Date().toISOString() }).eq('id', id)
+}

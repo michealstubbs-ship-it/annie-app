@@ -1,0 +1,14 @@
+-- Applied live to the annie app project via direct database connection —
+-- kept here for the record, same as every other migration in this folder.
+--
+-- Supports the new "Add to Today's BD Actions" button on the Intelligence
+-- Feed: a signal the user explicitly chose to pursue needs to reliably show
+-- up in Today's Actions regardless of score/age/urgency. A new nullable
+-- column rather than a new `status` value on purpose, so the many existing
+-- .neq('status', 'actioned') filters across signals.js, actionsEngine.js,
+-- and TodaysActions.jsx don't need auditing — additive, invisible to any
+-- code that doesn't check it. See actionsEngine.js's buildSourcedPool and
+-- buildRelationshipPool for the one bypass rule this enables: a
+-- manually-added signal always clears the age-window filter, still scored
+-- and ranked normally, just never dropped for being old or below the bar.
+ALTER TABLE public.intelligence_signals ADD COLUMN IF NOT EXISTS manually_added_at timestamptz;

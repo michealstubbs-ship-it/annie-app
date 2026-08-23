@@ -22,7 +22,7 @@ export default function CandidateProfileBox({ profile }) {
 
   return (
     <div className="rounded-lg px-3.5 py-3 mb-2.5 bg-page-bg border border-gray-200/70">
-      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">If you had a candidate with this profile</p>
+      <p className="text-[11.5px] font-semibold text-gray-500 italic leading-relaxed mb-2">If you know of a candidate with similar experience to the below, it could be worth putting them forward on spec</p>
       <ul className="space-y-1.5 text-[11.5px] text-gray-700 leading-relaxed">
         {hasYears && (
           <li><span className="font-semibold text-navy">Experience needed: </span>{yearsLabel}</li>

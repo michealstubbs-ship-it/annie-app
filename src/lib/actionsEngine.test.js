@@ -70,6 +70,12 @@ describe('buildRelationshipPool', () => {
     const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'leadership_change', found_at: daysAgoIso(90) }]
     expect(buildRelationshipPool(signals, contacts)).toEqual([])
   })
+
+  it('a manually-added signal clears the freshness window even when otherwise too old — the recruiter already chose to pursue it from the Feed', () => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', found_at: daysAgoIso(90), manually_added_at: daysAgoIso(0) }]
+    const pool = buildRelationshipPool(signals, contacts)
+    expect(pool).toHaveLength(1)
+  })
 })
 
 describe('buildSourcedPool — the M2 "never ages out" fix', () => {
@@ -81,6 +87,12 @@ describe('buildSourcedPool — the M2 "never ages out" fix', () => {
     // it's excluded outright once it's older than the cutoff.
     const veryOldSignal = [{ id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(400), contact_verified: false, signal_type: 'funding' }]
     expect(buildSourcedPool(veryOldSignal, [])).toEqual([])
+  })
+
+  it('a manually-added signal clears the age cutoff even when otherwise past SOURCED_MAX_AGE_DAYS — "Add to Today\'s BD Actions" from the Feed always sticks, no dependency on cache timing', () => {
+    const veryOldButChosen = [{ id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(400), contact_verified: false, signal_type: 'funding', manually_added_at: daysAgoIso(0) }]
+    const pool = buildSourcedPool(veryOldButChosen, [])
+    expect(pool).toHaveLength(1)
   })
 
   it('still includes a genuinely fresh signal', () => {

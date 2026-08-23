@@ -135,7 +135,12 @@ export function buildRelationshipPool(intelligenceSignals, contacts) {
       // worth a longer freshness window than the ordinary 14 days — see
       // buildSourcedPool's comment on the same signal type for why.
       const isLeadershipChange = s.signal_type === 'leadership_change'
-      if (daysFound > (isLeadershipChange ? 60 : SIGNAL_FRESH_DAYS)) return null
+      // A signal the user explicitly pulled in via "Add to Today's BD
+      // Actions" on the Feed always clears this window — they already
+      // decided it's worth pursuing, so it's not this pool's place to
+      // second-guess that on freshness grounds. Still scored/ranked
+      // normally below, just never dropped for being old.
+      if (!s.manually_added_at && daysFound > (isLeadershipChange ? 60 : SIGNAL_FRESH_DAYS)) return null
 
       const score = Math.min(100, decayFall(daysFound, 5, 60) + 25 + (isLeadershipChange ? 15 : 0))
 
@@ -200,7 +205,10 @@ export function buildSourcedPool(intelligenceSignals, contacts) {
       // SOURCED_MAX_AGE_DAYS (21 days) — see the urgency comment below for
       // why a new leader stays a live opportunity for months, not weeks.
       const maxAgeDays = s.signal_type === 'leadership_change' ? 60 : SOURCED_MAX_AGE_DAYS
-      if (daysFound > maxAgeDays) return null // see SOURCED_MAX_AGE_DAYS — this is the actual fix for M2
+      // Same manually-added bypass as buildRelationshipPool above: a signal
+      // the user explicitly chose from the Feed always clears this age
+      // cutoff, still scored/ranked normally, just never dropped for age.
+      if (!s.manually_added_at && daysFound > maxAgeDays) return null // see SOURCED_MAX_AGE_DAYS — this is the actual fix for M2
 
       // live_job: a real, specific open role Annie found and verified, not a
       // narrative "this company is hiring" mention — the most actionable lead
