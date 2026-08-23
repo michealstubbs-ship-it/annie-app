@@ -1,5 +1,4 @@
-import React, { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import React, { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 
 export default function Login() {
@@ -10,20 +9,6 @@ export default function Login() {
   const [success, setSuccess] = useState('')
   const [showResend, setShowResend] = useState(false)
   const [showExistingAccount, setShowExistingAccount] = useState(false)
-  const [signedOutNotice, setSignedOutNotice] = useState(false)
-
-  // Landed here because a live session unexpectedly disappeared (see
-  // AuthContext) rather than because the person clicked "Log out" — most
-  // often means Annie was open in another tab too. Explain it here instead of
-  // just dropping them back at a blank login form with no context.
-  useEffect(() => {
-    try {
-      if (sessionStorage.getItem('annie_involuntary_signout')) {
-        setSignedOutNotice(true)
-        sessionStorage.removeItem('annie_involuntary_signout')
-      }
-    } catch {}
-  }, [])
 
   const [form, setForm] = useState({
     email: '', password: '', fullName: '', firmName: '',
@@ -61,10 +46,6 @@ export default function Login() {
         if (!form.fullName.trim()) return setError('Please enter your full name')
         if (!form.firmName.trim()) return setError('Please enter your firm name')
         if (form.password.length < 8) return setError('Password must be at least 8 characters')
-        // Belt-and-braces alongside the disabled submit button below — a
-        // browser autofill or Enter-key submit could otherwise slip past a
-        // disabled attribute in some edge case, and this is the one check
-        // here with real legal weight (see the checkbox itself for why).
         if (!agreedToTerms) return setError('Please agree to the Terms of Service and Privacy Policy to continue')
 
         const { data, error } = await signUp(form.email, form.password, form.fullName, form.firmName)
@@ -129,21 +110,16 @@ export default function Login() {
             {mode === 'login' ? 'Sign in to your Annie dashboard' : mode === 'signup' ? 'Start your free trial, no credit card needed' : "We'll email you a link to set a new password"}
           </p>
 
-          {signedOutNotice && !error && (
-            <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg px-4 py-3 text-sm mb-4">
-              You were signed out unexpectedly. This usually happens if Annie was open in more than one browser tab at once (only one tab can hold a valid session at a time). Please log back in; if you were mid-onboarding, just pick up from where you left off.
-            </div>
-          )}
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">
               {error}
               {showResend && (
-                <button type="button" onClick={handleResend} className="block mt-2 text-gold-ink font-semibold hover:underline">
+                <button type="button" onClick={handleResend} className="block mt-2 text-gold font-semibold hover:underline">
                   Resend confirmation email
                 </button>
               )}
               {showExistingAccount && (
-                <button type="button" onClick={() => { setMode('login'); setError(''); setSuccess(''); setShowExistingAccount(false) }} className="block mt-2 text-gold-ink font-semibold hover:underline">
+                <button type="button" onClick={() => { setMode('login'); setError(''); setSuccess(''); setShowExistingAccount(false) }} className="block mt-2 text-gold font-semibold hover:underline">
                   Sign in instead
                 </button>
               )}
@@ -179,7 +155,7 @@ export default function Login() {
                 <div className="flex items-center justify-between">
                   <label className="label">Password</label>
                   {mode === 'login' && (
-                    <button type="button" onClick={() => { setMode('forgot'); setError(''); setSuccess('') }} className="text-xs text-gold-ink font-semibold hover:underline mb-1.5">
+                    <button type="button" onClick={() => { setMode('forgot'); setError(''); setSuccess('') }} className="text-xs text-gold font-semibold hover:underline mb-1.5">
                       Forgot password?
                     </button>
                   )}
@@ -189,21 +165,22 @@ export default function Login() {
             )}
 
             {mode === 'signup' && (
-              // Real, active consent rather than the passive footer text
-              // this replaces for signup specifically — an unticked box the
-              // person has to check themselves holds up far better than
-              // text sitting below a button they may never have read.
-              <label className="flex items-start gap-2.5 text-sm text-gray-600 cursor-pointer">
+              <div className="flex items-start gap-2 pt-1">
                 <input
+                  id="agree-terms"
                   type="checkbox"
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-gold focus:ring-gold"
                   checked={agreedToTerms}
                   onChange={e => { setAgreedToTerms(e.target.checked); setError('') }}
-                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-gold-ink focus:ring-gold-ink"
+                  required
                 />
-                <span>
-                  I agree to Annie's <Link to="/terms" target="_blank" className="text-gold-ink font-semibold hover:underline">Terms of Service</Link> and <Link to="/privacy" target="_blank" className="text-gold-ink font-semibold hover:underline">Privacy Policy</Link>
-                </span>
-              </label>
+                <label htmlFor="agree-terms" className="text-xs text-gray-500 leading-relaxed">
+                  I agree to Annie's{' '}
+                  <a href="https://meetannie.ai/terms.html" target="_blank" rel="noopener noreferrer" className="text-gold font-semibold hover:underline">Terms of Service</a>
+                  {' '}and{' '}
+                  <a href="https://meetannie.ai/privacy.html" target="_blank" rel="noopener noreferrer" className="text-gold font-semibold hover:underline">Privacy Policy</a>.
+                </label>
+              </div>
             )}
 
             <button type="submit" disabled={loading || (mode === 'signup' && !agreedToTerms)} className="btn-primary w-full mt-2">
@@ -214,23 +191,26 @@ export default function Login() {
           <div className="mt-6 text-center text-sm text-gray-500">
             {mode === 'login' && (
               <>Don't have an account?{' '}
-                <button onClick={() => { setMode('signup'); setError(''); setSuccess('') }} className="text-gold-ink font-semibold hover:underline">Sign up free</button>
+                <button onClick={() => { setMode('signup'); setError(''); setSuccess('') }} className="text-gold font-semibold hover:underline">Sign up free</button>
               </>
             )}
             {mode === 'signup' && (
               <>Already have an account?{' '}
-                <button onClick={() => { setMode('login'); setError(''); setSuccess('') }} className="text-gold-ink font-semibold hover:underline">Sign in</button>
+                <button onClick={() => { setMode('login'); setError(''); setSuccess('') }} className="text-gold font-semibold hover:underline">Sign in</button>
               </>
             )}
             {mode === 'forgot' && (
-              <button onClick={() => { setMode('login'); setError(''); setSuccess('') }} className="text-gold-ink font-semibold hover:underline">Back to sign in</button>
+              <button onClick={() => { setMode('login'); setError(''); setSuccess('') }} className="text-gold font-semibold hover:underline">Back to sign in</button>
             )}
           </div>
         </div>
 
         {mode !== 'signup' && (
           <p className="text-center text-gray-500 text-xs mt-6">
-            <Link to="/terms" className="text-gold-ink hover:underline">Terms of Service</Link> · <Link to="/privacy" className="text-gold-ink hover:underline">Privacy Policy</Link>
+            By using Annie you agree to our{' '}
+            <a href="https://meetannie.ai/terms.html" target="_blank" rel="noopener noreferrer" className="text-gold font-semibold hover:underline">Terms of Service</a>
+            {' '}and{' '}
+            <a href="https://meetannie.ai/privacy.html" target="_blank" rel="noopener noreferrer" className="text-gold font-semibold hover:underline">Privacy Policy</a>
           </p>
         )}
       </div>
