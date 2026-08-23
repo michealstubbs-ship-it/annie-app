@@ -1,17 +1,40 @@
 // Same fail-open philosophy as scanShared.test.js's reserveApolloCredits
 // tests: this helper must never be the thing that breaks a request, whether
 // the DB write itself fails or config is simply missing.
+//
+// 2026-08-23: found (via production error_logs itself, ironically) that the
+// tests below which deliberately omit the injectedClient param — to exercise
+// the real "no client passed" path every actual call site uses — were
+// relying on VITE_SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY simply not being
+// set in whatever process runs them. That's true on a laptop, but Netlify's
+// CI build (per netlify.toml: `npm test && npm run build`) runs with the
+// site's real production env vars already in scope, since other functions'
+// tests and the build itself need them — so every CI run was constructing a
+// REAL Supabase client with the real service-role key and inserting literal
+// "boom"/"again" rows straight into production error_logs. Fixed two ways,
+// deliberately redundant: the module mock below means createClient can never
+// return a real client no matter what env vars are set (this is the actual
+// fix), and clearing the two env vars in beforeEach keeps the "no env vars
+// configured" test's own stated premise true rather than accidentally true.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { mockSentryInit, mockCaptureException, mockFlush } = vi.hoisted(() => ({
+const { mockSentryInit, mockCaptureException, mockFlush, mockCreateClient } = vi.hoisted(() => ({
   mockSentryInit: vi.fn(),
   mockCaptureException: vi.fn(),
   mockFlush: vi.fn().mockResolvedValue(true),
+  // A real client must never be constructible from this file, however env
+  // vars happen to be set in whatever process runs these tests — see the
+  // 2026-08-23 comment above. Every test that wants real DB-write behavior
+  // passes its own injectedClient explicitly instead of relying on this one.
+  mockCreateClient: vi.fn(() => ({ from: vi.fn(() => ({ insert: vi.fn().mockResolvedValue({ data: null, error: null }) })) })),
 }))
 vi.mock('@sentry/node', () => ({
   init: mockSentryInit,
   captureException: mockCaptureException,
   flush: mockFlush,
+}))
+vi.mock('@supabase/supabase-js', () => ({
+  createClient: mockCreateClient,
 }))
 
 function mockClient(insertImpl) {
@@ -24,11 +47,33 @@ beforeEach(async () => {
   vi.clearAllMocks()
   delete process.env.SENTRY_DSN
   delete process.env.CONTEXT
+  delete process.env.VITE_SUPABASE_URL
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY
   // reportError.js tracks "already initialized Sentry" at module scope
   // (deliberately — see the file's own comment on why), so each test needs
   // a fresh module instance to observe init() being called again.
   vi.resetModules()
   ;({ reportServerError } = await import('./reportError.js'))
+})
+
+describe('createClient is never real, regardless of ambient env vars', () => {
+  it('never touches the mocked createClient when a client is injected', async () => {
+    const insert = vi.fn().mockResolvedValue({ data: null, error: null })
+    await reportServerError('chat', new Error('boom'), {}, mockClient(insert))
+    expect(mockCreateClient).not.toHaveBeenCalled()
+  })
+
+  it('only ever produces the mocked client, even with real-looking env vars set', async () => {
+    process.env.VITE_SUPABASE_URL = 'https://example.supabase.co'
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'not-a-real-key'
+    await reportServerError('chat', new Error('boom'))
+    expect(mockCreateClient).toHaveBeenCalledTimes(1)
+    // The real module is never imported by this test file at all, so the
+    // only way this could be a genuine network client is if the mock above
+    // failed to intercept it — asserting the mock's own return shape here
+    // is what proves that didn't happen.
+    expect(mockCreateClient).toHaveReturnedWith(expect.objectContaining({ from: expect.any(Function) }))
+  })
 })
 
 describe('reportServerError', () => {
