@@ -346,33 +346,39 @@ export default function TodaysActions() {
     }
   }
 
-  // Safety net for signals written before introMessage existed — still
-  // usable, so the copy button always has something worth copying. Body
-  // text only, same contract as the AI-written field: buildOutreachMessage
-  // adds the actual greeting and sign-off, this never should.
+  // Safety net for signals written before introMessage existed (or before
+  // this exact product-copy pass) — still usable, so the copy button always
+  // has something worth copying, and built to the same 3-part structure as
+  // the real AI-written field (introMessageInstruction in the scan prompts):
+  // a warm opener, one paragraph naming the firm, the specific niche THIS
+  // signal calls for, the real insight in plain language, relevant regional
+  // experience, and the value-add close, then a short call-to-action close.
   function fallbackIntroMessage(action) {
-    const firmLine = profile?.firm_name ? `I work for a recruitment firm called ${profile.firm_name}.` : `I work in recruitment.`
-    const insight = action.detail || 'it looks like a real opportunity worth exploring together.'
-    return `I hope you are doing well.\n\n${firmLine} I saw the news about ${action.headline} at ${action.company}. ${insight}\n\nWould you be open to a call to discuss in more detail?`
+    const firmClause = profile?.firm_name ? `I work for a recruitment firm called ${profile.firm_name}` : 'I work for a recruitment firm'
+    const functions = onboarding?.functions?.length ? onboarding.functions.join(', ') : 'this space'
+    const locations = onboarding?.locations?.length ? onboarding.locations.join(', ') : 'the region'
+    const insight = action.detail || 'it looks like a real opportunity worth exploring together'
+    return `I hope you are doing well.\n\n${firmClause}, where I specialise in recruiting across ${functions}. ${insight} I'd expect this means genuine hiring needs on the horizon, and given our experience across ${locations}, I'm confident we can add value as a recruitment partner here through our relevant candidate network.\n\nWould you be open to a call to discuss in more detail?`
   }
 
   // The one message actually shown/copied: a real greeting addressed to the
-  // verified contact by name when we have one, Annie's own body text for
-  // this signal, and a sign-off that introduces the sender by name and firm
-  // — see outreachMessage.js for why this is composed here rather than left
-  // to the AI prompt.
-  function fullIntroMessage(action) {
+  // contact by name (whoever generate() resolved this card's messageContact
+  // to — see that const in the render loop), Annie's own body text for this
+  // signal, and a sign-off that introduces the sender by name and firm — see
+  // outreachMessage.js for why this is composed here rather than left to the
+  // AI prompt.
+  function fullIntroMessage(action, contact) {
     const body = action.introMessage || fallbackIntroMessage(action)
     return buildOutreachMessage({
       body,
-      contactFirstName: action.verifiedContact ? firstNameOf(action.verifiedContact.name) : '',
+      contactFirstName: contact ? firstNameOf(contact.name) : '',
       senderFirstName: firstNameOf(profile?.full_name),
       firmName: profile?.firm_name || '',
     })
   }
 
-  async function copyIntroMessage(action, index) {
-    const text = fullIntroMessage(action)
+  async function copyIntroMessage(action, index, contact) {
+    const text = fullIntroMessage(action, contact)
     try {
       await navigator.clipboard.writeText(text)
     } catch {
@@ -518,6 +524,14 @@ export default function TodaysActions() {
             // separate time-sensitive pill just below when it's urgent.
             const badge = action.signalType === 'live_job' ? BADGE.live_job : (isSourced ? null : (BADGE[action.category] || BADGE.new_client))
             const matches = (action.pipelineMatches || []).map(normalizeMatch)
+            // The one thing that actually unlocks a "ready-to-send" message:
+            // a real, Apollo-verified person to address it to — the single
+            // verifiedContact when one exists, else the first of the
+            // multi-function contactCandidates panel (2026-08-23: a card with
+            // neither used to still render a full "Hi there, ..." message as
+            // if it were ready to send, which it wasn't — nobody to send it
+            // to yet, just a role to approach generically).
+            const messageContact = action.verifiedContact || (action.contactCandidates?.length ? action.contactCandidates[0] : null)
             return (
               <div
                 key={i}
@@ -685,20 +699,28 @@ export default function TodaysActions() {
                             {/* The one thing here meant to be used as-is, not
                                 just read — a distinct navy block with a bold
                                 gold action button so it reads as "push this"
-                                rather than blending into the text above it. */}
-                            <div className="bg-navy rounded-[10px] px-3.5 py-3 mb-1">
-                              <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
-                                <span className="text-[9.5px] font-bold text-gold uppercase tracking-wider">✉️ Ready-to-send message</span>
-                                <button
-                                  onClick={() => copyIntroMessage(action, i)}
-                                  title="Copies this message to your clipboard, ready to paste into an email or LinkedIn message: nothing to draft, nothing to leave this page for."
-                                  className="text-xs font-bold px-4 py-2 rounded-md bg-gold text-navy hover:bg-gold/90 flex-shrink-0 transition-colors"
-                                >
-                                  {copiedIndex === i ? '✓ Copied!' : '📋 Copy message'}
-                                </button>
+                                rather than blending into the text above it.
+                                Gated on messageContact (see the render loop's
+                                own const): a message greeted "Hi there," and
+                                labeled ready-to-send when there's genuinely
+                                nobody confirmed to send it to yet was worse
+                                than no message at all — it read as done when
+                                the real next step is still finding a contact. */}
+                            {messageContact && (
+                              <div className="bg-navy rounded-[10px] px-3.5 py-3 mb-1">
+                                <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                                  <span className="text-[9.5px] font-bold text-gold uppercase tracking-wider">✉️ Ready-to-send message</span>
+                                  <button
+                                    onClick={() => copyIntroMessage(action, i, messageContact)}
+                                    title="Copies this message to your clipboard, ready to paste into an email or LinkedIn message: nothing to draft, nothing to leave this page for."
+                                    className="text-xs font-bold px-4 py-2 rounded-md bg-gold text-navy hover:bg-gold/90 flex-shrink-0 transition-colors"
+                                  >
+                                    {copiedIndex === i ? '✓ Copied!' : '📋 Copy message'}
+                                  </button>
+                                </div>
+                                <p className="text-white/90 text-[11.5px] leading-relaxed whitespace-pre-line">{fullIntroMessage(action, messageContact)}</p>
                               </div>
-                              <p className="text-white/90 text-[11.5px] leading-relaxed whitespace-pre-line">{fullIntroMessage(action)}</p>
-                            </div>
+                            )}
                           </>
                         ) : (
                           <>
