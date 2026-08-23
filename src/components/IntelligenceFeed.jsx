@@ -80,7 +80,7 @@ export default function IntelligenceFeed() {
   // when this signal was found. Doesn't mark it 'actioned', so it can still
   // be found and fully worked from Today's Actions.
   async function addToTodaysActions(s) {
-    if (s.manually_added_at) return
+    if (s.manually_added_at || s.signal_type === 'regulatory') return
     await markSignalManuallyAdded(s.id)
     setSignals(prev => prev.map(x => x.id === s.id ? { ...x, manually_added_at: new Date().toISOString() } : x))
     logSignalOutcome(user, s, 'added_to_bd_actions')
@@ -123,7 +123,7 @@ export default function IntelligenceFeed() {
             onClick={() => setTypeFilter('all')}
             className={`flex-shrink-0 text-[12.5px] font-bold px-3.5 py-1.5 rounded-full border transition-colors whitespace-nowrap ${typeFilter === 'all' ? 'bg-navy text-gold border-navy' : 'bg-page-bg text-gray-600 border-gray-200 hover:border-gray-300'}`}
           >
-            All ({signals.length})
+            All
           </button>
           {presentTypes.map(t => (
             <button
@@ -131,7 +131,7 @@ export default function IntelligenceFeed() {
               onClick={() => setTypeFilter(t)}
               className={`flex-shrink-0 text-[12.5px] font-bold px-3.5 py-1.5 rounded-full border transition-colors whitespace-nowrap ${typeFilter === t ? 'bg-navy text-gold border-navy' : 'bg-page-bg text-gray-600 border-gray-200 hover:border-gray-300'}`}
             >
-              {(TYPE_META[t]?.icon ? TYPE_META[t].icon + ' ' : '') + (TYPE_META[t]?.label || t)}
+              {(TYPE_META[t]?.icon ? TYPE_META[t].icon + ' ' : '') + (TYPE_META[t]?.chipLabel || TYPE_META[t]?.label || t)}
             </button>
           ))}
         </div>
@@ -196,7 +196,14 @@ export default function IntelligenceFeed() {
                       ) : (
                         <span className="flex items-center gap-1.5 text-gray-400 text-xs font-semibold">📰 AI-reported</span>
                       )}
-                      {s.manually_added_at ? (
+                      {s.signal_type === 'regulatory' ? (
+                        // Regulatory is market intel by design, background awareness,
+                        // never a BD trigger — actionsEngine.js excludes it from Today's
+                        // Actions outright, so offering this button here would just be a
+                        // dead end. No button at all, rather than one that silently does
+                        // nothing.
+                        <span className="flex items-center gap-1.5 text-gray-400 text-xs font-semibold italic">Market intel, not a BD action</span>
+                      ) : s.manually_added_at ? (
                         <span className="flex items-center gap-1.5 text-green-700 bg-green-50 border border-green-200 font-bold text-xs px-2.5 py-1.5 rounded-full">✓ In Today's BD Actions</span>
                       ) : (
                         <button

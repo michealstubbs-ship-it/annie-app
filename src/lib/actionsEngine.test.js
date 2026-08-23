@@ -76,6 +76,16 @@ describe('buildRelationshipPool', () => {
     const pool = buildRelationshipPool(signals, contacts)
     expect(pool).toHaveLength(1)
   })
+
+  it('excludes a regulatory signal even when fresh and about a known company — market intel only, never a BD trigger', () => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'regulatory', found_at: daysAgoIso(1) }]
+    expect(buildRelationshipPool(signals, contacts)).toEqual([])
+  })
+
+  it('excludes a regulatory signal even when manually added — the Feed button cannot override this exclusion', () => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'regulatory', found_at: daysAgoIso(1), manually_added_at: daysAgoIso(0) }]
+    expect(buildRelationshipPool(signals, contacts)).toEqual([])
+  })
 })
 
 describe('buildSourcedPool — the M2 "never ages out" fix', () => {
@@ -93,6 +103,16 @@ describe('buildSourcedPool — the M2 "never ages out" fix', () => {
     const veryOldButChosen = [{ id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(400), contact_verified: false, signal_type: 'funding', manually_added_at: daysAgoIso(0) }]
     const pool = buildSourcedPool(veryOldButChosen, [])
     expect(pool).toHaveLength(1)
+  })
+
+  it('excludes a regulatory signal about a brand-new company even when fresh — market intel only, never a BD trigger', () => {
+    const signals = [{ id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'regulatory', found_at: daysAgoIso(1), contact_verified: false }]
+    expect(buildSourcedPool(signals, [])).toEqual([])
+  })
+
+  it('excludes a regulatory signal even when manually added — the Feed button cannot override this exclusion', () => {
+    const signals = [{ id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'regulatory', found_at: daysAgoIso(1), contact_verified: false, manually_added_at: daysAgoIso(0) }]
+    expect(buildSourcedPool(signals, [])).toEqual([])
   })
 
   it('still includes a genuinely fresh signal', () => {

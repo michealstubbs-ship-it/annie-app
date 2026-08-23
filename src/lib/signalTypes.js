@@ -19,17 +19,21 @@
 // AI's own signalType choice. See scan-now-background.js / intelligence-
 // scan.js's row-building, and IntelligenceFeed.jsx's query (which excludes
 // live_job rows from that feed entirely — Today's Actions only).
+// `chipLabel` is the short form the Feed's filter chip bar uses (the mock
+// keeps that row terse, e.g. "Leadership" rather than the fuller
+// "Leadership change" the per-post topic pill spells out) — omit it and the
+// chip bar falls back to the full `label`.
 export const SIGNAL_TYPE_META = {
   funding: { label: 'Funding', icon: '💰', color: 'text-amber-700 bg-amber-100', racy: false },
-  leadership_change: { label: 'Leadership change', icon: '👤', color: 'text-blue-700 bg-blue-100', racy: false },
-  hiring_activity: { label: 'Hiring activity', icon: '📈', color: 'text-green-700 bg-green-100', racy: true },
+  leadership_change: { label: 'Leadership change', chipLabel: 'Leadership', icon: '👤', color: 'text-blue-700 bg-blue-100', racy: false },
+  hiring_activity: { label: 'Hiring activity', chipLabel: 'Hiring', icon: '📈', color: 'text-green-700 bg-green-100', racy: true },
   expansion: { label: 'Expansion', icon: '🌍', color: 'text-teal-700 bg-teal-100', racy: true },
   team_building: { label: 'Team building', icon: '💬', color: 'text-fuchsia-700 bg-fuchsia-100', racy: true },
-  public_commentary: { label: 'Public commentary', icon: '🎙️', color: 'text-purple-700 bg-purple-100', racy: false },
+  public_commentary: { label: 'Public commentary', chipLabel: 'Commentary', icon: '🎙️', color: 'text-purple-700 bg-purple-100', racy: false },
   job_posting_unclaimed: { label: 'Unclaimed role', icon: '📋', color: 'text-orange-700 bg-orange-100', racy: true },
   m_and_a: { label: 'M&A', icon: '🤝', color: 'text-indigo-700 bg-indigo-100', racy: false },
   regulatory: { label: 'Regulatory', icon: '📜', color: 'text-slate-700 bg-slate-100', racy: false },
-  live_job: { label: 'Live role', icon: '🎯', color: 'text-emerald-700 bg-emerald-100', racy: true },
+  live_job: { label: 'Live role', chipLabel: 'Live roles', icon: '🎯', color: 'text-emerald-700 bg-emerald-100', racy: true },
 }
 
 // The subset the AI's own scan prompt is allowed to choose a signalType

@@ -34,22 +34,48 @@ function buildApproaches(action) {
 // company already known".
 const BD_CATEGORIES = ['sourced', 'relationship']
 
+// The mock never labels a sourced signal "sourced by annie" — that's implied
+// by which tab it's in. Its BD-tab cards show at most one pill: "live role"
+// for a live_job posting, or "time-sensitive" when the signal is urgent, and
+// often no badge at all. `sourced` has no entry here on purpose — see badge
+// selection below, which renders nothing for a plain (non-live_job) sourced
+// item unless it's also urgent.
 const BADGE = {
   dormant: { label: 're-engage', className: 'bg-amber-100 text-amber-700' },
   meeting: { label: 'meeting', className: 'bg-purple-100 text-purple-700' },
   relationship: { label: 'relationship', className: 'bg-purple-100 text-purple-700' },
   new_client: { label: 'new client', className: 'bg-blue-100 text-blue-700' },
-  sourced: { label: 'sourced by annie', className: 'bg-navy text-gold' },
   live_job: { label: 'live role', className: 'bg-green-100 text-green-700' },
 }
 
 // A cached action's pipelineMatches may be either the current shape (a
-// {name, role, company} object per candidate, added 2026-08-23) or the
-// older plain-string-name shape it replaced — actions_cache rows already
-// written before that change won't regenerate for up to 24h, so both need
-// to render without crashing.
+// {name, role, company, industry, status} object per candidate, added
+// 2026-08-23) or the older plain-string-name shape it replaced —
+// actions_cache rows already written before that change won't regenerate
+// for up to 24h, so both need to render without crashing.
 function normalizeMatch(m) {
-  return typeof m === 'string' ? { name: m, role: '', company: '' } : m
+  return typeof m === 'string' ? { name: m, role: '', company: '', industry: '', status: '' } : m
+}
+
+// The mock's per-candidate "why" pills (🏢/🎯/⭐) are demo copy invented for
+// three specific fictional people — nothing upstream computes a bespoke
+// reasoning sentence per real candidate. Rather than either fabricating one
+// or dropping the pill treatment entirely, this builds the same pill UI from
+// fields that are actually real: the candidate's current company (and
+// whether it shares the signal's industry), their role, and their CRM
+// status. Same visual language as the mock, honest content underneath.
+function buildWhyChips(m, action) {
+  const chips = []
+  if (m.company) {
+    const sameSector = action.signalIndustry && m.industry && m.industry.trim().toLowerCase() === action.signalIndustry.trim().toLowerCase()
+    chips.push({ icon: '🏢', text: sameSector ? `${m.company}, same sector` : m.company })
+  }
+  if (m.role) chips.push({ icon: '🎯', text: m.role })
+  if (m.status) {
+    const label = { warm: 'Warm in your pipeline', active: 'Actively engaged', new: 'New to your pipeline' }[m.status.toLowerCase()] || `${m.status}, in your pipeline`
+    chips.push({ icon: '⭐', text: label })
+  }
+  return chips
 }
 
 export default function TodaysActions() {
@@ -178,7 +204,8 @@ export default function TodaysActions() {
             // still hold this as a plain array of name strings from before
             // 2026-08-23 — the render below handles both shapes, so an
             // existing cache doesn't need to expire before this works.
-            pipelineMatches: matchCandidatesToSignal(s, candidates).map(c => ({ name: c.name, role: c.role || '', company: c.company || '' })),
+            pipelineMatches: matchCandidatesToSignal(s, candidates).map(c => ({ name: c.name, role: c.role || '', company: c.company || '', industry: c.industry || '', status: c.status || '' })),
+            signalIndustry: s.company_industry || '',
             signalId: s.id,
           }
         }
@@ -368,9 +395,12 @@ export default function TodaysActions() {
 
           <div className={tab === 'followup' ? 'space-y-2' : 'space-y-3'}>
           {activeRows.map(({ action, i }) => {
-            const badge = action.signalType === 'live_job' ? BADGE.live_job : (BADGE[action.category] || BADGE.new_client)
             const isOpen = openIndex === i
             const isSourced = action.source === 'sourced'
+            // A plain sourced signal (not live_job) carries no category badge
+            // at all, matching the mock — it's only ever flagged via the
+            // separate time-sensitive pill just below when it's urgent.
+            const badge = action.signalType === 'live_job' ? BADGE.live_job : (isSourced ? null : (BADGE[action.category] || BADGE.new_client))
             const matches = (action.pipelineMatches || []).map(normalizeMatch)
             return (
               <div
@@ -388,8 +418,8 @@ export default function TodaysActions() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className={`font-bold text-navy ${tab === 'followup' ? 'text-[13px]' : 'text-sm'}`}>{action.headline}</h3>
-                      <span className={`text-[9.5px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${badge.className}`}>{badge.label}</span>
-                      {isSourced && action.urgency >= 2 && <span className="text-[9.5px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gold text-navy">time-sensitive</span>}
+                      {badge && <span className={`text-[9.5px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${badge.className}`}>{badge.label}</span>}
+                      {isSourced && action.signalType !== 'live_job' && action.urgency >= 2 && <span className="text-[9.5px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gold text-navy">time-sensitive</span>}
                     </div>
                     {(action.contact || action.company) && (
                       <p className="text-[12px] text-gold-ink font-semibold mt-1">
@@ -451,14 +481,26 @@ export default function TodaysActions() {
                                 <div className="text-[9px] font-bold text-green-700 uppercase tracking-wider">✓ Annie checked your pipeline</div>
                                 <p className="text-[12.5px] font-bold text-green-700 mt-0.5 mb-0.5">{matches.length} candidate{matches.length === 1 ? '' : 's'} already in your pipeline could fit this</p>
                                 <p className="text-[10.5px] italic text-[#4d7c5f]">Matched on role and industry overlap with this signal</p>
-                                {matches.map((m, mi) => (
-                                  <div key={mi} className="mt-2 pt-2 border-t border-green-700/15">
-                                    <p className="text-xs font-bold text-navy">
-                                      {m.name}
-                                      {(m.role || m.company) && <span className="font-medium text-[#166534] text-[11.5px]"> · {[m.role, m.company].filter(Boolean).join(', ')}</span>}
-                                    </p>
-                                  </div>
-                                ))}
+                                {matches.map((m, mi) => {
+                                  const chips = buildWhyChips(m, action)
+                                  return (
+                                    <div key={mi} className="mt-2 pt-2 border-t border-green-700/15">
+                                      <p className="text-xs font-bold text-navy">
+                                        {m.name}
+                                        {(m.role || m.company) && <span className="font-medium text-[#166534] text-[11.5px]"> · {[m.role, m.company].filter(Boolean).join(', ')}</span>}
+                                      </p>
+                                      {chips.length > 0 && (
+                                        <div className="flex flex-wrap gap-1.5 mt-1.5">
+                                          {chips.map((c, ci) => (
+                                            <span key={ci} className="text-[10.5px] font-semibold px-2.5 py-[3px] rounded-full bg-white border border-green-200 text-[#166534] whitespace-nowrap">
+                                              {c.icon} {c.text}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                })}
                               </div>
                             ) : (
                               <div className="bg-page-bg border border-dashed border-[#d7dceb] rounded-[10px] px-3 py-2.5 mb-2.5">

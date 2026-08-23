@@ -126,6 +126,11 @@ export function buildRelationshipPool(intelligenceSignals, contacts) {
 
   return (intelligenceSignals || [])
     .filter(s => s.status !== 'actioned')
+    // Regulatory signals are pure market intel, background awareness, not a
+    // BD trigger, so this pool never surfaces one, even one someone
+    // manually added from the Feed (see the same exclusion, and why, on
+    // buildSourcedPool below).
+    .filter(s => s.signal_type !== 'regulatory')
     .map(s => {
       const linkedContact = contactsByCompany.get(norm(s.company_name))
       if (!linkedContact) return null // not an existing contact, belongs in sourced
@@ -199,6 +204,13 @@ export function buildSourcedPool(intelligenceSignals, contacts) {
   return (intelligenceSignals || [])
     .filter(s => s.status !== 'actioned')
     .filter(s => !knownCompanies.has(norm(s.company_name)))
+    // Regulatory signals (a filing, a licensing change, a compliance
+    // ruling) are market intel worth knowing, not something to act on
+    // commercially — they never belong in Today's Actions, on principle,
+    // not just by default scoring. Applied before the manually-added bypass
+    // even gets a chance to run, so choosing "Add to Today's BD Actions" on
+    // one from the Feed can't override this either.
+    .filter(s => s.signal_type !== 'regulatory')
     .map(s => {
       const daysFound = daysSince(s.found_at) ?? 999
       // Leadership-change gets a wider cutoff than the ordinary
