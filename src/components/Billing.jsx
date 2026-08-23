@@ -82,7 +82,11 @@ export default function Billing() {
     setError('')
     setCheckingOutTier(tierKey)
     try {
-      const { url } = await authedPost('/.netlify/functions/stripe-checkout', { tier: tierKey, interval })
+      // stripe-checkout.js only resolves at its custom config.path
+      // ('/api/stripe-checkout') — see callChat.js's comment for why the
+      // default '/.netlify/functions/...' alias 404s once a function sets
+      // a custom path.
+      const { url } = await authedPost('/api/stripe-checkout', { tier: tierKey, interval })
       window.location.href = url
     } catch (err) {
       setError(err.message || 'Could not start checkout. Please try again.')
@@ -94,7 +98,9 @@ export default function Billing() {
     setError('')
     setOpeningPortal(true)
     try {
-      const { url } = await authedPost('/.netlify/functions/stripe-portal', {})
+      // Same custom-path fix as choosePlan above — stripe-portal.js only
+      // resolves at '/api/stripe-portal'.
+      const { url } = await authedPost('/api/stripe-portal', {})
       window.location.href = url
     } catch (err) {
       setError(err.message || 'Could not open the billing portal. Please try again.')

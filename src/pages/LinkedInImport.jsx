@@ -282,7 +282,11 @@ export default function LinkedInImport({ embedded = false }) {
       // spends real Apollo credit per call, so it checks who's actually
       // asking, same pattern as callChat.js.
       const { data: { session } } = await supabase.auth.getSession()
-      const resp = await fetch('/.netlify/functions/apollo-enrich-companies', {
+      // apollo-enrich-companies.js only resolves at its custom config.path
+      // ('/api/apollo-enrich-companies') — see callChat.js's comment for
+      // why the default '/.netlify/functions/...' alias 404s once a
+      // function sets a custom path.
+      const resp = await fetch('/api/apollo-enrich-companies', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -10,7 +10,15 @@ export async function callChat({ messages, systemOverride, maxTokens, model, web
   const token = session?.access_token
   if (!token) throw new Error('You need to be signed in for that.')
 
-  const resp = await fetch('/.netlify/functions/chat', {
+  // chat.js declares a custom Netlify Functions path (config.path =
+  // '/api/chat'), which per Netlify's own routing rules means the default
+  // '/.netlify/functions/chat' alias no longer resolves at all once a
+  // custom path is set — only '/api/chat' does. This was calling the
+  // default path, so every caller of callChat() (Ask Annie, the support
+  // widget, the writing-style analyser, and Today's Actions' candidate
+  // pitch batch) was hitting a real Netlify 404 in production. Same class
+  // of bug fixed in Billing.jsx and LinkedInImport.jsx alongside this.
+  const resp = await fetch('/api/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
