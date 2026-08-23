@@ -355,6 +355,63 @@ describe('buildEnrichedSignalRow', () => {
     expect(row.signal_type).toBe('funding')
     vi.unstubAllGlobals()
   })
+
+  // Apollo occasionally returns a thin record with only a first name — that
+  // used to be shown on a signal card as if it were a confirmed full
+  // identity ("Naif, Project Development Manager"), which reads as broken,
+  // not verified. This is the actual fix, exercised end to end through a
+  // real Apollo cache-miss lookup rather than just unit-testing the guard
+  // in isolation.
+  it('does not treat a first-name-only Apollo result as a verified contact', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) {
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+      }
+      if (url.includes('mixed_people/api_search')) {
+        return { ok: true, json: async () => ({ people: [{ first_name: 'Naif', last_name: '', title: 'Project Development Manager', id: 'p1' }] }) }
+      }
+      return { ok: true, text: async () => '' }
+    }))
+    const row = await buildEnrichedSignalRow(
+      { entryType: 'signal', signalType: 'funding', company: 'Rabigh 1', headline: 'Gas plant expansion', titleKeywords: ['Project Development Manager'] },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+    )
+    expect(row.contact_verified).toBe(false)
+    expect(row.contact_name).toBeNull()
+    vi.unstubAllGlobals()
+  })
+
+  // A real, observed bug: the model itself sometimes writes citation-style
+  // markup into its own JSON answer (imitating a format it's seen
+  // elsewhere), and it was leaking straight into what a customer reads on
+  // a signal card.
+  it('strips citation markup and footnote markers out of every AI-written text field', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => '' }))
+    const supabase = makeCacheSupabase({ matched: false, contact_verified: false, checked_at: new Date().toISOString() })
+    const row = await buildEnrichedSignalRow(
+      {
+        entryType: 'signal', signalType: 'funding', company: 'GCC Private Equity Funds',
+        headline: 'Raises new fund <cite index="1-2">[1]</cite>',
+        whyItMatters: 'This signals fresh capital <cite index="34-2,34-3">for hiring</cite>[2, 3].',
+        whoToApproach: 'The CFO <cite index="5-1">is the right door</cite>.',
+        introMessage: 'Saw the news <cite index="6-1">about the raise</cite>.',
+        candidateAngle: 'A strong candidate <cite index="7-1">is available</cite>.',
+        benchStrengthAngle: 'We know this space <cite index="8-1">well</cite>.',
+      },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+    )
+    expect(row.headline).toBe('Raises new fund')
+    expect(row.why_it_matters).toBe('This signals fresh capital for hiring.')
+    expect(row.who_to_approach).toBe('The CFO is the right door.')
+    expect(row.intro_message).toBe('Saw the news about the raise.')
+    expect(row.candidate_angle).toBe('A strong candidate is available.')
+    expect(row.bench_strength_angle).toBe('We know this space well.')
+    for (const field of [row.headline, row.why_it_matters, row.who_to_approach, row.intro_message, row.candidate_angle, row.bench_strength_angle]) {
+      expect(field).not.toMatch(/cite|\[\d/)
+    }
+    vi.unstubAllGlobals()
+  })
 })
 
 // A stateful fake covering both cache tables buildEnrichedSignalRows relies

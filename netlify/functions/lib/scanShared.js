@@ -472,8 +472,15 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
     const data = await resp.json()
     const p = (data.people || [])[0]
     if (!p) return null
-    const name = [p.first_name, p.last_name].filter(Boolean).join(' ').trim()
-    if (!name) return null
+    // Both a first and a last name are required, not just "something in
+    // first_name" — a bare first name (Apollo occasionally has thin records)
+    // isn't a trustworthy, presentable "verified contact". Showing "Naif" or
+    // "Martin" alone as if it were a confirmed identity reads as broken, not
+    // verified — this treats a partial name the same as no contact found,
+    // so the card correctly falls back to "no verified contact found yet,
+    // approach by role" instead.
+    if (!p.first_name || !p.last_name) return null
+    const name = `${p.first_name} ${p.last_name}`.trim()
 
     // Apollo's search endpoint never returns a usable email, it comes back
     // masked (e.g. "email_not_unlocked@domain.com"). Getting a real one
@@ -663,6 +670,23 @@ export async function verifyLeadershipChange(chApiKey, companyName) {
   }
 }
 
+// Claude's web-search tool sometimes has the model itself write inline
+// citation-style markup into its own JSON answer text (e.g.
+// `<cite index="34-2,34-3">...</cite>`), imitating a citation format rather
+// than anything the API adds — and it was leaking straight into signal
+// cards a customer reads verbatim (raw `<cite ...>` tags visible in the
+// "why it matters" text). Stripped once, here, for every AI-written field
+// that reaches a customer, rather than trusting prompt wording alone to
+// keep the model from doing it again on some future run.
+function stripAiArtifacts(text) {
+  if (!text) return text
+  return text
+    .replace(/<\/?cite[^>]*>/gi, '')
+    .replace(/\[\d+(?:\s*,\s*\d+)*\]/g, '') // stray numeric footnote markers like [1] or [2, 3]
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
+
 // Builds one intelligence_signals row from a raw scan entry (an AI-written
 // signal, or an Adzuna-sourced live_job entry), running every enrichment
 // call the row depends on: company info + Apollo org id (enrichCompany), a
@@ -707,16 +731,16 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
     company_country: companyInfo?.country || null,
     company_logo_url: companyInfo?.logo_url || null,
     signal_type: isLiveJob ? 'live_job' : resolveSignalType(s.signalType, logPrefix),
-    headline: s.headline,
-    why_it_matters: s.whyItMatters || '',
+    headline: stripAiArtifacts(s.headline),
+    why_it_matters: stripAiArtifacts(s.whyItMatters) || '',
     source_url: s.sourceUrl || '',
     source_label: s.sourceLabel || '',
     source_verified: sourceVerified,
     event_at: toEventIso(s.eventDate),
-    who_to_approach: s.whoToApproach || '',
-    intro_message: s.introMessage || '',
-    candidate_angle: s.candidateAngle || '',
-    bench_strength_angle: s.benchStrengthAngle || '',
+    who_to_approach: stripAiArtifacts(s.whoToApproach) || '',
+    intro_message: stripAiArtifacts(s.introMessage) || '',
+    candidate_angle: stripAiArtifacts(s.candidateAngle) || '',
+    bench_strength_angle: stripAiArtifacts(s.benchStrengthAngle) || '',
     contact_name: contact?.name || null,
     contact_title: contact?.title || null,
     contact_linkedin_url: contact?.linkedin_url || null,

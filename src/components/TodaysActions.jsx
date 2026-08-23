@@ -5,6 +5,7 @@ import { buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClie
 import { buildEnrichmentPrompt } from '../lib/actionsCopy'
 import { callChat } from '../lib/callChat'
 import { extractJson } from '../lib/jsonExtract'
+import { buildOutreachMessage, firstNameOf } from '../lib/outreachMessage'
 import ApproachPicker from './ApproachPicker'
 
 // Same two "recommended approach" angles as IntelligenceFeed's version of
@@ -16,7 +17,7 @@ import ApproachPicker from './ApproachPicker'
 function buildApproaches(action) {
   const approaches = []
   if (action.candidateAngle) approaches.push({ key: 'candidate', icon: '🎯', label: 'Lead with a candidate', tone: 'default', content: action.candidateAngle })
-  if (action.benchStrengthAngle) approaches.push({ key: 'bench', icon: '💪', label: 'Lead with our bench', tone: 'default', content: action.benchStrengthAngle })
+  if (action.benchStrengthAngle) approaches.push({ key: 'bench', icon: '💪', label: 'Lead with our experience', tone: 'default', content: action.benchStrengthAngle })
   return approaches
 }
 
@@ -178,13 +179,31 @@ export default function TodaysActions() {
   }
 
   // Safety net for signals written before introMessage existed — still
-  // usable, so the copy button always has something worth copying.
+  // usable, so the copy button always has something worth copying. Body
+  // text only, same contract as the AI-written field: buildOutreachMessage
+  // adds the actual greeting and sign-off, this never should.
   function fallbackIntroMessage(action) {
-    return `Hi — I saw the news about ${action.headline} at ${action.company}. ${action.detail || ''} Would it be worth a quick conversation?`.trim()
+    const valueLine = `Wanted to flag it in case it's useful, and to introduce what we do${profile?.firm_name ? ` at ${profile.firm_name}` : ''} in this space.`
+    return `I saw the news about ${action.headline} at ${action.company}. ${action.detail || ''} ${valueLine}`.replace(/\s+/g, ' ').trim()
+  }
+
+  // The one message actually shown/copied: a real greeting addressed to the
+  // verified contact by name when we have one, Annie's own body text for
+  // this signal, and a sign-off that introduces the sender by name and firm
+  // — see outreachMessage.js for why this is composed here rather than left
+  // to the AI prompt.
+  function fullIntroMessage(action) {
+    const body = action.introMessage || fallbackIntroMessage(action)
+    return buildOutreachMessage({
+      body,
+      contactFirstName: action.verifiedContact ? firstNameOf(action.verifiedContact.name) : '',
+      senderFirstName: firstNameOf(profile?.full_name),
+      firmName: profile?.firm_name || '',
+    })
   }
 
   async function copyIntroMessage(action, index) {
-    const text = action.introMessage || fallbackIntroMessage(action)
+    const text = fullIntroMessage(action)
     try {
       await navigator.clipboard.writeText(text)
     } catch {
@@ -320,7 +339,7 @@ export default function TodaysActions() {
                                   {copiedIndex === i ? '✓ Copied!' : '📋 Copy message'}
                                 </button>
                               </div>
-                              <p className="text-white/90 text-[11.5px] leading-relaxed">{action.introMessage || fallbackIntroMessage(action)}</p>
+                              <p className="text-white/90 text-[11.5px] leading-relaxed whitespace-pre-line">{fullIntroMessage(action)}</p>
                             </div>
                           </>
                         ) : (

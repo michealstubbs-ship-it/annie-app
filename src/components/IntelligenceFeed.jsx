@@ -1,6 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useMemo } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
+import { useSupabaseQuery } from '../lib/useSupabaseQuery'
+import { listActiveSignals, markSignalSeen, markSignalActioned } from '../lib/data/signals'
+import { listCandidatesForMatching } from '../lib/data/candidates'
+import { listContactsForMatching, createContact } from '../lib/data/contacts'
 import InfoTip from './InfoTip'
 import ApproachPicker from './ApproachPicker'
 import { matchCandidatesToSignal } from '../lib/candidateMatch'
@@ -9,6 +12,7 @@ import { logSignalOutcome } from '../lib/signalOutcomes'
 import { confirmContact } from '../lib/confirmContact'
 import { trackEvent } from '../lib/analytics'
 import { SIGNAL_TYPE_META as TYPE_META, RACY_SIGNAL_TYPES as RACY_TYPES } from '../lib/signalTypes'
+import { buildOutreachMessage, firstNameOf } from '../lib/outreachMessage'
 
 function timeAgo(dateStr) {
   if (!dateStr) return null
@@ -53,49 +57,39 @@ function buildApproaches(s, matches) {
     approaches.push({ key: 'candidate', icon: '🎯', label: 'Lead with a candidate', tone: 'default', content: s.candidate_angle })
   }
   if (s.bench_strength_angle) {
-    approaches.push({ key: 'bench', icon: '💪', label: 'Lead with our bench', tone: 'default', content: s.bench_strength_angle })
+    approaches.push({ key: 'bench', icon: '💪', label: 'Lead with our experience', tone: 'default', content: s.bench_strength_angle })
   }
   return approaches
 }
 
+// live_job rows are excluded from `signals` by listActiveSignals itself —
+// they're specific open roles behind a hiring push, Today's Actions only,
+// per the product decision: they replace the generic hiring_activity
+// narrative signal there rather than appearing in both places.
+async function loadFeedPageData(userId) {
+  const [signals, candidates, contacts] = await Promise.all([
+    listActiveSignals(userId),
+    // Lightweight, just enough to match against, not the full candidate
+    // record. This is what lets a signal say "you already have someone
+    // for this" instead of only ever pointing outward for a fresh source.
+    listCandidatesForMatching(userId),
+    // Same idea for contacts, a warm door beats a cold one every time.
+    listContactsForMatching(userId),
+  ])
+  return { signals, candidates, contacts }
+}
+
 export default function IntelligenceFeed() {
-  const { user } = useAuth()
-  const [signals, setSignals] = useState([])
-  const [candidates, setCandidates] = useState([])
-  const [contacts, setContacts] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { user, profile } = useAuth()
+  const { data: { signals, candidates, contacts }, loading, setData: setFeedPageData } = useSupabaseQuery(
+    () => loadFeedPageData(user.id), [user], { signals: [], candidates: [], contacts: [] },
+  )
   const [typeFilter, setTypeFilter] = useState('all')
   const [copiedId, setCopiedId] = useState(null)
   const [approachChoice, setApproachChoice] = useState({})
 
-  useEffect(() => { load() }, [user])
-
-  async function load() {
-    setLoading(true)
-    const [{ data }, { data: cands }, { data: conts }] = await Promise.all([
-      supabase
-        .from('intelligence_signals')
-        .select('*')
-        .eq('user_id', user.id)
-        .neq('status', 'actioned')
-        // live_job rows are specific open roles behind a hiring push —
-        // Today's Actions only, per the product decision: they replace the
-        // generic hiring_activity narrative signal there rather than
-        // appearing in both places.
-        .neq('signal_type', 'live_job')
-        .order('found_at', { ascending: false })
-        .limit(200),
-      // Lightweight, just enough to match against, not the full candidate
-      // record. This is what lets a signal say "you already have someone
-      // for this" instead of only ever pointing outward for a fresh source.
-      supabase.from('candidates').select('id, name, role, industry, status').eq('user_id', user.id),
-      // Same idea for contacts, a warm door beats a cold one every time.
-      supabase.from('contacts').select('id, name, title, company, linkedin_url').eq('user_id', user.id),
-    ])
-    setSignals(data || [])
-    setCandidates(cands || [])
-    setContacts(conts || [])
-    setLoading(false)
+  function setSignals(updater) {
+    setFeedPageData(prev => ({ ...prev, signals: updater(prev.signals) }))
   }
 
   const newCount = useMemo(() => signals.filter(s => s.status === 'new').length, [signals])
@@ -121,13 +115,13 @@ export default function IntelligenceFeed() {
 
   async function markSeen(s) {
     if (s.status !== 'new') return
-    await supabase.from('intelligence_signals').update({ status: 'seen' }).eq('id', s.id)
+    await markSignalSeen(s.id)
     setSignals(prev => prev.map(x => x.id === s.id ? { ...x, status: 'seen' } : x))
     logSignalOutcome(user, s, 'seen')
   }
 
   async function markActioned(s) {
-    await supabase.from('intelligence_signals').update({ status: 'actioned' }).eq('id', s.id)
+    await markSignalActioned(s.id)
     setSignals(prev => prev.filter(x => x.id !== s.id))
     trackEvent('signal_actioned', { signal_type: s.signal_type, source_verified: !!s.source_verified })
   }
@@ -143,8 +137,7 @@ export default function IntelligenceFeed() {
   }
 
   async function addToCrm(s) {
-    await supabase.from('contacts').insert({
-      user_id: user.id,
+    await createContact({
       name: s.contact_name || s.company_name,
       company: s.company_name,
       title: s.contact_title || null,
@@ -152,7 +145,7 @@ export default function IntelligenceFeed() {
       email: s.contact_email || null,
       status: 'warm',
       tags: ['from-intelligence-feed'],
-    })
+    }, user.id)
     await markActioned(s)
     logSignalOutcome(user, s, 'added_to_crm')
     // A customer accepting this contact into their own CRM is a real human
@@ -164,11 +157,29 @@ export default function IntelligenceFeed() {
 
   // Safety net for signals written before introMessage existed (or on the
   // rare case the AI left it blank) — not as good as a real one, but still
-  // usable, so "Copy message" always has something worth copying.
+  // usable, so "Copy message" always has something worth copying. Body text
+  // only, same contract as the AI-written field: buildOutreachMessage adds
+  // the actual greeting and sign-off, this never should.
   function fallbackIntroMessage(s, matches, warmContacts) {
-    const matchLine = matches?.length ? ` I'm currently working with candidates who'd be a strong fit for this.` : ''
-    const warmLine = warmContacts?.length ? ` We're already connected, so wanted to reach out directly rather than cold.` : ''
-    return `Hi — I saw the news about ${s.headline} at ${s.company_name}. ${s.why_it_matters || ''}${matchLine}${warmLine} Would it be worth a quick conversation?`.trim()
+    const matchLine = matches?.length ? `I'm currently working with candidates who'd be a strong fit for this.` : ''
+    const warmLine = warmContacts?.length ? `We're already connected, so I wanted to reach out directly rather than cold.` : ''
+    const valueLine = matchLine || warmLine || `Wanted to flag it in case it's useful, and to introduce what we do${profile?.firm_name ? ` at ${profile.firm_name}` : ''} in this space.`
+    return `I saw the news about ${s.headline} at ${s.company_name}. ${s.why_it_matters || ''} ${valueLine}`.replace(/\s+/g, ' ').trim()
+  }
+
+  // The one message actually shown/copied: a real greeting addressed to the
+  // verified contact by name when we have one, Annie's own body text for
+  // this signal, and a sign-off that introduces the sender by name and firm
+  // — see outreachMessage.js for why this is composed here rather than left
+  // to the AI prompt.
+  function fullIntroMessage(s, matches, warmContacts) {
+    const body = s.intro_message || fallbackIntroMessage(s, matches, warmContacts)
+    return buildOutreachMessage({
+      body,
+      contactFirstName: s.contact_verified ? firstNameOf(s.contact_name) : '',
+      senderFirstName: firstNameOf(profile?.full_name),
+      firmName: profile?.firm_name || '',
+    })
   }
 
   // Copies the ready-to-send message to the clipboard right where the
@@ -177,7 +188,7 @@ export default function IntelligenceFeed() {
   // Annie already writes a finished message as part of the signal itself,
   // there's nothing left to draft, just something to send.
   async function copyIntroMessage(s, matches, warmContacts) {
-    const text = s.intro_message || fallbackIntroMessage(s, matches, warmContacts)
+    const text = fullIntroMessage(s, matches, warmContacts)
     try {
       await navigator.clipboard.writeText(text)
     } catch {
@@ -320,7 +331,7 @@ export default function IntelligenceFeed() {
                       {copiedId === s.id ? '✓ Copied!' : '📋 Copy message'}
                     </button>
                   </div>
-                  <p className="text-white/90 text-[11.5px] leading-relaxed">{s.intro_message || fallbackIntroMessage(s, matches, warmContacts)}</p>
+                  <p className="text-white/90 text-[11.5px] leading-relaxed whitespace-pre-line">{fullIntroMessage(s, matches, warmContacts)}</p>
                 </div>
 
                 <div className="flex items-center gap-3 mb-2.5 flex-wrap">

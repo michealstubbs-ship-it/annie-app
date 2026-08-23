@@ -58,13 +58,13 @@ For each signal, determine:
 - company: the company name
 - signalType: one of ${SIGNAL_TYPES.join(', ')}
 - headline: max 10 words
-- whyItMatters: 1-2 sentences on why this is a genuine BD opportunity right now
+- whyItMatters: 1-2 sentences, in plain, natural prose, explaining what this news actually means for THIS recruiter's business right now — not a recap of the news and not a list of numbers or stats restated from the source. Say what door it opens (a role likely opening up, a team likely expanding, budget likely freed, a talent pool now available) so the recruiter immediately understands why it's worth their time. Never include citation markup, footnote markers, or any bracketed source references — plain prose only.
 - sourceUrl: the real URL you found this from
 - sourceLabel: short label, e.g. techcrunch.com
 - eventDate: your best estimate of when this actually happened or was posted, as YYYY-MM-DD, based on the source
 - whoToApproach: the specific person or role to approach and why, bypass generic HR/Head of Talent unless they're genuinely the right door, and keep them within this recruiter's target functions above
 - titleKeywords: 2-4 likely job title strings for the right decision-maker, used afterwards to look up a real verified contact
-- introMessage: a ready-to-send opening outreach message (3-5 sentences) the recruiter can copy and send as-is to the person in whoToApproach, referencing this specific signal so it reads as informed rather than a cold generic pitch, written in the recruiter's communication tone above. Write finished, sendable text, not a template with placeholder brackets.
+- introMessage: the BODY of a ready-to-send opening outreach message — 2-4 sentences, written as plain, natural prose a person would actually type, no greeting ("Hi", "Hello") and no sign-off ("Best,", a name) — the app adds a real greeting and a signed sign-off around this automatically, using the actual contact's name and this recruiter's own name and firm, so do not guess at or invent either of those here. Reference this specific signal by name so it reads as informed rather than a cold generic pitch, say plainly what's genuinely useful about this recruiter reaching out now rather than just restating the news back at them, and write in the recruiter's communication tone above. No em dashes or en dashes used as sentence connectors. Finished, sendable text, not a template with placeholder brackets.
 - candidateAngle: a specific, credible candidate pitch to lead with — background, seniority, source companies — matching the target functions above. Phrase it as an opening gambit, not an unconditional promise (e.g. "I'm working with a [seniority] who..." rather than "I have the perfect candidate"), so the recruiter still has room to say that exact person has just gone off-market if the hiring manager responds and it doesn't pan out — the point of this angle is opening the conversation, not guaranteeing one specific person. Leave blank if this signal isn't the kind that calls for a candidate pitch (e.g. a pure leadership-change or funding note with no obvious opening).
 - benchStrengthAngle: a positioning pitch that does NOT name a single candidate — instead, say the recruiter works with several people who have direct, relevant experience in this exact niche, naming 1-2 real, specific companies that are genuine competitors or close peers to ${'`company`'} in this space (never vague phrasing like "similar companies"), so it reads as informed market knowledge rather than a generic claim. Leave blank if you cannot confidently name genuine, relevant peer companies.
 
@@ -72,13 +72,13 @@ For each genuine, directly-posted open role you found via the Adzuna list above,
 - entryType: "live_job"
 - company: the company name, exactly as Adzuna gave it
 - headline: the exact, specific role title (e.g. "Senior Finance Manager", not "Hiring across Finance") — this is what makes it a live job entry rather than a company-level narrative
-- whyItMatters: 1 sentence on why this specific open role is a genuine BD opportunity right now (e.g. posted directly with no recruiter attached, matches this recruiter's placement functions)
+- whyItMatters: 1 sentence, plain natural prose, on why this specific open role is a genuine BD opportunity right now (e.g. posted directly with no recruiter attached, matches this recruiter's placement functions). No citation markup or bracketed references.
 - sourceUrl: the real Adzuna posting URL from the list above
 - sourceLabel: short label, e.g. adzuna.com
 - eventDate: the posting date if you can tell, else your best estimate, as YYYY-MM-DD
 - whoToApproach: the specific person or role to approach about this exact opening
 - titleKeywords: 2-4 likely job title strings for the right decision-maker, used afterwards to look up a real verified contact
-- introMessage: a ready-to-send opening message referencing this exact open role, written in the recruiter's communication tone above
+- introMessage: same rules as above — the BODY only, no greeting or sign-off, referencing this exact open role, written in the recruiter's communication tone above, no em/en dashes as sentence connectors
 - candidateAngle: same as above, tailored to this exact role. Leave blank if it doesn't call for one.
 - benchStrengthAngle: same as above, tailored to this exact role's niche. Leave blank if you cannot confidently name genuine peer companies.
 
