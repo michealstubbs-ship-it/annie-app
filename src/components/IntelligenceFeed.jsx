@@ -161,10 +161,11 @@ export default function IntelligenceFeed() {
   // only, same contract as the AI-written field: buildOutreachMessage adds
   // the actual greeting and sign-off, this never should.
   function fallbackIntroMessage(s, matches, warmContacts) {
-    const matchLine = matches?.length ? `I'm currently working with candidates who'd be a strong fit for this.` : ''
-    const warmLine = warmContacts?.length ? `We're already connected, so I wanted to reach out directly rather than cold.` : ''
-    const valueLine = matchLine || warmLine || `Wanted to flag it in case it's useful, and to introduce what we do${profile?.firm_name ? ` at ${profile.firm_name}` : ''} in this space.`
-    return `I saw the news about ${s.headline} at ${s.company_name}. ${s.why_it_matters || ''} ${valueLine}`.replace(/\s+/g, ' ').trim()
+    const matchLine = matches?.length ? ` I'm currently working with candidates who'd be a strong fit for this.` : ''
+    const warmLine = warmContacts?.length ? ` We're already connected, so I wanted to reach out directly rather than cold.` : ''
+    const firmLine = profile?.firm_name ? `I work for a recruitment firm called ${profile.firm_name}.` : `I work in recruitment.`
+    const insight = s.why_it_matters || 'it looks like a real opportunity worth exploring together.'
+    return `I hope you are doing well.\n\n${firmLine} I saw the news about ${s.headline} at ${s.company_name}. ${insight}${matchLine}${warmLine}\n\nWould you be open to a call to discuss in more detail?`
   }
 
   // The one message actually shown/copied: a real greeting addressed to the

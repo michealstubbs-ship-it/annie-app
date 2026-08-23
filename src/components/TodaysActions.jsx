@@ -183,8 +183,9 @@ export default function TodaysActions() {
   // text only, same contract as the AI-written field: buildOutreachMessage
   // adds the actual greeting and sign-off, this never should.
   function fallbackIntroMessage(action) {
-    const valueLine = `Wanted to flag it in case it's useful, and to introduce what we do${profile?.firm_name ? ` at ${profile.firm_name}` : ''} in this space.`
-    return `I saw the news about ${action.headline} at ${action.company}. ${action.detail || ''} ${valueLine}`.replace(/\s+/g, ' ').trim()
+    const firmLine = profile?.firm_name ? `I work for a recruitment firm called ${profile.firm_name}.` : `I work in recruitment.`
+    const insight = action.detail || 'it looks like a real opportunity worth exploring together.'
+    return `I hope you are doing well.\n\n${firmLine} I saw the news about ${action.headline} at ${action.company}. ${insight}\n\nWould you be open to a call to discuss in more detail?`
   }
 
   // The one message actually shown/copied: a real greeting addressed to the
