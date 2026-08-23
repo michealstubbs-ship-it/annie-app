@@ -82,9 +82,9 @@ describe('listCandidateJobLinks', () => {
 })
 
 describe('listCandidatesForMatching', () => {
-  it('scopes to the given user with the matching-relevant fields', async () => {
+  it('scopes to the given user with the matching-relevant fields, including company for the pipeline-match display', async () => {
     await listCandidatesForMatching('user_1')
-    expect(builder.select).toHaveBeenCalledWith('id, name, role, industry, status')
+    expect(builder.select).toHaveBeenCalledWith('id, name, role, industry, status, company')
     expect(builder.eq).toHaveBeenCalledWith('user_id', 'user_1')
   })
 })
