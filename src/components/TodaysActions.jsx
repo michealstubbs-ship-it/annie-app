@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
-import { buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool, buildSourcedPool, selectDailyItems } from '../lib/actionsEngine'
-import { buildEnrichmentPrompt } from '../lib/actionsCopy'
+import { buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool, buildSourcedPool, selectDailyItems, mergeActions, actionKey } from '../lib/actionsEngine'
+import { buildEnrichmentPrompt, buildCandidatePitchPrompt } from '../lib/actionsCopy'
 import { callChat } from '../lib/callChat'
 import { extractJson } from '../lib/jsonExtract'
+import { stripAiArtifacts } from '../lib/textSanitize'
 import { buildOutreachMessage, firstNameOf } from '../lib/outreachMessage'
 import { listCandidatesForMatching } from '../lib/data/candidates'
 import { matchCandidatesToSignal } from '../lib/candidateMatch'
@@ -54,16 +55,20 @@ const BADGE = {
 // actions_cache rows already written before that change won't regenerate
 // for up to 24h, so both need to render without crashing.
 function normalizeMatch(m) {
-  return typeof m === 'string' ? { name: m, role: '', company: '', industry: '', status: '' } : m
+  return typeof m === 'string' ? { name: m, role: '', company: '', industry: '', status: '', whyPitch: '' } : m
 }
 
 // The mock's per-candidate "why" pills (🏢/🎯/⭐) are demo copy invented for
 // three specific fictional people — nothing upstream computes a bespoke
-// reasoning sentence per real candidate. Rather than either fabricating one
-// or dropping the pill treatment entirely, this builds the same pill UI from
-// fields that are actually real: the candidate's current company (and
-// whether it shares the signal's industry), their role, and their CRM
-// status. Same visual language as the mock, honest content underneath.
+// reasoning sentence per real candidate. Rather than fabricating one and
+// presenting it as fact, this builds the honest pills from fields that are
+// actually real (current company + whether it shares the signal's industry,
+// role, CRM status), and adds one more pill (💡) only when generate() below
+// actually ran a real AI call grounded in that candidate's own notes — see
+// buildCandidatePitchPrompt in actionsCopy.js. That pill is visibly marked
+// as Annie's inference (aiGenerated: true, rendered with a dashed border and
+// "Annie's read" microcopy below), never presented the same way as the
+// honest fact-based pills above it.
 function buildWhyChips(m, action) {
   const chips = []
   if (m.company) {
@@ -75,13 +80,16 @@ function buildWhyChips(m, action) {
     const label = { warm: 'Warm in your pipeline', active: 'Actively engaged', new: 'New to your pipeline' }[m.status.toLowerCase()] || `${m.status}, in your pipeline`
     chips.push({ icon: '⭐', text: label })
   }
+  if (m.whyPitch) chips.push({ icon: '💡', text: m.whyPitch, aiGenerated: true })
   return chips
 }
 
 export default function TodaysActions() {
   const { user, profile } = useAuth()
   const [actions, setActions] = useState([])
+  const [dismissedKeys, setDismissedKeys] = useState([])
   const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [generated, setGenerated] = useState(false)
   const [error, setError] = useState('')
   const [onboarding, setOnboarding] = useState(null)
@@ -101,31 +109,45 @@ export default function TodaysActions() {
     setOnboarding(data)
   }
 
+  // Today's Actions is meant to always be there, not regenerated from
+  // scratch on a schedule — see generate()'s merge step below. This always
+  // loads whatever's cached regardless of expires_at (that column is kept
+  // only for bookkeeping, it no longer gates a wholesale reload), shows it
+  // immediately, then refreshes in the background so new leads merge in
+  // without ever blanking the list the person is already looking at.
   async function loadCachedActions() {
     const { data } = await supabase
       .from('actions_cache')
       .select('*')
       .eq('user_id', user.id)
-      .gt('expires_at', new Date().toISOString())
       .order('generated_at', { ascending: false })
       .limit(1)
       .single()
 
     if (data?.actions?.length) {
       setActions(data.actions)
+      setDismissedKeys(data.dismissed_keys || [])
       setGenerated(true)
+      generate(data.actions, data.dismissed_keys || [], { silent: true })
     } else {
-      // Nothing generated yet today (brand new account, or everything from
-      // today's list was already actioned) — build it automatically instead
-      // of making the person click a button before Annie shows them
-      // anything. Matches the rest of the dashboard: they land straight
-      // into value, not an empty state waiting on a click.
-      generate()
+      // Nothing built yet at all (brand new account) — build the first list.
+      // Matches the rest of the dashboard: they land straight into value,
+      // not an empty state waiting on a click.
+      generate([], [], { silent: false })
     }
   }
 
-  async function generate() {
-    setLoading(true)
+  // Recomputes the pools (unchanged) and merges the result into whatever's
+  // already cached (mergeActions in actionsEngine.js) instead of replacing
+  // the list outright — cachedList/cachedDismissed are passed explicitly
+  // rather than read off state, since loadCachedActions calls this
+  // immediately after a setState that may not have flushed yet. `silent`
+  // means this is a background refresh (cache already on screen, don't hide
+  // it behind a full-page spinner) rather than the first-ever build or an
+  // explicit manual click.
+  async function generate(cachedList = actions, cachedDismissed = dismissedKeys, { silent = false } = {}) {
+    if (silent) setRefreshing(true)
+    else setLoading(true)
     setError('')
     try {
       const [{ data: contacts }, { data: deals }, { data: intelSignals }, { data: freshOnboarding }, candidates] = await Promise.all([
@@ -142,6 +164,17 @@ export default function TodaysActions() {
       ])
 
       const ob = freshOnboarding || onboarding
+
+      // Identity used by mergeActions to decide what's still real: a signal
+      // id present here means that signal is neither deleted nor actioned
+      // (the query above already excludes actioned rows), a contact/deal id
+      // present here means that record still exists. Anything cached whose
+      // id isn't in these sets gets dropped from the merge below.
+      const activeIds = {
+        signalIds: new Set((intelSignals || []).map(s => s.id)),
+        contactIds: new Set((contacts || []).map(c => c.id)),
+        dealIds: new Set((deals || []).map(d => d.id)),
+      }
 
       // Step 1: deterministic pool building + selection, no AI involved. Every pool,
       // including sourced leads, is scored on the same scale and ranked by urgency
@@ -176,16 +209,54 @@ export default function TodaysActions() {
       }
       const enrichedByItem = new Map(crmItems.map((item, i) => [item, enrichedList[i] || null]))
 
+      // Pipeline matches computed once per sourced item here, up front —
+      // reused by both the pitch-generation batch below and the final
+      // reassembly in step 3, rather than calling matchCandidatesToSignal a
+      // second time for the same signal.
+      const sourcedItems = selected.filter(i => i.category === 'sourced')
+      const matchesBySignal = new Map(sourcedItems.map(item => [item.signal, matchCandidatesToSignal(item.signal, candidates)]))
+
+      // Step 2b: a short, real AI pitch for the single top pipeline match on
+      // each sourced item that has one — grounded only in that candidate's
+      // actual role/company/industry/notes (see buildCandidatePitchPrompt),
+      // batched into one callChat call rather than one round trip per
+      // candidate. Rendered later as a visibly-labeled "Annie's read" pill
+      // (buildWhyChips), never presented as a stored fact the way the
+      // honest company/role/status pills are.
+      const pitchTargets = sourcedItems
+        .map(item => ({ item, topMatch: matchesBySignal.get(item.signal)?.[0] }))
+        .filter(({ topMatch }) => topMatch)
+      let pitchByItem = new Map()
+      if (pitchTargets.length) {
+        try {
+          const { text } = await callChat({
+            messages: [{ role: 'user', content: 'Write the pitch for each pairing.' }],
+            systemOverride: buildCandidatePitchPrompt(pitchTargets.map(({ item, topMatch }) => ({ signal: { headline: item.signal.headline, industry: item.signal.company_industry }, candidate: topMatch }))),
+            maxTokens: 1200,
+            model: 'claude-haiku-4-5-20251001',
+          })
+          const pitches = extractJson(text)
+          pitchByItem = new Map(pitchTargets.map(({ item }, i) => [item, stripAiArtifacts(pitches[i]) || '']))
+        } catch {
+          // A failed/malformed pitch batch just means no 💡 pill this time —
+          // never worth failing the whole Today's Actions generation over.
+          pitchByItem = new Map()
+        }
+      }
+
       // Step 3: reassemble in the ranked order decided in step 1, whether an item is
       // a CRM follow-up or a sourced lead makes no difference to where it lands.
       const combined = selected.map(item => {
         if (item.category === 'sourced') {
           const s = item.signal
+          const matches = matchesBySignal.get(s) || []
+          const pitch = pitchByItem.get(item) || ''
           return {
             source: 'sourced',
             category: 'sourced',
             signalType: s.signal_type,
             urgency: item.urgency,
+            score: item.score,
             headline: s.headline,
             detail: s.why_it_matters,
             company: s.company_name,
@@ -198,13 +269,22 @@ export default function TodaysActions() {
             benchStrengthAngle: s.bench_strength_angle,
             candidateProfile: s.candidate_profile,
             verifiedContact: s.contact_verified ? { name: s.contact_name, title: s.contact_title, linkedin_url: s.contact_linkedin_url, email: s.contact_email } : null,
+            // Mutually exclusive with verifiedContact — a signal has either
+            // one verified contact or a multi-function panel, never both
+            // (see verifyContactsAcrossFunctions in scanShared.js). Every
+            // one of the four whitelisted BD Actions signal types is
+            // required to always carry a contact recommendation; this is
+            // what makes that true for funding/expansion, which rarely have
+            // one obvious single contact.
+            contactCandidates: Array.isArray(s.contact_candidates) ? s.contact_candidates : [],
+            likelyRoles: Array.isArray(s.likely_roles) ? s.likely_roles : [],
             // Just name/role/company, not the full candidate row — this is
             // what actually gets stored in actions_cache's jsonb column, so
             // it stays small and serializes cleanly. Older cached rows may
             // still hold this as a plain array of name strings from before
             // 2026-08-23 — the render below handles both shapes, so an
             // existing cache doesn't need to expire before this works.
-            pipelineMatches: matchCandidatesToSignal(s, candidates).map(c => ({ name: c.name, role: c.role || '', company: c.company || '', industry: c.industry || '', status: c.status || '' })),
+            pipelineMatches: matches.map((c, ci) => ({ name: c.name, role: c.role || '', company: c.company || '', industry: c.industry || '', status: c.status || '', whyPitch: ci === 0 ? pitch : '' })),
             signalIndustry: s.company_industry || '',
             signalId: s.id,
           }
@@ -214,6 +294,7 @@ export default function TodaysActions() {
           source: 'crm',
           category: item.category,
           urgency: item.urgency,
+          score: item.score,
           headline: enriched?.headline || 'Follow up',
           detail: enriched?.detail || '',
           moveForward: enriched?.moveForward || [],
@@ -228,15 +309,31 @@ export default function TodaysActions() {
           // this being a deliberate, separate follow-up rather than in
           // scope for this pass.
           signalId: item.category === 'relationship' ? item.signal?.id : null,
+          // dormant/meeting/new_client have no signalId — mergeActions needs
+          // a stable id for these too, so it can tell "still a real record"
+          // from "record deleted/no longer qualifies". keyContext is the
+          // record's own last-touched timestamp: it's what makes a contact
+          // that goes dormant, gets re-engaged, and later drifts dormant
+          // again read as a new occurrence rather than one a stale "mark
+          // done" would suppress forever (see actionKey in actionsEngine.js).
+          contactId: item.contact?.id || null,
+          dealId: item.deal?.id || null,
+          keyContext: item.contact?.last_contacted || item.contact?.created_at || item.deal?.updated_at || '',
         }
       })
 
-      setActions(combined)
+      // Merge, don't replace: whatever's already shown stays, in place, with
+      // its existing content untouched — this is what makes "always there"
+      // literally true rather than "regenerated so often it feels the same
+      // way". See mergeActions in actionsEngine.js for the exact rule.
+      const merged = mergeActions(cachedList, combined, activeIds, cachedDismissed)
+      setActions(merged)
       setGenerated(true)
 
       await supabase.from('actions_cache').upsert({
         user_id: user.id,
-        actions: combined,
+        actions: merged,
+        dismissed_keys: cachedDismissed,
         generated_at: new Date().toISOString(),
         expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       }, { onConflict: 'user_id' })
@@ -245,6 +342,7 @@ export default function TodaysActions() {
       setError(err.message || 'Something went wrong. Please try again.')
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
   }
 
@@ -285,41 +383,59 @@ export default function TodaysActions() {
     setTimeout(() => setCopiedIndex(c => (c === index ? null : c)), 2000)
   }
 
-  // Only ever called from the verifiedContact block below, which only
-  // renders when a real name is present — so this never falls back to
-  // creating a "contact" that's just a company name the way the Feed's old
-  // unconditional Add to CRM button used to.
-  async function addContactToCrm(action, index) {
-    if (crmAdded[index]) return
+  // Only ever called from the verifiedContact block or the multi-contact
+  // panel below, both of which only render a button next to a real name —
+  // so this never falls back to creating a "contact" that's just a company
+  // name the way the Feed's old unconditional Add to CRM button used to.
+  // crmKey defaults to the action's own index (the single-verified-contact
+  // case); the multi-contact panel passes a compound key (index + function)
+  // instead, since crmAdded has to track each of several people on the same
+  // card independently.
+  async function addContactToCrm(action, index, contact = action.verifiedContact, crmKey = String(index)) {
+    if (crmAdded[crmKey]) return
     await createContact({
-      name: action.verifiedContact.name,
+      name: contact.name,
       company: action.company,
-      title: action.verifiedContact.title || null,
-      linkedin_url: action.verifiedContact.linkedin_url || null,
-      email: action.verifiedContact.email || null,
+      title: contact.title || null,
+      linkedin_url: contact.linkedin_url || null,
+      email: contact.email || null,
       status: 'warm',
       tags: ['from-todays-actions'],
     }, user.id)
-    setCrmAdded(prev => ({ ...prev, [index]: true }))
+    setCrmAdded(prev => ({ ...prev, [crmKey]: true }))
     // Same feedback loop as the Feed's old addToCrm — a human confirming
     // Apollo's guess was right, bumps the shared company_contacts cache's
     // confidence for the next customer who hits this company + role.
     confirmContact({
-      contact_name: action.verifiedContact.name,
+      contact_name: contact.name,
       company_name: action.company,
-      title_keywords: action.verifiedContact.title ? [action.verifiedContact.title] : [],
+      title_keywords: contact.title ? [contact.title] : [],
     })
   }
 
   async function markDone(action, index) {
     if (action.signalId) {
+      // Signal-backed items (sourced/relationship) have a real server-side
+      // "done" flag — flipping status here is also what mergeActions relies
+      // on later (a background refresh's activeIds won't include it, since
+      // the fetch already excludes actioned signals) so it can never
+      // resurface, without any extra bookkeeping.
       await supabase.from('intelligence_signals').update({ status: 'actioned' }).eq('id', action.signalId)
     }
+    // dormant/meeting/new_client have no underlying "done" flag to set (the
+    // contact/deal record itself doesn't change) — dismissedKeys is what
+    // stops a merge from reproducing the exact same occurrence again. Scoped
+    // by keyContext, so it doesn't suppress a genuinely new occurrence later
+    // (see actionKey in actionsEngine.js).
+    const key = actionKey(action)
+    const nextDismissed = !action.signalId && key ? [...dismissedKeys, key] : dismissedKeys
     const next = actions.filter((_, i) => i !== index)
     setActions(next)
+    setDismissedKeys(nextDismissed)
     await supabase.from('actions_cache').upsert({
       user_id: user.id,
       actions: next,
+      dismissed_keys: nextDismissed,
       generated_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     }, { onConflict: 'user_id' })
@@ -339,7 +455,7 @@ export default function TodaysActions() {
           <div className="text-5xl mb-4">⚡</div>
           <h2 className="text-xl font-bold text-navy mb-2">Ready to see today's actions?</h2>
           <p className="text-gray-500 mb-6 max-w-sm mx-auto">Annie is already researching your market around the clock. This pulls together everything genuinely worth acting on today, sized by real opportunity, not a fixed number.</p>
-          <button onClick={generate} className="btn-primary">Show Today's Actions</button>
+          <button onClick={() => generate([], [], { silent: false })} className="btn-primary">Show Today's Actions</button>
         </div>
       )}
 
@@ -467,6 +583,41 @@ export default function TodaysActions() {
                                 </div>
                                 <p className="text-xs text-gray-600 mt-1.5">{action.whoToApproach}</p>
                               </div>
+                            ) : action.contactCandidates?.length > 0 ? (
+                              // Funding/expansion signals rarely have one obvious single
+                              // contact — this is the guaranteed fallback that makes "always
+                              // a contact recommendation" true for those anyway: several real
+                              // Apollo-verified people across the functions this signal likely
+                              // means hiring for, each addable to CRM independently.
+                              <div className="bg-green-50 border border-green-200 rounded-[10px] px-3 py-2.5 mb-2.5">
+                                <span className="text-[9px] font-bold text-green-700 uppercase tracking-wider">Verified via Apollo · likely contacts across functions</span>
+                                {action.likelyRoles?.length > 0 && (
+                                  <p className="text-xs text-gray-600 mt-1 mb-1.5">Likely hiring for: <span className="font-semibold text-navy">{action.likelyRoles.join(', ')}</span></p>
+                                )}
+                                <div className="space-y-2 mt-1.5">
+                                  {action.contactCandidates.map((c, ci) => {
+                                    const crmKey = `${i}:${c.function || ci}`
+                                    return (
+                                      <div key={crmKey} className="flex items-start justify-between gap-2 pt-2 border-t border-green-700/15 first:border-t-0 first:pt-0">
+                                        <div className="min-w-0">
+                                          <p className="text-[12.5px] font-bold text-navy">{c.name}{c.title ? `, ${c.title}` : ''}</p>
+                                          <div className="flex items-center gap-2.5 mt-0.5 flex-wrap">
+                                            {c.email && <a href={`mailto:${c.email}`} className="text-[11px] text-blue-600 hover:underline">{c.email}</a>}
+                                            {c.linkedin_url && <a href={c.linkedin_url} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline">View LinkedIn profile</a>}
+                                          </div>
+                                        </div>
+                                        <button
+                                          onClick={() => addContactToCrm(action, i, c, crmKey)}
+                                          disabled={crmAdded[crmKey]}
+                                          className={`text-[10.5px] font-bold px-2.5 py-1 rounded-full border transition-colors flex-shrink-0 ${crmAdded[crmKey] ? 'text-gray-400 border-gray-200 bg-white cursor-default' : 'text-green-700 border-green-300 bg-white hover:bg-green-50'}`}
+                                        >
+                                          {crmAdded[crmKey] ? '✓ Added' : `＋ Add to CRM`}
+                                        </button>
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              </div>
                             ) : (
                               <p className="text-xs text-gray-600 mb-2.5">{action.whoToApproach} <span className="text-gray-400">(no verified contact found yet, approach by role)</span></p>
                             )}
@@ -492,9 +643,23 @@ export default function TodaysActions() {
                                       {chips.length > 0 && (
                                         <div className="flex flex-wrap gap-1.5 mt-1.5">
                                           {chips.map((c, ci) => (
-                                            <span key={ci} className="text-[10.5px] font-semibold px-2.5 py-[3px] rounded-full bg-white border border-green-200 text-[#166534] whitespace-nowrap">
-                                              {c.icon} {c.text}
-                                            </span>
+                                            c.aiGenerated ? (
+                                              // Visibly distinct from the honest fact-based pills above —
+                                              // dashed border + "Annie's read" microcopy, since this one
+                                              // is a grounded AI inference, not a stored fact (see
+                                              // buildWhyChips/buildCandidatePitchPrompt).
+                                              <span
+                                                key={ci}
+                                                title="Annie's read — an AI-written pitch grounded in this candidate's own profile and notes, not a verified fact."
+                                                className="text-[10.5px] font-semibold px-2.5 py-[3px] rounded-full bg-white border border-dashed border-green-300 text-[#166534] whitespace-nowrap"
+                                              >
+                                                {c.icon} {c.text} <span className="italic text-[#4d7c5f]">— Annie's read</span>
+                                              </span>
+                                            ) : (
+                                              <span key={ci} className="text-[10.5px] font-semibold px-2.5 py-[3px] rounded-full bg-white border border-green-200 text-[#166534] whitespace-nowrap">
+                                                {c.icon} {c.text}
+                                              </span>
+                                            )
                                           ))}
                                         </div>
                                       )}
@@ -568,8 +733,12 @@ export default function TodaysActions() {
           })}
           </div>
 
-          <button onClick={generate} disabled={loading} className="btn-ghost text-sm mt-3">
-            Refresh
+          <button
+            onClick={() => generate(actions, dismissedKeys, { silent: true })}
+            disabled={refreshing}
+            className="btn-ghost text-sm mt-3"
+          >
+            {refreshing ? 'Checking for anything new…' : 'Check for anything new'}
           </button>
           </>
           )}

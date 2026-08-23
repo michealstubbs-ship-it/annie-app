@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildDormantPool, buildRelationshipPool, buildSourcedPool, buildNewClientPool, selectDailyItems,
+  BD_ACTION_SIGNAL_TYPES, actionKey, mergeActions,
 } from './actionsEngine.js'
 
 function daysAgoIso(days) {
@@ -48,7 +49,7 @@ describe('buildRelationshipPool', () => {
   })
 
   it('includes a fresh signal about a known company', () => {
-    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', found_at: daysAgoIso(1) }]
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'funding', found_at: daysAgoIso(1) }]
     const pool = buildRelationshipPool(signals, contacts)
     expect(pool).toHaveLength(1)
     expect(pool[0].contact).toEqual(contacts[0])
@@ -72,7 +73,7 @@ describe('buildRelationshipPool', () => {
   })
 
   it('a manually-added signal clears the freshness window even when otherwise too old — the recruiter already chose to pursue it from the Feed', () => {
-    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', found_at: daysAgoIso(90), manually_added_at: daysAgoIso(0) }]
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'funding', found_at: daysAgoIso(90), manually_added_at: daysAgoIso(0) }]
     const pool = buildRelationshipPool(signals, contacts)
     expect(pool).toHaveLength(1)
   })
@@ -85,6 +86,27 @@ describe('buildRelationshipPool', () => {
   it('excludes a regulatory signal even when manually added — the Feed button cannot override this exclusion', () => {
     const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'regulatory', found_at: daysAgoIso(1), manually_added_at: daysAgoIso(0) }]
     expect(buildRelationshipPool(signals, contacts)).toEqual([])
+  })
+
+  it.each(['m_and_a', 'hiring_activity', 'public_commentary', 'team_building', 'job_posting_unclaimed'])(
+    'excludes a fresh %s signal about a known company — only the whitelisted BD types belong here',
+    (signal_type) => {
+      const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type, found_at: daysAgoIso(1) }]
+      expect(buildRelationshipPool(signals, contacts)).toEqual([])
+    }
+  )
+
+  it.each(['m_and_a', 'hiring_activity', 'public_commentary'])(
+    'excludes a %s signal even when manually added — the whitelist cannot be overridden from the Feed',
+    (signal_type) => {
+      const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type, found_at: daysAgoIso(1), manually_added_at: daysAgoIso(0) }]
+      expect(buildRelationshipPool(signals, contacts)).toEqual([])
+    }
+  )
+
+  it.each(BD_ACTION_SIGNAL_TYPES)('includes a fresh %s signal about a known company — the whitelisted types all surface here', (signal_type) => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type, found_at: daysAgoIso(1) }]
+    expect(buildRelationshipPool(signals, contacts)).toHaveLength(1)
   })
 })
 
@@ -114,6 +136,22 @@ describe('buildSourcedPool — the M2 "never ages out" fix', () => {
     const signals = [{ id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'regulatory', found_at: daysAgoIso(1), contact_verified: false, manually_added_at: daysAgoIso(0) }]
     expect(buildSourcedPool(signals, [])).toEqual([])
   })
+
+  it.each(['m_and_a', 'hiring_activity', 'public_commentary', 'team_building', 'job_posting_unclaimed'])(
+    'excludes a fresh %s signal about a brand-new company — only the whitelisted BD types belong here',
+    (signal_type) => {
+      const signals = [{ id: 's1', company_name: 'Unknown Co', status: 'new', signal_type, found_at: daysAgoIso(1), contact_verified: false }]
+      expect(buildSourcedPool(signals, [])).toEqual([])
+    }
+  )
+
+  it.each(['m_and_a', 'hiring_activity', 'public_commentary'])(
+    'excludes a %s signal even when manually added — the whitelist cannot be overridden from the Feed',
+    (signal_type) => {
+      const signals = [{ id: 's1', company_name: 'Unknown Co', status: 'new', signal_type, found_at: daysAgoIso(1), contact_verified: false, manually_added_at: daysAgoIso(0) }]
+      expect(buildSourcedPool(signals, [])).toEqual([])
+    }
+  )
 
   it('still includes a genuinely fresh signal', () => {
     const freshSignal = [{ id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(2), contact_verified: false, signal_type: 'funding' }]
@@ -148,8 +186,12 @@ describe('buildSourcedPool — the M2 "never ages out" fix', () => {
     expect(recent.urgency).toBe(2)
   })
 
-  it('an ordinary racy signal (hiring_activity) drops to urgency 1 past 3 days, unlike live_job', () => {
-    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'hiring_activity', contact_verified: false }
+  it('an ordinary racy signal (expansion) drops to urgency 1 past 3 days, unlike live_job', () => {
+    // hiring_activity used to be the example racy type here, but it's no
+    // longer whitelisted for Today's BD Actions at all (see
+    // BD_ACTION_SIGNAL_TYPES) — expansion is racy and still whitelisted, so
+    // it's the one that actually exercises this scoring path today.
+    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'expansion', contact_verified: false }
     const [older] = buildSourcedPool([{ ...base, found_at: daysAgoIso(6) }], [])
     expect(older.urgency).toBe(1)
   })
@@ -180,6 +222,79 @@ describe('buildNewClientPool', () => {
   it('includes a hot contact with no active deal', () => {
     const contacts = [{ id: 1, status: 'hot', company: 'Acme Ltd', last_contacted: daysAgoIso(1) }]
     expect(buildNewClientPool(contacts, [])).toHaveLength(1)
+  })
+})
+
+describe('mergeActions', () => {
+  it('keeps a cached signal-backed item whose signal is still active, untouched, rather than replacing it', () => {
+    const cached = [{ signalId: 's1', category: 'sourced', headline: 'Old headline', urgency: 1, score: 40 }]
+    const fresh = []
+    const merged = mergeActions(cached, fresh, { signalIds: new Set(['s1']) }, [])
+    expect(merged).toEqual(cached)
+  })
+
+  it('drops a cached signal-backed item whose signal is no longer active (actioned elsewhere, e.g. the Feed\'s "Mark seen")', () => {
+    const cached = [{ signalId: 's1', category: 'sourced', headline: 'Old headline', urgency: 1, score: 40 }]
+    const merged = mergeActions(cached, [], { signalIds: new Set() }, [])
+    expect(merged).toEqual([])
+  })
+
+  it('appends a genuinely new fresh item not already represented in the cache', () => {
+    const cached = [{ signalId: 's1', category: 'sourced', urgency: 1, score: 40 }]
+    const fresh = [{ signalId: 's1', category: 'sourced', urgency: 1, score: 40 }, { signalId: 's2', category: 'sourced', urgency: 2, score: 30 }]
+    const merged = mergeActions(cached, fresh, { signalIds: new Set(['s1', 's2']) }, [])
+    expect(merged.map(a => a.signalId)).toEqual(['s2', 's1']) // s2 sorts first: higher urgency
+  })
+
+  it('does not duplicate a cached item that also appears in fresh', () => {
+    const cached = [{ signalId: 's1', category: 'sourced', urgency: 1, score: 40 }]
+    const fresh = [{ signalId: 's1', category: 'sourced', urgency: 1, score: 40 }]
+    const merged = mergeActions(cached, fresh, { signalIds: new Set(['s1']) }, [])
+    expect(merged).toHaveLength(1)
+  })
+
+  it('keeps a CRM-category item (no signalId) whose contact still exists', () => {
+    const cached = [{ category: 'dormant', contactId: 'c1', urgency: 0, score: 20 }]
+    const merged = mergeActions(cached, [], { contactIds: new Set(['c1']) }, [])
+    expect(merged).toEqual(cached)
+  })
+
+  it('drops a CRM-category item whose contact no longer exists', () => {
+    const cached = [{ category: 'dormant', contactId: 'c1', urgency: 0, score: 20 }]
+    const merged = mergeActions(cached, [], { contactIds: new Set() }, [])
+    expect(merged).toEqual([])
+  })
+
+  it('drops a CRM-category item whose key was explicitly marked done, even though its contact still exists — dismissedKeys is the only "done" flag these categories have', () => {
+    const item = { category: 'dormant', contactId: 'c1', keyContext: '2026-01-01', urgency: 0, score: 20 }
+    const merged = mergeActions([item], [item], { contactIds: new Set(['c1']) }, [actionKey(item)])
+    expect(merged).toEqual([])
+  })
+
+  it('a dismissed dormant contact resurfaces as a new occurrence once keyContext changes (re-engaged, then went dormant again)', () => {
+    const oldOccurrence = { category: 'dormant', contactId: 'c1', keyContext: '2026-01-01', urgency: 0, score: 20 }
+    const newOccurrence = { category: 'dormant', contactId: 'c1', keyContext: '2026-06-01', urgency: 0, score: 20 }
+    const merged = mergeActions([], [newOccurrence], { contactIds: new Set(['c1']) }, [actionKey(oldOccurrence)])
+    expect(merged).toEqual([newOccurrence])
+  })
+
+  it('sorts the merged result by urgency then score, same rule as selectDailyItems', () => {
+    const cached = [{ signalId: 's1', category: 'sourced', urgency: 0, score: 90 }]
+    const fresh = [{ signalId: 's1', category: 'sourced', urgency: 0, score: 90 }, { signalId: 's2', category: 'sourced', urgency: 2, score: 10 }]
+    const merged = mergeActions(cached, fresh, { signalIds: new Set(['s1', 's2']) }, [])
+    expect(merged[0].signalId).toBe('s2')
+  })
+})
+
+describe('actionKey', () => {
+  it('returns null for an action with no stable identity', () => {
+    expect(actionKey({ category: 'sourced' })).toBeNull()
+  })
+
+  it('produces distinct keys for the same contact at two different dormancy occurrences', () => {
+    const a = actionKey({ category: 'dormant', contactId: 'c1', keyContext: '2026-01-01' })
+    const b = actionKey({ category: 'dormant', contactId: 'c1', keyContext: '2026-06-01' })
+    expect(a).not.toBe(b)
   })
 })
 

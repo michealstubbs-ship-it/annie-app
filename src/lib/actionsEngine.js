@@ -26,6 +26,20 @@ const MIN_SCORE = 20 // quality bar, items below this never make the list, no ex
 // still age out.
 const SOURCED_MAX_AGE_DAYS = 21
 
+// Today's BD Actions only ever surfaces these four signal types — everything
+// else (M&A, generic hiring-activity mentions, team-building posts, public
+// commentary, unclaimed job postings, regulatory) is market intel or noise,
+// not a BD trigger, and lives in the Intelligence Feed's News tab or main
+// list instead. "Hiring" specifically means live_job (a real, verified,
+// specific open role), never hiring_activity (a narrative "company X is
+// hiring" mention with no real posting behind it) — see scanShared.js for
+// how those two are kept structurally separate at write time. This is a
+// single allow-list rather than a growing set of deny-list exclusions
+// (regulatory used to be excluded on its own) so adding or removing a type
+// from Today's Actions is a one-line change here, not a hunt across both
+// pool builders for every place a type needs to be denied.
+export const BD_ACTION_SIGNAL_TYPES = ['funding', 'expansion', 'leadership_change', 'live_job']
+
 function daysSince(dateStr) {
   if (!dateStr) return null
   const diff = Date.now() - new Date(dateStr).getTime()
@@ -126,11 +140,12 @@ export function buildRelationshipPool(intelligenceSignals, contacts) {
 
   return (intelligenceSignals || [])
     .filter(s => s.status !== 'actioned')
-    // Regulatory signals are pure market intel, background awareness, not a
-    // BD trigger, so this pool never surfaces one, even one someone
+    // Today's BD Actions only ever surfaces the whitelisted signal types
+    // (see BD_ACTION_SIGNAL_TYPES above) — never a BD trigger otherwise, so
+    // this pool never surfaces anything outside it, even one someone
     // manually added from the Feed (see the same exclusion, and why, on
     // buildSourcedPool below).
-    .filter(s => s.signal_type !== 'regulatory')
+    .filter(s => BD_ACTION_SIGNAL_TYPES.includes(s.signal_type))
     .map(s => {
       const linkedContact = contactsByCompany.get(norm(s.company_name))
       if (!linkedContact) return null // not an existing contact, belongs in sourced
@@ -204,13 +219,14 @@ export function buildSourcedPool(intelligenceSignals, contacts) {
   return (intelligenceSignals || [])
     .filter(s => s.status !== 'actioned')
     .filter(s => !knownCompanies.has(norm(s.company_name)))
-    // Regulatory signals (a filing, a licensing change, a compliance
-    // ruling) are market intel worth knowing, not something to act on
-    // commercially — they never belong in Today's Actions, on principle,
-    // not just by default scoring. Applied before the manually-added bypass
-    // even gets a chance to run, so choosing "Add to Today's BD Actions" on
-    // one from the Feed can't override this either.
-    .filter(s => s.signal_type !== 'regulatory')
+    // Today's BD Actions only ever surfaces the whitelisted signal types
+    // (see BD_ACTION_SIGNAL_TYPES above) — M&A, regulatory, public
+    // commentary, generic hiring-activity mentions, team-building posts and
+    // unclaimed job postings never belong here, on principle, not just by
+    // default scoring. Applied before the manually-added bypass even gets a
+    // chance to run, so choosing "Add to Today's BD Actions" on one from the
+    // Feed can't override this either.
+    .filter(s => BD_ACTION_SIGNAL_TYPES.includes(s.signal_type))
     .map(s => {
       const daysFound = daysSince(s.found_at) ?? 999
       // Leadership-change gets a wider cutoff than the ordinary
@@ -271,4 +287,61 @@ export function selectDailyItems(pools) {
     .flat()
     .filter(item => item.score >= MIN_SCORE)
     .sort((a, b) => (b.urgency - a.urgency) || (b.score - a.score))
+}
+
+// Stable identity for a Today's Actions item across a merge — the id of the
+// real record it's actually about, never its position or its content, so
+// re-scoring the pools doesn't read as "a new item" just because a score
+// shifted slightly. keyContext is an optional extra discriminator (e.g. a
+// contact's last_contacted timestamp) for the three CRM categories that have
+// no natural "done" flag on their underlying record — see mergeActions and
+// TodaysActions.jsx's markDone for why: it lets a contact that goes dormant,
+// gets re-engaged, and later drifts dormant again be treated as a genuinely
+// new occurrence rather than permanently suppressed by an old "mark done".
+export function actionKey(action) {
+  if (!action) return null
+  if (action.signalId) return `signal:${action.signalId}`
+  if (action.dealId) return `meeting:deal:${action.dealId}:${action.keyContext || ''}`
+  if (action.contactId) return `${action.category}:contact:${action.contactId}:${action.keyContext || ''}`
+  return null
+}
+
+// Merges freshly-selected pool items into whatever Today's Actions already
+// has cached, instead of wholesale-replacing the whole list on every load —
+// see the plan note "Today's actions should always be there, not that you
+// have to generate it all the time." A cached item stays exactly as it is
+// (no re-running AI enrichment on something already shown, no reshuffled
+// copy) unless: its key is in dismissedKeys (explicitly marked done, for the
+// CRM categories that have no server-side status to check instead), or its
+// underlying record is no longer active — activeIds reflects contacts/deals
+// currently on file and signals not already filtered to exclude 'actioned'
+// ones, so a signal marked actioned anywhere (this page's own "mark done",
+// or the Feed's "Mark seen") naturally drops out here too, no separate
+// bookkeeping needed for that half. A genuinely new item the pools now
+// produce that isn't already represented gets appended. The merged list is
+// re-sorted with the same urgency-then-score rule selectDailyItems uses, so
+// ranking stays correct even though kept items' own content never changes.
+export function mergeActions(cachedActions, freshActions, activeIds, dismissedKeys) {
+  const dismissed = dismissedKeys instanceof Set ? dismissedKeys : new Set(dismissedKeys || [])
+  const { signalIds = new Set(), contactIds = new Set(), dealIds = new Set() } = activeIds || {}
+
+  function stillActive(action) {
+    const key = actionKey(action)
+    if (key && dismissed.has(key)) return false
+    if (action.signalId) return signalIds.has(action.signalId)
+    if (action.dealId) return dealIds.has(action.dealId)
+    if (action.contactId) return contactIds.has(action.contactId)
+    return false // no stable identity to verify against, don't keep an item around unverified
+  }
+
+  const kept = (cachedActions || []).filter(stillActive)
+  const keptKeys = new Set(kept.map(actionKey).filter(Boolean))
+  const added = (freshActions || []).filter(a => {
+    const key = actionKey(a)
+    if (!key || keptKeys.has(key)) return false
+    if (dismissed.has(key)) return false
+    return true
+  })
+
+  return [...kept, ...added].sort((a, b) => (b.urgency - a.urgency) || ((b.score || 0) - (a.score || 0)))
 }

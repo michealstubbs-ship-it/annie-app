@@ -35,9 +35,13 @@ export async function listCandidateJobLinks(userId) {
 // every candidate, just enough fields to match a signal against and to
 // show a real name/role/company on a matched card. `company` added
 // 2026-08-23 so the pipeline-match box can show a matched candidate's
-// actual current employer instead of just a bare name.
+// actual current employer instead of just a bare name. `notes` added the
+// same day so the per-candidate "why" pitch (buildWhyChips/generate() in
+// TodaysActions.jsx) has real, recruiter-written substance to ground a
+// specific-sounding sentence in, rather than only role/company/industry —
+// still nothing invented beyond what's actually on file for that candidate.
 export async function listCandidatesForMatching(userId) {
-  const { data } = await supabase.from('candidates').select('id, name, role, industry, status, company').eq('user_id', userId)
+  const { data } = await supabase.from('candidates').select('id, name, role, industry, status, company, notes').eq('user_id', userId)
   return data || []
 }
 

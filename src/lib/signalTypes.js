@@ -23,8 +23,16 @@
 // keeps that row terse, e.g. "Leadership" rather than the fuller
 // "Leadership change" the per-post topic pill spells out) — omit it and the
 // chip bar falls back to the full `label`.
+//
+// `feedTopicColor` is the per-post topic pill's background/text color in the
+// Feed. The mock only recolors three types this way (funding=amber,
+// live_job=green, regulatory=red, matched to its exact hex values below);
+// every other type falls back to the Feed's default navy-tinted pill — see
+// IntelligenceFeed.jsx, which uses `feedTopicColor || <default classes>`.
+// `color` (unrelated, unused by the Feed) is kept only for Pipeline.jsx's
+// stage-count tiles, a different, older consumer of this same taxonomy.
 export const SIGNAL_TYPE_META = {
-  funding: { label: 'Funding', icon: '💰', color: 'text-amber-700 bg-amber-100', racy: false },
+  funding: { label: 'Funding', icon: '💰', color: 'text-amber-700 bg-amber-100', feedTopicColor: 'bg-[#fef3e2] text-[#b45309]', racy: false },
   leadership_change: { label: 'Leadership change', chipLabel: 'Leadership', icon: '👤', color: 'text-blue-700 bg-blue-100', racy: false },
   hiring_activity: { label: 'Hiring activity', chipLabel: 'Hiring', icon: '📈', color: 'text-green-700 bg-green-100', racy: true },
   expansion: { label: 'Expansion', icon: '🌍', color: 'text-teal-700 bg-teal-100', racy: true },
@@ -32,8 +40,8 @@ export const SIGNAL_TYPE_META = {
   public_commentary: { label: 'Public commentary', chipLabel: 'Commentary', icon: '🎙️', color: 'text-purple-700 bg-purple-100', racy: false },
   job_posting_unclaimed: { label: 'Unclaimed role', icon: '📋', color: 'text-orange-700 bg-orange-100', racy: true },
   m_and_a: { label: 'M&A', icon: '🤝', color: 'text-indigo-700 bg-indigo-100', racy: false },
-  regulatory: { label: 'Regulatory', icon: '📜', color: 'text-slate-700 bg-slate-100', racy: false },
-  live_job: { label: 'Live role', chipLabel: 'Live roles', icon: '🎯', color: 'text-emerald-700 bg-emerald-100', racy: true },
+  regulatory: { label: 'Regulatory', icon: '⚖️', color: 'text-slate-700 bg-slate-100', feedTopicColor: 'bg-[#fee2e2] text-[#b91c1c]', racy: false },
+  live_job: { label: 'Live role', chipLabel: 'Live roles', icon: '💼', color: 'text-emerald-700 bg-emerald-100', feedTopicColor: 'bg-[#dcfce7] text-[#15803d]', racy: true },
 }
 
 // The subset the AI's own scan prompt is allowed to choose a signalType
@@ -45,3 +53,11 @@ export const SIGNAL_TYPES = Object.keys(SIGNAL_TYPE_META).filter(id => id !== 'l
 // Which signal types Today's Actions and the Intelligence Feed both treat
 // as time-sensitive (worth a "time-sensitive" flag while still fresh).
 export const RACY_SIGNAL_TYPES = Object.keys(SIGNAL_TYPE_META).filter(id => SIGNAL_TYPE_META[id].racy)
+
+// M&A, regulatory filings, and public commentary are market intel worth
+// knowing about, not something to act on commercially — never a BD trigger
+// (see BD_ACTION_SIGNAL_TYPES in actionsEngine.js, which excludes exactly
+// this set from Today's Actions). IntelligenceFeed.jsx uses this same list
+// to split its own view into a "Signals" tab and a separate "News" tab,
+// rather than mixing all of it into one undifferentiated timeline.
+export const NEWS_SIGNAL_TYPES = ['m_and_a', 'regulatory', 'public_commentary']

@@ -48,6 +48,27 @@ Only return the JSON array, nothing else.`
   return context
 }
 
+// Batched, grounded "why this candidate" pitch for the single top pipeline
+// match on a sourced signal — one call for every candidate that needs one,
+// same reasoning as buildEnrichmentPrompt's batching above (a round trip per
+// candidate would be real waste). Deliberately restricted to the real fields
+// already on the candidate/signal (role, company, industry, notes, pipeline
+// status) rather than the mock's fabricated-and-specific claims ("Led a
+// $340M cross-border refinancing") — the model is explicitly told not to
+// invent anything beyond what's given, and the result is rendered in
+// TodaysActions.jsx with a visible "Annie's read" label rather than as a
+// stored fact, since even a grounded pitch is still an inference, not a
+// verified claim about the person.
+export function buildCandidatePitchPrompt(targets) {
+  return `You are Annie, a BD intelligence engine for recruitment firms.
+For each pairing below, write ONE short, specific-sounding sentence on why this real candidate could be a fit for this signal — grounded ONLY in the fields given (their role, current company, industry, pipeline status, and any notes on file). Do not invent an employer, a deal value, a specific achievement, or any other fact not present in the notes field. If notes is empty, write a plain, generic fit sentence based only on role and industry overlap with the signal — never pad it out with an invented specific.
+
+Pairings:
+${JSON.stringify(targets.map(({ signal, candidate }) => ({ signalHeadline: signal.headline, signalIndustry: signal.industry, candidate: { role: candidate.role, company: candidate.company, industry: candidate.industry, status: candidate.status, notes: candidate.notes || '' } })))}
+
+Return a JSON array, same order and length as given, each entry just the pitch string (not an object). Only return the JSON array, nothing else.`
+}
+
 // Sourcing/discovery no longer happens here, or anywhere in the client. The
 // scheduled intelligence-scan Netlify function is the one place research happens,
 // running every 4 hours per customer and writing into intelligence_signals. Today's

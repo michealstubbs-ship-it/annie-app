@@ -88,14 +88,16 @@ function chunkSectors(sectors, maxGroups) {
 }
 
 // Merges signal lists from multiple AI calls (per-sector-group, plus
-// optionally a broaden pass), deduplicating by company+headline so the same
-// real event found via two different searches doesn't get written twice.
+// optionally a broaden pass), deduplicating by source URL where there is one
+// (a hard fact, unlike the AI's own headline wording — see normalizeKey's
+// header) so the same real event found via two different searches doesn't
+// get written twice, even if the two calls phrased its headline differently.
 function mergeSignals(lists) {
   const seen = new Map()
   for (const list of lists) {
     for (const s of list || []) {
       if (!s?.company || !s?.headline) continue
-      const key = normalizeKey(s.company, s.headline)
+      const key = normalizeKey(s.company, s.headline, s.sourceUrl)
       if (!seen.has(key)) seen.set(key, s)
     }
   }
@@ -140,6 +142,8 @@ ${opts.broaden ? `\nIMPORTANT: an earlier, narrower search pass came up thin. Fo
 ${opts.apolloLeads?.length ? `\nApollo's own hiring database has independently confirmed these companies are actively posting jobs matching this recruiter's functions, within the last ${SIGNAL_LOOKBACK_DAYS} days, in these sectors and markets: ${opts.apolloLeads.map(l => `${l.name}${l.industry ? ` (${l.industry})` : ''}`).join(', ')}. Treat these as strong, confirmed leads, actively search for the real story behind each one (why they're hiring, any funding or expansion tied to it, the right person to approach, a real citable source) before deciding whether to include it. You are not limited to only these companies, keep searching broadly too, but do not ignore this list, Apollo already did real work to surface it.\n` : ''}
 ${opts.adzunaLeads?.length ? `\nAdzuna's live jobs board shows these real, recent job postings that may match this recruiter's sectors and functions: ${opts.adzunaLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. For any of these that reads as posted directly by the company itself (no recruitment agency name, no "on behalf of our client" language, no agency branding) rather than through a recruiter or agency, this is a genuine open role with no recruiter attached — do NOT write this up as a generic "signal" entry. Instead, write it as its own "live_job" entry (see the separate live_job field list below), one per specific role, with the real posting URL as sourceUrl. Skip any that clearly look agency-posted. If a company has one or more of these live_job entries, do not also write a separate hiring_activity or job_posting_unclaimed signal entry about that same company being on a hiring push in general — the specific role entries replace that, they don't sit alongside it.\n` : ''}
 
+Adzuna does not cover every one of this recruiter's markets (notably the GCC/UAE) — for those, also use web search directly to find genuine, specific open roles: search a company's own careers page, recognised regional job boards (Bayt, GulfTalent, NaukriGulf, Dubizzle Jobs), and LinkedIn Jobs postings. Write anything you find this way as its own "live_job" entry the same way as an Adzuna-sourced one — real specific title, sourceUrl pointing at the actual job posting page itself (not a news article merely mentioning that the company is hiring), no agency-posted roles. If you can only find a general "this company is hiring" mention with no specific posting page to cite, write that as an ordinary hiring_activity signal instead, never as a live_job entry — a live_job entry always needs its own real posting URL.
+
 This is a brand new account with no history yet, so there is nothing to avoid repeating: ${recentCompanies.join(', ') || 'None yet'}.
 
 Every signal must have a real, citable source you actually found via search. Do not invent anything. Return up to 8 signals, fewer if you can't find genuinely good ones after searching thoroughly, never pad with weak filler.
@@ -160,14 +164,15 @@ For each signal, determine:
 - candidateAngle: a specific, credible candidate pitch to lead with — background, seniority, source companies — matching the target functions above. Phrase it as an opening gambit, not an unconditional promise (e.g. "I'm working with a [seniority] who..." rather than "I have the perfect candidate"), so the recruiter still has room to say that exact person has just gone off-market if the hiring manager responds and it doesn't pan out — the point of this angle is opening the conversation, not guaranteeing one specific person. Leave blank if this signal isn't the kind that calls for a candidate pitch (e.g. a pure leadership-change or funding note with no obvious opening).
 - benchStrengthAngle: a positioning pitch that does NOT name a single candidate — instead, say the recruiter works with several people who have direct, relevant experience in this exact niche, naming 1-2 real, specific companies that are genuine competitors or close peers to ${'`company`'} in this space (never vague phrasing like "similar companies"), so it reads as informed market knowledge rather than a generic claim. Leave blank if you cannot confidently name genuine, relevant peer companies.
 - candidateProfile: a structured, consistent breakdown of the kind of candidate this recruiter would actually go and find for this opportunity, used to render the same "what to look for" box on every signal card regardless of type — an object with exactly these keys: { "yearsMin": <number, low end of a realistic years-of-experience range for this role/seniority>, "yearsMax": <number, high end>, "functionalExperience": "<one short phrase naming the specific functional experience needed, e.g. 'Project finance and EPC contract management', tailored to this exact signal, never generic>", "directCompetitors": [<0-3 real, specific company names that are direct competitors of ${'`company`'} — companies a hiring manager would obviously poach from first>], "similarIndustry": [<0-3 real, specific company names in the same broader industry but not a head-to-head competitor — a wider but still logical pool>], "widerScope": [<0-2 real, specific company names from an adjacent field a sharp hiring manager might also consider, e.g. a relevant consulting firm whose people have done directly applicable work — only include this if it's a genuine, defensible logical stretch, never a random unrelated company>] }. Only name real companies you're confident actually exist and are genuinely relevant, leave an array empty rather than inventing a plausible-sounding name. Leave the whole object with empty arrays and blank functionalExperience if you cannot confidently populate it.
+- likelyRoles: ONLY for signalType "funding" or "expansion" — 2-4 specific job titles this company will likely now be hiring for as a direct result of this signal, spanning different functions where genuinely applicable (e.g. for a funding round: "Head of Product", "VP Engineering", "Commercial Director", not three variants of the same role) — these two signal types rarely have one single obvious hiring contact, so this is what lets the recruiter be pointed at several relevant people across functions instead of nobody. Leave blank for every other signalType.
 
-For each genuine, directly-posted open role you found via the Adzuna list above, write a SEPARATE entry with these fields instead (do not mix these into a signal entry):
+For each genuine, directly-posted open role you found via the Adzuna list above or your own web search for this recruiter's markets, write a SEPARATE entry with these fields instead (do not mix these into a signal entry):
 - entryType: "live_job"
 - company: the company name, exactly as Adzuna gave it
 - headline: the exact, specific role title (e.g. "Senior Finance Manager", not "Hiring across Finance") — this is what makes it a live job entry rather than a company-level narrative
 - whyItMatters: 1 sentence, plain natural prose, on why this specific open role is a genuine BD opportunity right now (e.g. posted directly with no recruiter attached, matches this recruiter's placement functions). No citation markup or bracketed references.
-- sourceUrl: the real Adzuna posting URL from the list above
-- sourceLabel: short label, e.g. adzuna.com
+- sourceUrl: the real posting URL — the Adzuna posting URL from the list above, or, for a role you found via your own web search, the actual job posting page itself (a company careers page, a job board listing, or a LinkedIn Jobs post) — never a news article that merely mentions the company is hiring
+- sourceLabel: short label, e.g. adzuna.com, bayt.com, or the company's own domain
 - eventDate: the posting date if you can tell, else your best estimate, as YYYY-MM-DD
 - whoToApproach: the specific person or role to approach about this exact opening
 - titleKeywords: 2-4 likely job title strings for the right decision-maker, used afterwards to look up a real verified contact
@@ -414,7 +419,7 @@ export default async (req) => {
     // across different companies instead of one entry at a time — see
     // buildEnrichedSignalRows's own comment for why that's safe even with
     // Live Jobs' multiple-entries-per-company case.
-    const newEntries = capped.filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline)))
+    const newEntries = capped.filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
     const rows = await buildEnrichedSignalRows(newEntries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix: '[scan-now]' })
 
     // The exact bug that made a live customer's first scan report success

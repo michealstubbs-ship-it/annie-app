@@ -9,7 +9,7 @@ import {
   mapLocationsToAdzunaCountries, SIGNAL_TYPES, reserveApolloCredits,
   normalizeCompanyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
-  enrichCompany,
+  enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions,
 } from './scanShared.js'
 
 // Full behavioural coverage for extractJson now lives in
@@ -40,10 +40,61 @@ describe('normalizeKey (dedup)', () => {
     expect(a).not.toBe(b)
   })
 
-  it('still treats genuinely different headlines about the same company as different', () => {
+  it('still treats genuinely different headlines about the same company as different, when neither has a source URL', () => {
     const a = normalizeKey('Acme Ltd', 'Raises $10M Series B')
     const b = normalizeKey('Acme Ltd', 'Appoints new CFO')
     expect(a).not.toBe(b)
+  })
+
+  // Real incident, 2026-08-23: the same DP World leadership-change article
+  // got written as two separate signals two days apart because the AI
+  // phrased the headline differently each run ("Ahmad Al-Hassan elevated to
+  // GCC CEO from CFO role" vs "Ahmad Al-Hassan appointed GCC CEO in
+  // February 2026") — both from the exact same gulfnews.com URL. Headline
+  // text can never be a reliable dedup key on its own; the source URL can.
+  it('dedupes two differently-worded headlines about the same event when they share a source URL', () => {
+    const a = normalizeKey('DP World', 'Ahmad Al-Hassan elevated to GCC CEO from CFO role', 'https://gulfnews.com/business/markets/dp-world-appoints-ahmad-al-hassan-to-lead-gcc-operations-and-trade-strategy-1.500469474')
+    const b = normalizeKey('DP World', 'Ahmad Al-Hassan appointed GCC CEO in February 2026', 'https://gulfnews.com/business/markets/dp-world-appoints-ahmad-al-hassan-to-lead-gcc-operations-and-trade-strategy-1.500469474')
+    expect(a).toBe(b)
+  })
+
+  it('treats the same headline as different signals when the source URLs genuinely differ', () => {
+    const a = normalizeKey('DP World', 'Ahmad Al-Hassan elevated to GCC CEO from CFO role', 'https://gulfnews.com/article-a')
+    const b = normalizeKey('DP World', 'Ahmad Al-Hassan elevated to GCC CEO from CFO role', 'https://zawya.com/article-b')
+    expect(a).not.toBe(b)
+  })
+
+  it('ignores tracking params, protocol, and a trailing slash when comparing source URLs', () => {
+    const a = normalizeKey('DP World', 'Headline one', 'https://gulfnews.com/article?utm_source=x')
+    const b = normalizeKey('DP World', 'Headline two, worded completely differently', 'http://www.gulfnews.com/article/')
+    expect(a).toBe(b)
+  })
+
+  it('falls back to headline-based dedup when a signal genuinely has no source URL', () => {
+    const a = normalizeKey('Acme Ltd', 'Raises $10M Series B', '')
+    const b = normalizeKey('Acme Ltd', 'Raises $10M Series B', null)
+    expect(a).toBe(b)
+    expect(a).not.toContain('url:')
+  })
+
+  // Real find from auditing this exact fix, 2026-08-21: two genuinely
+  // different-looking CargoX signals ("UAE logistics startup raises $250M
+  // mega-round" vs "Autonomous logistics startup raises $250M Series
+  // expansion") both cited the same dxbstart.com/category/funding-news
+  // listing page as their source_url, a day apart. Naively keying dedup off
+  // that shared URL risks the opposite failure mode from the DP World
+  // incident: silently treating a genuinely new story as a duplicate purely
+  // because the listing page it appeared under has been cited before.
+  it('does not treat a shared category/listing-page URL as a reliable per-story key, so two different headlines under it stay distinct', () => {
+    const a = normalizeKey('CargoX', 'UAE logistics startup raises $250M mega-round', 'https://www.dxbstart.com/category/funding-news')
+    const b = normalizeKey('CargoX', 'Autonomous logistics startup raises $250M Series expansion', 'https://www.dxbstart.com/category/funding-news')
+    expect(a).not.toBe(b)
+  })
+
+  it('still uses the URL as the dedup key for a genuine specific-article URL, not just anything under a domain', () => {
+    const a = normalizeKey('DP World', 'Headline A', 'https://gulfnews.com/business/markets/dp-world-appoints-ahmad-al-hassan-1.500469474')
+    const b = normalizeKey('DP World', 'Headline B, worded completely differently', 'https://gulfnews.com/business/markets/dp-world-appoints-ahmad-al-hassan-1.500469474')
+    expect(a).toBe(b)
   })
 })
 
@@ -342,7 +393,7 @@ describe('buildEnrichedSignalRow', () => {
     expect(row.signal_type).toBe('live_job')
     expect(row.company_name).toBe('Acme Ltd')
     expect(row.contact_name).toBe('Jane Doe')
-    expect(row.dedup_key).toBe(normalizeKey('Acme Ltd', 'Senior Finance Manager'))
+    expect(row.dedup_key).toBe(normalizeKey('Acme Ltd', 'Senior Finance Manager', 'https://example.com/job'))
     vi.unstubAllGlobals()
   })
 
@@ -745,6 +796,146 @@ describe('buildEnrichedSignalRow — candidateProfile and leadership_change cont
     )
     expect(row.contact_verified).toBe(true)
     expect(row.contact_name).toBe('Sarah Al Mazrouei')
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('looksLikeJobPostingUrl (live_job genuineness gate)', () => {
+  it('accepts a company careers-page-shaped URL', () => {
+    expect(looksLikeJobPostingUrl('https://acme.com/careers/senior-finance-manager')).toBe(true)
+  })
+
+  it('accepts a /jobs/ path', () => {
+    expect(looksLikeJobPostingUrl('https://acme.com/jobs/12345')).toBe(true)
+  })
+
+  it('accepts a genuine LinkedIn Jobs posting URL', () => {
+    expect(looksLikeJobPostingUrl('https://www.linkedin.com/jobs/view/1234567890')).toBe(true)
+  })
+
+  it('rejects a plain LinkedIn post/article URL — not a Jobs posting', () => {
+    expect(looksLikeJobPostingUrl('https://www.linkedin.com/posts/someone_hiring-activity-1234')).toBe(false)
+  })
+
+  it('trusts any Adzuna URL, whatever its path — real by construction (see discoverAdzunaJobs)', () => {
+    expect(looksLikeJobPostingUrl('https://www.adzuna.co.uk/details/1234567')).toBe(true)
+  })
+
+  it('rejects a news-article-shaped URL', () => {
+    expect(looksLikeJobPostingUrl('https://gulfnews.com/business/acme-is-hiring-1.500469474')).toBe(false)
+  })
+
+  it('rejects a missing or malformed URL rather than throwing', () => {
+    expect(looksLikeJobPostingUrl('')).toBe(false)
+    expect(looksLikeJobPostingUrl(null)).toBe(false)
+    expect(looksLikeJobPostingUrl('not a url')).toBe(false)
+  })
+})
+
+describe('verifyContactsAcrossFunctions — the multi-contact fallback for funding/expansion', () => {
+  it('returns one contact per function bucket that actually resolves someone', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      if (url.includes('mixed_people/api_search')) {
+        const body = JSON.parse(opts.body)
+        const titles = body.person_titles || []
+        if (titles.includes('Head of Product')) return { ok: true, json: async () => ({ people: [{ first_name: 'Priya', last_name: 'Nair', title: 'Head of Product', id: 'p1' }] }) }
+        if (titles.includes('Head of Engineering')) return { ok: true, json: async () => ({ people: [{ first_name: 'Sam', last_name: 'Lee', title: 'Head of Engineering', id: 'p2' }] }) }
+        return { ok: true, json: async () => ({ people: [] }) } // commercial: nobody found
+      }
+      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { email: 'x@acme.com' } }) }
+      return { ok: true, text: async () => '' }
+    }))
+    const results = await verifyContactsAcrossFunctions('apollo-key', 'Acme Ltd', supabase, 'org_1')
+    expect(results).toHaveLength(2) // commercial came back empty, correctly omitted rather than shown as a blank entry
+    expect(results.find(r => r.function === 'product').name).toBe('Priya Nair')
+    expect(results.find(r => r.function === 'engineering').name).toBe('Sam Lee')
+    expect(results.find(r => r.function === 'commercial')).toBeUndefined()
+    vi.unstubAllGlobals()
+  })
+
+  it('reuses the existing per-(company, title-bucket) cache — a second call for the same company and functions spends no further credit', async () => {
+    const supabase = makeTableAwareSupabase()
+    let peopleSearchCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_people/api_search')) { peopleSearchCalls++; return { ok: true, json: async () => ({ people: [{ first_name: 'Priya', last_name: 'Nair', title: 'Head of Product', id: 'p1' }] }) } }
+      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { email: 'x@acme.com' } }) }
+      return { ok: true, text: async () => '' }
+    }))
+    await verifyContactsAcrossFunctions('apollo-key', 'Acme Ltd', supabase, 'org_1', ['product'])
+    await verifyContactsAcrossFunctions('apollo-key', 'Acme Ltd', supabase, 'org_1', ['product'])
+    expect(peopleSearchCalls).toBe(1)
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('buildEnrichedSignalRow — always a contact recommendation on the 4 whitelisted BD Actions types', () => {
+  it('a funding signal with no single obvious contact gets a multi-function contact_candidates panel instead, and no single verified contact', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+      if (url.includes('mixed_people/api_search')) {
+        const body = JSON.parse(opts.body)
+        if (body.person_titles?.includes('Head of Product')) return { ok: true, json: async () => ({ people: [{ first_name: 'Priya', last_name: 'Nair', title: 'Head of Product', id: 'p1' }] }) }
+        return { ok: true, json: async () => ({ people: [] }) }
+      }
+      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { email: 'x@acme.com' } }) }
+      return { ok: true, text: async () => '' }
+    }))
+    const row = await buildEnrichedSignalRow(
+      { entryType: 'signal', signalType: 'funding', company: 'Acme Ltd', headline: 'Raises Series B', likelyRoles: ['Head of Product', 'Head of Engineering'] },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+    )
+    expect(row.contact_verified).toBe(false)
+    expect(row.contact_name).toBeNull()
+    expect(row.contact_candidates).toEqual([{ function: 'product', name: 'Priya Nair', title: 'Head of Product', linkedin_url: '', email: 'x@acme.com' }])
+    expect(row.likely_roles).toEqual(['Head of Product', 'Head of Engineering'])
+    vi.unstubAllGlobals()
+  })
+
+  it('a live_job signal whose single-contact lookup finds nobody falls back to the multi-function panel', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+      if (url.includes('mixed_people/api_search')) {
+        const body = JSON.parse(opts.body)
+        // The specific role's own title search comes back empty...
+        if (body.person_titles?.includes('Finance Manager')) return { ok: true, json: async () => ({ people: [] }) }
+        // ...but the commercial bucket resolves someone.
+        if (body.person_titles?.includes('Commercial Director')) return { ok: true, json: async () => ({ people: [{ first_name: 'Omar', last_name: 'Khalil', title: 'Commercial Director', id: 'p2' }] }) }
+        return { ok: true, json: async () => ({ people: [] }) }
+      }
+      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { email: 'x@acme.com' } }) }
+      return { ok: true, text: async () => '' }
+    }))
+    const row = await buildEnrichedSignalRow(
+      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Finance Manager', sourceUrl: 'https://acme.com/careers/finance-manager', titleKeywords: ['Finance Manager'] },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+    )
+    expect(row.contact_verified).toBe(false)
+    expect(row.contact_candidates.some(c => c.name === 'Omar Khalil')).toBe(true)
+    vi.unstubAllGlobals()
+  })
+
+  it('demotes a live_job entry to hiring_activity when its sourceUrl does not resolve to a recognisable job posting', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => '' }))
+    const supabase = makeTableAwareSupabase()
+    const row = await buildEnrichedSignalRow(
+      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager', sourceUrl: 'https://gulfnews.com/business/acme-hiring-story-1.500469474' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+    )
+    expect(row.signal_type).toBe('hiring_activity')
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps signal_type live_job when the sourceUrl genuinely looks like a job posting', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => '' }))
+    const supabase = makeTableAwareSupabase()
+    const row = await buildEnrichedSignalRow(
+      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager', sourceUrl: 'https://acme.com/careers/senior-finance-manager' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+    )
+    expect(row.signal_type).toBe('live_job')
     vi.unstubAllGlobals()
   })
 })

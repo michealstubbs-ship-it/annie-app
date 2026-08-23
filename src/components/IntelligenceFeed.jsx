@@ -7,7 +7,7 @@ import InfoTip from './InfoTip'
 import CompanyLogo from './CompanyLogo'
 import { logSignalOutcome } from '../lib/signalOutcomes'
 import { trackEvent } from '../lib/analytics'
-import { SIGNAL_TYPE_META as TYPE_META, RACY_SIGNAL_TYPES as RACY_TYPES } from '../lib/signalTypes'
+import { SIGNAL_TYPE_META as TYPE_META, RACY_SIGNAL_TYPES as RACY_TYPES, NEWS_SIGNAL_TYPES } from '../lib/signalTypes'
 
 function timeAgo(dateStr) {
   if (!dateStr) return null
@@ -38,6 +38,12 @@ export default function IntelligenceFeed() {
   const { data: { signals }, loading, setData: setFeedPageData } = useSupabaseQuery(
     () => loadFeedPageData(user.id), [user], { signals: [] },
   )
+  // M&A, regulatory, and public commentary are market intel, not something
+  // to act on — they never belonged mixed into the same scrollable timeline
+  // as everything else worth pursuing. Split client-side, same underlying
+  // fetch (listActiveSignals): no separate query, no separate loading state,
+  // just two different slices of the one signals array already in memory.
+  const [mainTab, setMainTab] = useState('signals')
   const [typeFilter, setTypeFilter] = useState('all')
   const [addedId, setAddedId] = useState(null)
 
@@ -46,8 +52,22 @@ export default function IntelligenceFeed() {
   }
 
   const newCount = useMemo(() => signals.filter(s => s.status === 'new').length, [signals])
-  const visible = useMemo(() => typeFilter === 'all' ? signals : signals.filter(s => s.signal_type === typeFilter), [signals, typeFilter])
-  const presentTypes = useMemo(() => [...new Set(signals.map(s => s.signal_type))], [signals])
+  const tabSignals = useMemo(
+    () => signals.filter(s => mainTab === 'news' ? NEWS_SIGNAL_TYPES.includes(s.signal_type) : !NEWS_SIGNAL_TYPES.includes(s.signal_type)),
+    [signals, mainTab],
+  )
+  const visible = useMemo(() => typeFilter === 'all' ? tabSignals : tabSignals.filter(s => s.signal_type === typeFilter), [tabSignals, typeFilter])
+  const presentTypes = useMemo(() => [...new Set(tabSignals.map(s => s.signal_type))], [tabSignals])
+  const newsCount = useMemo(() => signals.filter(s => NEWS_SIGNAL_TYPES.includes(s.signal_type)).length, [signals])
+
+  // The type-filter chip only ever makes sense scoped to whichever tab is
+  // active (no point offering an "M&A" chip while looking at the Signals
+  // tab) — switching tabs resets it back to "all" rather than carrying over
+  // a filter that might not even apply to the new tab's types.
+  function switchTab(tab) {
+    setMainTab(tab)
+    setTypeFilter('all')
+  }
 
   async function markSeen(s) {
     if (s.status !== 'new') return
@@ -80,7 +100,7 @@ export default function IntelligenceFeed() {
   // when this signal was found. Doesn't mark it 'actioned', so it can still
   // be found and fully worked from Today's Actions.
   async function addToTodaysActions(s) {
-    if (s.manually_added_at || s.signal_type === 'regulatory') return
+    if (s.manually_added_at || NEWS_SIGNAL_TYPES.includes(s.signal_type)) return
     await markSignalManuallyAdded(s.id)
     setSignals(prev => prev.map(x => x.id === s.id ? { ...x, manually_added_at: new Date().toISOString() } : x))
     logSignalOutcome(user, s, 'added_to_bd_actions')
@@ -111,6 +131,25 @@ export default function IntelligenceFeed() {
           <p className="text-white text-sm font-extrabold mb-0.5 tracking-tight">This feed is just the news, no prompts live here.</p>
           <p className="text-white/80 text-[12.5px] leading-relaxed max-w-[600px]">Found something worth pursuing? Tap <b className="text-gold font-bold">Add to Today's BD Actions</b> on any post, Annie already wrote the full recommendation when she found it, so it moves over instantly: who to approach, a candidate profile to search for, and a ready-to-send message.</p>
         </div>
+      </div>
+
+      {/* Signals vs News — the same split Today's Actions makes: M&A,
+          regulatory, and public commentary are worth knowing, never worth
+          acting on, so they get their own place to browse instead of
+          diluting the timeline of things actually worth pursuing. */}
+      <div className="flex gap-0 border-b-2 border-gray-200 mb-4">
+        <button
+          onClick={() => switchTab('signals')}
+          className={`px-1.5 py-2.5 mr-[22px] text-[13.5px] font-bold border-b-2 -mb-0.5 transition-colors ${mainTab === 'signals' ? 'text-navy border-gold' : 'text-gray-500 border-transparent hover:text-gray-600'}`}
+        >
+          Signals
+        </button>
+        <button
+          onClick={() => switchTab('news')}
+          className={`px-1.5 py-2.5 text-[13.5px] font-bold border-b-2 -mb-0.5 transition-colors ${mainTab === 'news' ? 'text-navy border-gold' : 'text-gray-500 border-transparent hover:text-gray-600'}`}
+        >
+          News {newsCount > 0 && <span className="text-xs font-semibold">({newsCount})</span>}
+        </button>
       </div>
 
       {/* A chip per signal type, same idea as a dropdown (scales to however
@@ -175,7 +214,7 @@ export default function IntelligenceFeed() {
                     </div>
 
                     <div className="mt-1.5">
-                      <span className="inline-block text-[10.5px] font-bold px-2 py-0.5 rounded-full bg-[#eef1fb] text-navy-light mr-1.5">{meta.icon} {meta.label}</span>
+                      <span className={`inline-block text-[10.5px] font-bold px-2 py-0.5 rounded-full mr-1.5 ${meta.feedTopicColor || 'bg-[#eef1fb] text-navy-light'}`}>{meta.icon} {meta.label}</span>
                       {s.event_at && <span className="text-[11px] font-semibold text-gray-400">📅 {timeSensitive ? 'Happened' : 'Happened'} {timeAgo(s.event_at)}</span>}
                     </div>
 
@@ -196,12 +235,12 @@ export default function IntelligenceFeed() {
                       ) : (
                         <span className="flex items-center gap-1.5 text-gray-400 text-xs font-semibold">📰 AI-reported</span>
                       )}
-                      {s.signal_type === 'regulatory' ? (
-                        // Regulatory is market intel by design, background awareness,
-                        // never a BD trigger — actionsEngine.js excludes it from Today's
-                        // Actions outright, so offering this button here would just be a
-                        // dead end. No button at all, rather than one that silently does
-                        // nothing.
+                      {NEWS_SIGNAL_TYPES.includes(s.signal_type) ? (
+                        // M&A/regulatory/public commentary are market intel by design,
+                        // background awareness, never a BD trigger — actionsEngine.js
+                        // excludes all of NEWS_SIGNAL_TYPES from Today's Actions outright,
+                        // so offering this button here would just be a dead end. No
+                        // button at all, rather than one that silently does nothing.
                         <span className="flex items-center gap-1.5 text-gray-400 text-xs font-semibold italic">Market intel, not a BD action</span>
                       ) : s.manually_added_at ? (
                         <span className="flex items-center gap-1.5 text-green-700 bg-green-50 border border-green-200 font-bold text-xs px-2.5 py-1.5 rounded-full">✓ In Today's BD Actions</span>

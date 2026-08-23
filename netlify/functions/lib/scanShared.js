@@ -16,13 +16,15 @@
 import { normalizeCompanyName } from '../../../src/lib/companyMatch.js'
 import { extractJson } from '../../../src/lib/jsonExtract.js'
 import { SIGNAL_TYPES } from '../../../src/lib/signalTypes.js'
+import { stripAiArtifacts, sanitizeStringList } from '../../../src/lib/textSanitize.js'
 import { reportServerError } from './reportError.js'
 
 // Re-exported so every existing backend caller (scan-now-background.js,
 // intelligence-scan.js) keeps importing these from here unchanged — both
 // now live in src/lib because they're genuinely shared with the frontend
-// too, not backend-only. See jsonExtract.js and signalTypes.js for why.
-export { extractJson, SIGNAL_TYPES }
+// too, not backend-only. See jsonExtract.js, signalTypes.js and
+// textSanitize.js for why.
+export { extractJson, SIGNAL_TYPES, stripAiArtifacts }
 
 // How far back Apollo/Adzuna discovery counts as "actively happening right
 // now", and how the AI prompts describe their own main search window. One
@@ -107,6 +109,37 @@ export async function verifySourceUrl(url) {
   }
 }
 
+// Today's BD Actions requires a live_job entry to be a genuine, specific
+// open role — real title, from the company's own careers page, a job board,
+// or a LinkedIn Jobs post — never a news article merely mentioning hiring.
+// Adzuna-sourced entries are already real postings by construction (see
+// discoverAdzunaJobs), but a live_job entry the AI surfaces via its own web
+// search (see the scan prompts' live_job field list) needs the same
+// guarantee some other way, since the model can otherwise cite a news
+// article as if it were a posting. This is a coarse, deliberately
+// conservative URL-shape check, not a guarantee the page is genuinely a
+// posting — paired at the call site with a demotion to hiring_activity
+// (never a silent drop) for anything that doesn't pass, so a real signal
+// still surfaces somewhere even when this can't confirm it belongs in the
+// stricter live_job category.
+export function looksLikeJobPostingUrl(url) {
+  if (!url) return false
+  try {
+    const { pathname, hostname } = new URL(url)
+    const host = hostname.toLowerCase()
+    const path = pathname.toLowerCase()
+    // Adzuna-sourced entries are real postings by construction (see
+    // discoverAdzunaJobs) — Adzuna's own redirect URLs don't follow a
+    // /jobs/-style path, so they're trusted by host alone rather than
+    // failing the generic path check below.
+    if (host.includes('adzuna.')) return true
+    if (host.includes('linkedin.com') && /\/jobs\/view\//.test(path)) return true
+    return /\/(job|jobs|career|careers|vacanc(y|ies))(\/|-|$)/.test(path)
+  } catch {
+    return false
+  }
+}
+
 // Best-effort ops alert for the one failure mode retries can't fix: every
 // customer in a run coming back with zero new signals, which almost always
 // means a systemic problem (a suspended key, an outage) rather than every
@@ -165,14 +198,58 @@ export async function reserveApolloCredits(supabase, credits = 1) {
   }
 }
 
+// A listing/category page (e.g. a site's whole "/category/funding-news"
+// feed) is not a stable per-article fact the way a specific article URL is —
+// it's a live URL that genuinely goes on to host many different stories over
+// time. Found auditing this exact fix: two real CargoX signals a day apart
+// shared exactly this kind of URL (dxbstart.com/category/funding-news), and
+// treating that shared URL as "same article" would risk silently dropping a
+// genuinely new, different story that happens to appear under the same
+// listing page next time. Detected by path segments that are pure category
+// words with no article slug/id after them — a real article URL almost
+// always ends in a long, specific, mixed slug or a numeric id.
+function looksLikeListingPage(pathAndQuery) {
+  return /\/(category|categories|tag|tags|topic|topics|section|sections)(\/[a-z0-9-]+)?\/?$/.test(pathAndQuery)
+}
+
+// Strips everything that varies without the underlying article changing —
+// protocol, www, a trailing slash, query string, hash fragment — so the same
+// URL fetched two different ways (or with tracking params appended) still
+// dedupes as the same source. Returns '' (meaning "not a reliable per-story
+// key") for a listing/category page — see looksLikeListingPage above.
+function normalizeSourceUrl(url) {
+  if (!url) return ''
+  const cleaned = url.trim().toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/[?#].*$/, '')
+    .replace(/\/+$/, '')
+  const path = cleaned.replace(/^[^/]+/, '') // strip the domain, keep /path onward
+  if (looksLikeListingPage(path)) return ''
+  return cleaned
+}
+
 // Company-name normalization now goes through the same helper the rest of
 // the app already uses to tell "Acme Ltd" and "Acme Limited" apart from two
 // genuinely different companies (src/lib/companyMatch.js) — previously the
 // dedup key here did its own separate, cruder lowercase-only normalization,
 // so the same real company re-surfacing with a slightly different legal
 // suffix across two scan runs would dedupe as two different companies.
-export function normalizeKey(company, headline) {
+//
+// Real incident, 2026-08-23: the exact same DP World leadership-change
+// article, same source_url, got written as two separate signals two days
+// apart because the AI paraphrased the headline differently each run
+// ("Ahmad Al-Hassan elevated to GCC CEO from CFO role" vs "Ahmad Al-Hassan
+// appointed GCC CEO in February 2026") — headline-based dedup can never be
+// reliable against that, the AI has no reason to phrase a summary
+// identically twice. sourceUrl is a hard fact, not AI prose, so it's now the
+// dedup key whenever a signal has one; headline-based matching is kept only
+// as the fallback for the rarer signal with no single source article to key
+// off (found is empty string).
+export function normalizeKey(company, headline, sourceUrl) {
   const companyKey = normalizeCompanyName(company) || (company || '').trim().toLowerCase()
+  const normalizedUrl = normalizeSourceUrl(sourceUrl)
+  if (normalizedUrl) return `${companyKey}::url:${normalizedUrl}`
   const headlineKey = (headline || '').trim().toLowerCase().slice(0, 80)
   return `${companyKey}::${headlineKey}`
 }
@@ -588,6 +665,42 @@ async function lookupContactByName(apolloKey, company, fullName, supabase) {
   }
 }
 
+// Funding/expansion signals rarely have one obvious "the" contact the way a
+// leadership_change does — the actionable question is closer to "who would
+// this company likely be hiring for off the back of this", which is
+// naturally several people across different functions, not one. These are
+// the buckets Annie searches by default; every one of the four whitelisted
+// Today's BD Actions signal types (see BD_ACTION_SIGNAL_TYPES in
+// actionsEngine.js) is required to always carry at least one usable contact
+// recommendation, so this is the fallback that guarantees that when a single
+// verifyContact call comes back empty.
+const FUNCTION_TITLE_BUCKETS = {
+  product: ['Head of Product', 'VP Product', 'Product Director'],
+  engineering: ['Head of Engineering', 'VP Engineering', 'Engineering Director'],
+  commercial: ['Commercial Director', 'VP Sales', 'Head of Business Development'],
+}
+
+// Searches several functional title-buckets at once for the same company,
+// instead of the single title-keyword search verifyContact normally does.
+// Deliberately reuses verifyContact itself rather than a parallel lookup
+// path: the contact cache (company_contacts) is already keyed on
+// (company, title bucket) — see titleBucketKey — so calling verifyContact
+// several times with different title arrays for the same company already
+// returns distinct people correctly today (proven by
+// scanShared.test.js's "does NOT reuse a cached contact across genuinely
+// different roles" case), it's just never been called more than once per
+// signal before. Runs with limited concurrency so a single funding signal
+// doesn't spend its whole run's worth of Apollo credit budget in one burst;
+// each bucket search still goes through the same reserveApolloCredits cap
+// verifyContact itself already enforces.
+export async function verifyContactsAcrossFunctions(apolloKey, company, supabase, apolloOrgId, functions = Object.keys(FUNCTION_TITLE_BUCKETS)) {
+  const results = await mapWithConcurrency(functions, 2, async (fn) => {
+    const contact = await verifyContact(apolloKey, company, FUNCTION_TITLE_BUCKETS[fn] || [fn], supabase, apolloOrgId)
+    return contact ? { function: fn, ...contact } : null
+  })
+  return results.filter(Boolean)
+}
+
 // Same normalization idea as enrichmentCacheKey, for a person's name rather
 // than a company name — used to bucket the name-based contact cache key.
 function normalizeNameKey(name) {
@@ -804,44 +917,19 @@ export async function verifyLeadershipChange(chApiKey, companyName) {
   }
 }
 
-// Claude's web-search tool sometimes has the model itself write inline
-// citation-style markup into its own JSON answer text (e.g.
-// `<cite index="34-2,34-3">...</cite>`), imitating a citation format rather
-// than anything the API adds — and it was leaking straight into signal
-// cards a customer reads verbatim (raw `<cite ...>` tags visible in the
-// "why it matters" text). Stripped once, here, for every AI-written field
-// that reaches a customer, rather than trusting prompt wording alone to
-// keep the model from doing it again on some future run.
-function stripAiArtifacts(text) {
-  if (!text) return text
-  return text
-    .replace(/<\/?cite[^>]*>/gi, '')
-    .replace(/\[\d+(?:\s*,\s*\d+)*\]/g, '') // stray numeric footnote markers like [1] or [2, 3]
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim()
-}
-
 // Cleans and bounds the AI's candidateProfile object before it's stored —
 // the same "what to look for" structure has to render identically on every
 // signal card (see CandidateProfileBox.jsx), so this guards against the AI
 // returning the wrong shape, non-numeric years, or an unbounded company
 // list, rather than trusting raw model JSON straight into a jsonb column.
-function sanitizeCompanyList(list, max) {
-  if (!Array.isArray(list)) return []
-  return list
-    .map(c => stripAiArtifacts(typeof c === 'string' ? c : ''))
-    .filter(Boolean)
-    .slice(0, max)
-}
-
 function sanitizeCandidateProfile(profile) {
   if (!profile || typeof profile !== 'object') return null
   const yearsMin = Number.isFinite(profile.yearsMin) ? Math.max(0, Math.round(profile.yearsMin)) : null
   const yearsMax = Number.isFinite(profile.yearsMax) ? Math.max(0, Math.round(profile.yearsMax)) : null
   const functionalExperience = stripAiArtifacts(profile.functionalExperience) || ''
-  const directCompetitors = sanitizeCompanyList(profile.directCompetitors, 3)
-  const similarIndustry = sanitizeCompanyList(profile.similarIndustry, 3)
-  const widerScope = sanitizeCompanyList(profile.widerScope, 2)
+  const directCompetitors = sanitizeStringList(profile.directCompetitors, 3)
+  const similarIndustry = sanitizeStringList(profile.similarIndustry, 3)
+  const widerScope = sanitizeStringList(profile.widerScope, 2)
 
   const isEmpty = yearsMin === null && yearsMax === null && !functionalExperience &&
     !directCompetitors.length && !similarIndustry.length && !widerScope.length
@@ -880,9 +968,46 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
     s.signalType === 'leadership_change' ? verifyLeadershipChange(companiesHouseKey, s.company) : Promise.resolve(null),
     verifySourceUrl(s.sourceUrl),
   ])
-  const contact = await verifyContact(apolloKey, s.company, s.titleKeywords, supabase, companyInfo?.apolloOrgId, s.signalType === 'leadership_change' ? s.appointedName : null)
 
   const isLiveJob = s.entryType === 'live_job'
+  // A live_job entry the AI surfaced via its own web search (rather than
+  // Adzuna, which is already real-by-construction) has to actually resolve
+  // to a genuine job-posting-shaped URL — see looksLikeJobPostingUrl. One
+  // that doesn't is demoted to hiring_activity, not dropped: it's still a
+  // real signal about the company, just not one Today's BD Actions can
+  // treat as a verified specific open role.
+  const liveJobUrlVerified = !isLiveJob || looksLikeJobPostingUrl(s.sourceUrl)
+  if (isLiveJob && !liveJobUrlVerified) {
+    console.error(`${logPrefix} live_job entry for "${s.company}" demoted to hiring_activity — sourceUrl doesn't resolve to a recognisable job posting: ${s.sourceUrl}`)
+  }
+  const signalType = isLiveJob && liveJobUrlVerified ? 'live_job' : resolveSignalType(isLiveJob ? 'hiring_activity' : s.signalType, logPrefix)
+
+  // Every one of the four whitelisted Today's BD Actions signal types
+  // (funding, expansion, leadership_change, live_job — see
+  // BD_ACTION_SIGNAL_TYPES in actionsEngine.js) must always carry a usable
+  // contact recommendation. Funding/expansion rarely have one obvious
+  // single contact the way a named leadership appointment or a specific job
+  // posting does — see verifyContactsAcrossFunctions's own header — so those
+  // two go straight to the multi-function search instead of a single
+  // generic title-keyword lookup that would usually come back empty
+  // anyway. live_job/leadership_change keep their existing single-contact
+  // lookup as the primary path, falling back to the same multi-function
+  // search only if that comes back with nobody, so the "always a contact"
+  // guarantee holds for every whitelisted type, not just the two with an
+  // obvious single person.
+  const isFundingOrExpansion = ['funding', 'expansion'].includes(signalType)
+  let contact = null
+  let contactCandidates = []
+  if (isFundingOrExpansion) {
+    if (companyInfo?.apolloOrgId) {
+      contactCandidates = await verifyContactsAcrossFunctions(apolloKey, s.company, supabase, companyInfo.apolloOrgId)
+    }
+  } else {
+    contact = await verifyContact(apolloKey, s.company, s.titleKeywords, supabase, companyInfo?.apolloOrgId, signalType === 'leadership_change' ? s.appointedName : null)
+    if (!contact && companyInfo?.apolloOrgId) {
+      contactCandidates = await verifyContactsAcrossFunctions(apolloKey, s.company, supabase, companyInfo.apolloOrgId)
+    }
+  }
 
   return {
     user_id: userId,
@@ -893,7 +1018,7 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
     company_state: companyInfo?.state || null,
     company_country: companyInfo?.country || null,
     company_logo_url: companyInfo?.logo_url || null,
-    signal_type: isLiveJob ? 'live_job' : resolveSignalType(s.signalType, logPrefix),
+    signal_type: signalType,
     headline: stripAiArtifacts(s.headline),
     why_it_matters: stripAiArtifacts(s.whyItMatters) || '',
     source_url: s.sourceUrl || '',
@@ -910,10 +1035,21 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
     contact_linkedin_url: contact?.linkedin_url || null,
     contact_email: contact?.email || null,
     contact_verified: !!contact,
+    // Populated only via the multi-function fallback above — a single
+    // verified contact and a multi-contact panel are mutually exclusive on
+    // any one signal, never both at once, so the frontend only ever needs
+    // to render whichever one is actually present.
+    contact_candidates: contactCandidates.length ? contactCandidates : null,
+    // What roles this funding/expansion signal likely means the company
+    // will be hiring for — the structured counterpart to candidate_angle,
+    // used to introduce the multi-contact panel above with something more
+    // concrete than a bare list of names ("they'll likely be hiring for
+    // product, engineering and commercial — here's who to reach in each").
+    likely_roles: sanitizeStringList(s.likelyRoles, 5),
     title_keywords: Array.isArray(s.titleKeywords) ? s.titleKeywords.slice(0, 6) : [],
     ch_verified: !!chVerification,
     ch_verified_detail: chVerification?.detail || null,
-    dedup_key: normalizeKey(s.company, s.headline),
+    dedup_key: normalizeKey(s.company, s.headline, s.sourceUrl),
     status: 'new',
   }
 }

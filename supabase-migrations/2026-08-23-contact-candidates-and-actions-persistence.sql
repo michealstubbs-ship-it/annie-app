@@ -1,0 +1,35 @@
+-- Applied live to the annie app project via direct database connection —
+-- kept here for the record, same as every other migration in this folder.
+--
+-- Two independent additions for the Today's BD Actions v2 build:
+--
+-- 1. contact_candidates / likely_roles on intelligence_signals — every one
+--    of the four whitelisted Today's BD Actions signal types (funding,
+--    expansion, leadership_change, live_job — see BD_ACTION_SIGNAL_TYPES in
+--    src/lib/actionsEngine.js) must always carry a usable contact
+--    recommendation. Funding/expansion rarely have one obvious single
+--    contact, so verifyContactsAcrossFunctions (scanShared.js) searches
+--    several functional title-buckets instead and stores the result here —
+--    an array of {function, name, title, linkedin_url, email}, mutually
+--    exclusive with the existing singular contact_name/contact_title/etc
+--    columns (a signal has either one verified contact or a multi-contact
+--    panel, never both). likely_roles is the AI's own short list of what
+--    roles a funding/expansion signal likely means hiring for, shown
+--    alongside the panel. Both additive and nullable — no backfill, no
+--    interaction with dedup_key or status.
+--
+-- 2. dismissed_keys on actions_cache — Today's Actions moved from a
+--    wholesale-regenerated, 24h-TTL list to a persistent, merged one (see
+--    mergeActions/actionKey in src/lib/actionsEngine.js). Signal-backed
+--    items (sourced/relationship) already have a real server-side "done"
+--    flag (intelligence_signals.status = 'actioned'), which mergeActions
+--    checks directly. The three CRM categories (dormant/meeting/new_client)
+--    have no equivalent flag on their underlying contact/deal record, so
+--    this column is the only place "the user marked this done" is recorded
+--    for those — a small array of stable item keys (see actionKey), scoped
+--    by keyContext so a contact that goes dormant, gets re-engaged, and
+--    later drifts dormant again is treated as a new occurrence rather than
+--    permanently suppressed by an old "mark done".
+ALTER TABLE public.intelligence_signals ADD COLUMN IF NOT EXISTS contact_candidates jsonb;
+ALTER TABLE public.intelligence_signals ADD COLUMN IF NOT EXISTS likely_roles jsonb;
+ALTER TABLE public.actions_cache ADD COLUMN IF NOT EXISTS dismissed_keys jsonb NOT NULL DEFAULT '[]'::jsonb;
