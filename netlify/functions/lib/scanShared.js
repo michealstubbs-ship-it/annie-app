@@ -389,11 +389,22 @@ export function titleBucketKey(titleKeywords) {
 // via enrichCompany() FIRST and pass its apolloOrgId through here. Without
 // one, there's no way to search people by company any more, so this
 // returns null rather than guessing.
-export async function verifyContact(apolloKey, company, titleKeywords, supabase, apolloOrgId) {
+// appointedName: for leadership_change signals the AI names the actual
+// person appointed (see appointedName in both scan prompts) — when given,
+// this looks that exact person up by name instead of a generic title
+// search, since the whole point of a leadership_change signal is reaching
+// the new decision-maker themselves, not just anyone holding a similar
+// title. Still only ever trusted once Apollo itself confirms the match
+// (see the header comment above), the AI's name is a lead to search for,
+// not a fact accepted on its own.
+export async function verifyContact(apolloKey, company, titleKeywords, supabase, apolloOrgId, appointedName) {
   if (!apolloKey || !company) return null
 
   const cacheKey = enrichmentCacheKey(company)
-  const titleKey = titleBucketKey(titleKeywords)
+  // Name-based lookups get their own cache bucket, separate from role-based
+  // ones, so a leadership_change re-run for the same company doesn't collide
+  // with (or get shadowed by) an unrelated title-bucket cache entry.
+  const titleKey = appointedName ? `name:${normalizeNameKey(appointedName)}` : titleBucketKey(titleKeywords)
 
   // 1. Check the shared cache first — company_contacts, one row per
   // (company, title bucket), NOT company_enrichment's older one-contact-
@@ -428,7 +439,9 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase,
   if (!apolloOrgId) return null
   if (!(await reserveApolloCredits(supabase))) return null
 
-  const result = await lookupContact(apolloKey, company, titleKeywords, supabase, apolloOrgId)
+  const result = appointedName
+    ? await lookupContactByName(apolloKey, company, appointedName, supabase)
+    : await lookupContact(apolloKey, company, titleKeywords, supabase, apolloOrgId)
 
   // 3. Write through regardless of hit or miss — a negative result is a
   // cache-worthy fact too, see the comment on step 1.
@@ -518,6 +531,69 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
   }
 }
 
+// Looks up a specific named person at a company, via Apollo's people/match
+// endpoint — used only for leadership_change signals, where the AI already
+// named the person appointed (appointedName) and the goal is reaching that
+// exact individual, not a generic title match. Falls back to null (never to
+// a generic title search within this same call) if Apollo can't confirm a
+// match on the name, since showing a different, unrelated person under "the
+// new leader" would be worse than showing no verified contact at all.
+async function lookupContactByName(apolloKey, company, fullName, supabase) {
+  try {
+    // people/match (People Enrichment) takes a name plus a company hint, not
+    // an organization_id — unlike mixed_people/api_search above, which is a
+    // search endpoint that filters by org id. organization_name is passed as
+    // the company hint here so Apollo can disambiguate a common name.
+    const resp = await fetchWithRetry('https://api.apollo.io/v1/people/match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
+      body: JSON.stringify({ name: fullName, organization_name: company }),
+    }, 12000, 1)
+    if (!resp.ok) {
+      console.error(`[scanShared] lookupContactByName non-ok response for "${fullName}" at "${company}": ${resp.status}`)
+      return null
+    }
+    const data = await resp.json()
+    const p = data?.person
+    // Same bar as the title-based lookup: a confirmed first AND last name,
+    // not a thin partial record.
+    if (!p || !p.first_name || !p.last_name) return null
+    const name = `${p.first_name} ${p.last_name}`.trim()
+
+    let email = null
+    if (p.id && (await reserveApolloCredits(supabase))) {
+      try {
+        const matchResp = await fetchWithRetry('https://api.apollo.io/v1/people/match', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
+          body: JSON.stringify({ id: p.id, reveal_personal_emails: true }),
+        }, 12000, 1)
+        if (matchResp.ok) {
+          const matchData = await matchResp.json()
+          const revealed = matchData?.person?.email
+          if (revealed && !revealed.includes('email_not_unlocked') && !revealed.includes('locked')) email = revealed
+        } else {
+          console.error(`[scanShared] email reveal non-ok response for "${company}"/"${name}": ${matchResp.status}`)
+        }
+      } catch (err) {
+        console.error(`[scanShared] email reveal failed for "${company}"/"${name}":`, err.message)
+      }
+    }
+
+    return { name, title: p.title || '', linkedin_url: p.linkedin_url || '', email }
+  } catch (err) {
+    console.error(`[scanShared] lookupContactByName failed for "${fullName}" at "${company}":`, err.message)
+    await reportServerError('scanShared:lookupContactByName', err, { company, fullName })
+    return null
+  }
+}
+
+// Same normalization idea as enrichmentCacheKey, for a person's name rather
+// than a company name — used to bucket the name-based contact cache key.
+function normalizeNameKey(name) {
+  return (name || '').trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
 // Normalizes a company name into the same lowercase cache key
 // apollo-enrich-companies.js already uses for the shared `company_enrichment`
 // table, so a company enriched once via LinkedIn import (by any customer)
@@ -525,6 +601,36 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
 // again anywhere else in the product.
 function enrichmentCacheKey(name) {
   return (name || '').trim().toLowerCase()
+}
+
+// Best-effort domain guess for a company Apollo didn't match, via
+// Clearbit's free, keyless autocomplete endpoint — the only remaining way
+// to still resolve a real logo for a company we otherwise know nothing
+// about. This is a visual guess only, never treated as confirmed company
+// data (Apollo stays the only source of truth for domain/industry/
+// apolloOrgId) — it exists purely so a signal card never has to fall back
+// to the plain initials placeholder.
+async function lookupDomainViaClearbit(company) {
+  try {
+    const resp = await fetchWithRetry(`https://autocomplete.clearbit.com/v1/companies/suggest?query=${encodeURIComponent(company)}`, {}, 5000, 1)
+    if (!resp.ok) return null
+    const data = await resp.json()
+    return data?.[0]?.domain || null
+  } catch (err) {
+    console.error(`[scanShared] Clearbit domain lookup failed for "${company}":`, err.message)
+    return null
+  }
+}
+
+// Resolves the logo to actually show: Apollo's own if it gave one, else a
+// domain-based logo built from whatever domain is available (Apollo's own
+// match, or the Clearbit guess above as a last resort). Kept as its own
+// step rather than folded silently into the org lookup above so it's clear
+// this is a display concern, not a data-matching one.
+async function resolveLogoUrl(company, domain, existingLogoUrl) {
+  if (existingLogoUrl) return existingLogoUrl
+  const resolvedDomain = domain || await lookupDomainViaClearbit(company)
+  return resolvedDomain ? `https://logo.clearbit.com/${resolvedDomain}` : null
 }
 
 export async function enrichCompany(apolloKey, company, supabase) {
@@ -549,56 +655,68 @@ export async function enrichCompany(apolloKey, company, supabase) {
       // through to a fresh lookup so it gets backfilled, rather than
       // returning apolloOrgId: null forever and silently breaking
       // verifyContact for every company enriched before today's fix.
+      //
+      // Always returns an object now, even for an unmatched company — a
+      // cached row still carries whatever best-effort logo_url was resolved
+      // below the first time this company was looked up, and "no company
+      // shown without a logo" has to hold on a cache hit too, not just a
+      // fresh lookup.
       if (cached && (!cached.matched || cached.apollo_org_id)) {
-        return cached.matched
-          ? { domain: cached.domain, industry: cached.industry, city: cached.city, state: cached.state, country: cached.country, logo_url: cached.logo_url, apolloOrgId: cached.apollo_org_id || null }
-          : null
+        return {
+          domain: cached.domain, industry: cached.industry, city: cached.city, state: cached.state,
+          country: cached.country, logo_url: cached.logo_url, apolloOrgId: cached.apollo_org_id || null,
+          matched: cached.matched,
+        }
       }
     } catch (err) {
       console.error(`[scanShared] company_enrichment cache lookup failed for "${company}":`, err.message)
     }
   }
 
-  // 2. Cache miss — only now does this spend anything.
-  if (!apolloKey) return null
-  if (!(await reserveApolloCredits(supabase))) return null
-
+  // 2. Cache miss — only now does this spend anything (the Apollo call;
+  // the logo fallback below never spends a credit, Clearbit is free).
   let result = null
-  try {
-    const resp = await fetchWithRetry('https://api.apollo.io/v1/mixed_companies/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
-      body: JSON.stringify({ q_organization_name: company, page: 1, per_page: 1 }),
-    })
-    if (!resp.ok) {
-      console.error(`[scanShared] enrichCompany non-ok response for "${company}": ${resp.status}`)
-      await reportServerError('scanShared:enrichCompany', new Error(`Apollo mixed_companies/search returned ${resp.status}`), { company })
-    } else {
-      const data = await resp.json()
-      const org = (data.organizations && data.organizations[0]) || (data.accounts && data.accounts[0])
-      if (org) {
-        result = {
-          domain: org.primary_domain || org.domain || null,
-          industry: org.industry || null,
-          city: org.city || null,
-          state: org.state || null,
-          country: org.country || null,
-          logo_url: org.logo_url || null,
-          // Needed by verifyContact — see that function's header. Captured
-          // here so the one companies/search credit this call already
-          // spends also resolves people search, instead of a second,
-          // separate lookup for the same company.
-          apolloOrgId: org.id || org.organization_id || null,
+  if (apolloKey && (await reserveApolloCredits(supabase))) {
+    try {
+      const resp = await fetchWithRetry('https://api.apollo.io/v1/mixed_companies/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
+        body: JSON.stringify({ q_organization_name: company, page: 1, per_page: 1 }),
+      })
+      if (!resp.ok) {
+        console.error(`[scanShared] enrichCompany non-ok response for "${company}": ${resp.status}`)
+        await reportServerError('scanShared:enrichCompany', new Error(`Apollo mixed_companies/search returned ${resp.status}`), { company })
+      } else {
+        const data = await resp.json()
+        const org = (data.organizations && data.organizations[0]) || (data.accounts && data.accounts[0])
+        if (org) {
+          result = {
+            domain: org.primary_domain || org.domain || null,
+            industry: org.industry || null,
+            city: org.city || null,
+            state: org.state || null,
+            country: org.country || null,
+            logo_url: org.logo_url || null,
+            // Needed by verifyContact — see that function's header. Captured
+            // here so the one companies/search credit this call already
+            // spends also resolves people search, instead of a second,
+            // separate lookup for the same company.
+            apolloOrgId: org.id || org.organization_id || null,
+          }
         }
       }
+    } catch (err) {
+      console.error(`[scanShared] enrichCompany failed for "${company}":`, err.message)
     }
-  } catch (err) {
-    console.error(`[scanShared] enrichCompany failed for "${company}":`, err.message)
   }
+
+  const logoUrl = await resolveLogoUrl(company, result?.domain, result?.logo_url)
 
   // 3. Write through to the cache regardless of hit or miss, matched or not
   // — an unmatched company also never costs a repeat credit, same reasoning
-  // apollo-enrich-companies.js already uses.
+  // apollo-enrich-companies.js already uses. logo_url is cached here too,
+  // whether it came from Apollo or the Clearbit fallback, so it's resolved
+  // at most once per company rather than re-guessed on every scan.
   if (supabase) {
     try {
       await supabase.from('company_enrichment').upsert({
@@ -609,7 +727,7 @@ export async function enrichCompany(apolloKey, company, supabase) {
         city: result?.city || null,
         state: result?.state || null,
         country: result?.country || null,
-        logo_url: result?.logo_url || null,
+        logo_url: logoUrl,
         apollo_org_id: result?.apolloOrgId || null,
         matched: !!result,
         enriched_at: new Date().toISOString(),
@@ -619,7 +737,23 @@ export async function enrichCompany(apolloKey, company, supabase) {
     }
   }
 
-  return result
+  // Always an object once a company name was given — never bare null just
+  // because Apollo didn't match anything, since logoUrl (the Clearbit
+  // fallback) can still be real even without an Apollo match. Every
+  // existing caller already reads fields off this via `?.`, so a
+  // no-Apollo-match company with a fallback logo behaves exactly like an
+  // unmatched company always has (apolloOrgId: null, etc.) except it now
+  // also carries a logo.
+  return {
+    domain: result?.domain || null,
+    industry: result?.industry || null,
+    city: result?.city || null,
+    state: result?.state || null,
+    country: result?.country || null,
+    logo_url: logoUrl,
+    apolloOrgId: result?.apolloOrgId || null,
+    matched: !!result,
+  }
 }
 
 // Companies House is the UK's own public register, a director appointment
@@ -687,6 +821,35 @@ function stripAiArtifacts(text) {
     .trim()
 }
 
+// Cleans and bounds the AI's candidateProfile object before it's stored —
+// the same "what to look for" structure has to render identically on every
+// signal card (see CandidateProfileBox.jsx), so this guards against the AI
+// returning the wrong shape, non-numeric years, or an unbounded company
+// list, rather than trusting raw model JSON straight into a jsonb column.
+function sanitizeCompanyList(list, max) {
+  if (!Array.isArray(list)) return []
+  return list
+    .map(c => stripAiArtifacts(typeof c === 'string' ? c : ''))
+    .filter(Boolean)
+    .slice(0, max)
+}
+
+function sanitizeCandidateProfile(profile) {
+  if (!profile || typeof profile !== 'object') return null
+  const yearsMin = Number.isFinite(profile.yearsMin) ? Math.max(0, Math.round(profile.yearsMin)) : null
+  const yearsMax = Number.isFinite(profile.yearsMax) ? Math.max(0, Math.round(profile.yearsMax)) : null
+  const functionalExperience = stripAiArtifacts(profile.functionalExperience) || ''
+  const directCompetitors = sanitizeCompanyList(profile.directCompetitors, 3)
+  const similarIndustry = sanitizeCompanyList(profile.similarIndustry, 3)
+  const widerScope = sanitizeCompanyList(profile.widerScope, 2)
+
+  const isEmpty = yearsMin === null && yearsMax === null && !functionalExperience &&
+    !directCompetitors.length && !similarIndustry.length && !widerScope.length
+  if (isEmpty) return null
+
+  return { yearsMin, yearsMax, functionalExperience, directCompetitors, similarIndustry, widerScope }
+}
+
 // Builds one intelligence_signals row from a raw scan entry (an AI-written
 // signal, or an Adzuna-sourced live_job entry), running every enrichment
 // call the row depends on: company info + Apollo org id (enrichCompany), a
@@ -717,7 +880,7 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
     s.signalType === 'leadership_change' ? verifyLeadershipChange(companiesHouseKey, s.company) : Promise.resolve(null),
     verifySourceUrl(s.sourceUrl),
   ])
-  const contact = await verifyContact(apolloKey, s.company, s.titleKeywords, supabase, companyInfo?.apolloOrgId)
+  const contact = await verifyContact(apolloKey, s.company, s.titleKeywords, supabase, companyInfo?.apolloOrgId, s.signalType === 'leadership_change' ? s.appointedName : null)
 
   const isLiveJob = s.entryType === 'live_job'
 
@@ -741,6 +904,7 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
     intro_message: stripAiArtifacts(s.introMessage) || '',
     candidate_angle: stripAiArtifacts(s.candidateAngle) || '',
     bench_strength_angle: stripAiArtifacts(s.benchStrengthAngle) || '',
+    candidate_profile: sanitizeCandidateProfile(s.candidateProfile),
     contact_name: contact?.name || null,
     contact_title: contact?.title || null,
     contact_linkedin_url: contact?.linkedin_url || null,

@@ -6,6 +6,8 @@ import { listCandidatesForMatching } from '../lib/data/candidates'
 import { listContactsForMatching, createContact } from '../lib/data/contacts'
 import InfoTip from './InfoTip'
 import ApproachPicker from './ApproachPicker'
+import CompanyLogo from './CompanyLogo'
+import CandidateProfileBox from './CandidateProfileBox'
 import { matchCandidatesToSignal } from '../lib/candidateMatch'
 import { findWarmContacts } from '../lib/companyMatch'
 import { logSignalOutcome } from '../lib/signalOutcomes'
@@ -26,17 +28,6 @@ function timeAgo(dateStr) {
   if (days === 1) return 'yesterday'
   if (days < 14) return `${days} days ago`
   return new Date(dateStr).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
-}
-
-function initials(name) {
-  return (name || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase()
-}
-
-function logoColor(name) {
-  const colors = ['#0d1b3e', '#b45309', '#1d4ed8', '#15803d', '#a21caf', '#6d28d9']
-  let hash = 0
-  for (const ch of (name || '')) hash = (hash * 31 + ch.charCodeAt(0)) % colors.length
-  return colors[Math.abs(hash) % colors.length]
 }
 
 // The "recommended approach" options for one signal, in priority order —
@@ -261,13 +252,7 @@ export default function IntelligenceFeed() {
               >
                 {unread && <div className="absolute left-0 top-3 bottom-3 w-[3px] bg-gold rounded-full" />}
                 <div className="flex items-center gap-2.5 mb-2.5">
-                  {s.company_logo_url ? (
-                    <img src={s.company_logo_url} alt="" className="w-8 h-8 rounded-lg object-cover flex-shrink-0" onError={e => { e.target.style.display = 'none' }} />
-                  ) : (
-                    <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white text-[11px] font-bold flex-shrink-0" style={{ backgroundColor: logoColor(s.company_name) }}>
-                      {initials(s.company_name)}
-                    </div>
-                  )}
+                  <CompanyLogo name={s.company_name} logoUrl={s.company_logo_url} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-navy text-sm font-bold">{s.company_name}</span>
@@ -300,16 +285,26 @@ export default function IntelligenceFeed() {
                   </div>
                 )}
 
-                {s.contact_verified && (
-                  <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 mb-2.5">
-                    <span className="text-[9px] font-bold text-green-700 uppercase tracking-wider">Verified via Apollo</span>
-                    <p className="text-xs font-semibold text-navy mt-0.5">{s.contact_name}{s.contact_title ? `, ${s.contact_title}` : ''}</p>
-                    <div className="flex items-center gap-2.5 mt-0.5 flex-wrap" onClick={e => e.stopPropagation()}>
-                      {s.contact_email && <a href={`mailto:${s.contact_email}`} className="text-[11px] text-blue-600 hover:underline">{s.contact_email}</a>}
-                      {s.contact_linkedin_url && <a href={s.contact_linkedin_url} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline">View LinkedIn profile</a>}
-                    </div>
+                {s.who_to_approach && (
+                  <div className="mb-2.5">
+                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Who to approach, and why</div>
+                    {s.contact_verified ? (
+                      <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                        <span className="text-[9px] font-bold text-green-700 uppercase tracking-wider">Verified via Apollo</span>
+                        <p className="text-xs font-semibold text-navy mt-0.5">{s.contact_name}{s.contact_title ? `, ${s.contact_title}` : ''}</p>
+                        <div className="flex items-center gap-2.5 mt-0.5 flex-wrap" onClick={e => e.stopPropagation()}>
+                          {s.contact_email && <a href={`mailto:${s.contact_email}`} className="text-[11px] text-blue-600 hover:underline">{s.contact_email}</a>}
+                          {s.contact_linkedin_url && <a href={s.contact_linkedin_url} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline">View LinkedIn profile</a>}
+                        </div>
+                        <p className="text-xs text-gray-600 mt-1.5">{s.who_to_approach}</p>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-gray-600">{s.who_to_approach} <span className="text-gray-400">(no verified contact found yet, approach by role)</span></p>
+                    )}
                   </div>
                 )}
+
+                <CandidateProfileBox profile={s.candidate_profile} />
 
                 <ApproachPicker
                   approaches={buildApproaches(s, matches)}

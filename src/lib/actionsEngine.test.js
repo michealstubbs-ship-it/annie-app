@@ -58,6 +58,18 @@ describe('buildRelationshipPool', () => {
     const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'actioned', found_at: daysAgoIso(1) }]
     expect(buildRelationshipPool(signals, contacts)).toEqual([])
   })
+
+  it('gives a leadership_change signal a wider freshness window (60 days) than the ordinary 14-day one', () => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'leadership_change', found_at: daysAgoIso(30) }]
+    const pool = buildRelationshipPool(signals, contacts)
+    expect(pool).toHaveLength(1)
+    expect(pool[0].urgency).toBe(2)
+  })
+
+  it('still excludes a leadership_change signal well past even its own wider window', () => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'leadership_change', found_at: daysAgoIso(90) }]
+    expect(buildRelationshipPool(signals, contacts)).toEqual([])
+  })
 })
 
 describe('buildSourcedPool — the M2 "never ages out" fix', () => {
@@ -108,6 +120,21 @@ describe('buildSourcedPool — the M2 "never ages out" fix', () => {
     const base = { id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'hiring_activity', contact_verified: false }
     const [older] = buildSourcedPool([{ ...base, found_at: daysAgoIso(6) }], [])
     expect(older.urgency).toBe(1)
+  })
+
+  it('a leadership_change entry scores higher than an otherwise-identical generic signal — a new leader is a high-value opportunity', () => {
+    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(1), contact_verified: false }
+    const [generic] = buildSourcedPool([{ ...base, signal_type: 'funding' }], [])
+    const [leadership] = buildSourcedPool([{ ...base, signal_type: 'leadership_change' }], [])
+    expect(leadership.score).toBeGreaterThan(generic.score)
+  })
+
+  it('a leadership_change entry stays urgency 2 well past the 3-7 day window ordinary signals get, up to 60 days', () => {
+    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'leadership_change', contact_verified: false }
+    const [fresh] = buildSourcedPool([{ ...base, found_at: daysAgoIso(1) }], [])
+    const [older] = buildSourcedPool([{ ...base, found_at: daysAgoIso(45) }], [])
+    expect(fresh.urgency).toBe(2)
+    expect(older.urgency).toBe(2)
   })
 })
 

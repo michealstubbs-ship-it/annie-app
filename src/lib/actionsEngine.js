@@ -131,14 +131,18 @@ export function buildRelationshipPool(intelligenceSignals, contacts) {
       if (!linkedContact) return null // not an existing contact, belongs in sourced
 
       const daysFound = daysSince(s.found_at) ?? 999
-      if (daysFound > SIGNAL_FRESH_DAYS) return null
+      // A leadership-change signal about a company Annie already knows is
+      // worth a longer freshness window than the ordinary 14 days — see
+      // buildSourcedPool's comment on the same signal type for why.
+      const isLeadershipChange = s.signal_type === 'leadership_change'
+      if (daysFound > (isLeadershipChange ? 60 : SIGNAL_FRESH_DAYS)) return null
 
-      const score = Math.min(100, decayFall(daysFound, 5, 60) + 25)
+      const score = Math.min(100, decayFall(daysFound, 5, 60) + 25 + (isLeadershipChange ? 15 : 0))
 
       return {
         category: 'relationship',
         score,
-        urgency: daysFound <= 3 ? 1 : 0, // still public, someone else could see it too
+        urgency: isLeadershipChange && daysFound <= 60 ? 2 : daysFound <= 3 ? 1 : 0, // still public, someone else could see it too
         signal: s,
         contact: linkedContact,
         signals: {
@@ -192,7 +196,11 @@ export function buildSourcedPool(intelligenceSignals, contacts) {
     .filter(s => !knownCompanies.has(norm(s.company_name)))
     .map(s => {
       const daysFound = daysSince(s.found_at) ?? 999
-      if (daysFound > SOURCED_MAX_AGE_DAYS) return null // see SOURCED_MAX_AGE_DAYS — this is the actual fix for M2
+      // Leadership-change gets a wider cutoff than the ordinary
+      // SOURCED_MAX_AGE_DAYS (21 days) — see the urgency comment below for
+      // why a new leader stays a live opportunity for months, not weeks.
+      const maxAgeDays = s.signal_type === 'leadership_change' ? 60 : SOURCED_MAX_AGE_DAYS
+      if (daysFound > maxAgeDays) return null // see SOURCED_MAX_AGE_DAYS — this is the actual fix for M2
 
       // live_job: a real, specific open role Annie found and verified, not a
       // narrative "this company is hiring" mention — the most actionable lead
@@ -200,9 +208,28 @@ export function buildSourcedPool(intelligenceSignals, contacts) {
       // "still counts as urgent" window than an ordinary racy signal type (an
       // actual open req stays live longer than a news mention does).
       const isLiveJob = s.signal_type === 'live_job'
-      const score = Math.min(100, decayFall(daysFound, 3, 55) + 25 + (s.contact_verified ? 15 : 0) + (isLiveJob ? 10 : 0))
+      // A newly appointed leader is one of the highest-value signals this
+      // pool surfaces — someone new in a role is, almost by definition,
+      // about to evaluate their team and often bring in their own people —
+      // but it was scoring and ranking like an ordinary low-urgency signal
+      // (racy: false in signalTypes.js, correctly, since it isn't a
+      // fast-closing news event the way a funding round is), so it was
+      // getting buried at the bottom of an otherwise uncurated list next to
+      // dozens of lower-value items. Bumped here on its own terms rather
+      // than folded into RACY_SIGNAL_TYPES, since "time-sensitive because
+      // someone might scoop the news" and "time-sensitive because a new
+      // decision-maker is actively deciding who's on their team" are
+      // different reasons that happen to both deserve urgency=2.
+      const isLeadershipChange = s.signal_type === 'leadership_change'
+      const score = Math.min(100, decayFall(daysFound, 3, 55) + 25 + (s.contact_verified ? 15 : 0) + (isLiveJob ? 10 : 0) + (isLeadershipChange ? 15 : 0))
       const isRacy = RACY_SIGNAL_TYPES.includes(s.signal_type)
-      const urgency = isLiveJob && daysFound <= 7 ? 2 : isRacy && daysFound <= 3 ? 2 : daysFound <= 7 ? 1 : 0
+      // A new leader typically spends their first couple of months, not
+      // just days, assessing and rebuilding their team, so this window is
+      // deliberately wider than the 3-7 day windows above.
+      const urgency = isLiveJob && daysFound <= 7 ? 2
+        : isRacy && daysFound <= 3 ? 2
+        : isLeadershipChange && daysFound <= 60 ? 2
+        : daysFound <= 7 ? 1 : 0
 
       return {
         category: 'sourced',

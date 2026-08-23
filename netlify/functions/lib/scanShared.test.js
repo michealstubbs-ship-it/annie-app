@@ -9,6 +9,7 @@ import {
   mapLocationsToAdzunaCountries, SIGNAL_TYPES, reserveApolloCredits,
   normalizeCompanyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
+  enrichCompany,
 } from './scanShared.js'
 
 // Full behavioural coverage for extractJson now lives in
@@ -562,5 +563,188 @@ describe('titleBucketKey', () => {
 
   it('treats genuinely different roles as different buckets', () => {
     expect(titleBucketKey(['CFO'])).not.toBe(titleBucketKey(['CTO', 'Head of Engineering']))
+  })
+})
+
+// "There should be no company mentioned on Annie without their logo" — the
+// fix is enrichCompany always resolving a logo_url one way or another
+// (Apollo's own, a Clearbit domain-based guess, or a Clearbit name-based
+// guess when Apollo doesn't even match the company), and CompanyLogo.jsx as
+// the final client-side fallback if even that fails to load. These pin the
+// resolution order on the backend side.
+describe('enrichCompany — logo resolution fallback chain', () => {
+  it("prefers Apollo's own logo_url when Apollo provides one", async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) {
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com', logo_url: 'https://apollo.example/acme-logo.png' }] }) }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    const result = await enrichCompany('apollo-key', 'Acme Ltd', supabase)
+    expect(result.logo_url).toBe('https://apollo.example/acme-logo.png')
+    vi.unstubAllGlobals()
+  })
+
+  it('builds a domain-based Clearbit logo when Apollo matched the company but gave no logo of its own', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) {
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    const result = await enrichCompany('apollo-key', 'Acme Ltd', supabase)
+    expect(result.logo_url).toBe('https://logo.clearbit.com/acme.com')
+    vi.unstubAllGlobals()
+  })
+
+  it("falls back to Clearbit's name-based autocomplete for a domain guess when Apollo doesn't match the company at all", async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [] }) }
+      if (url.includes('autocomplete.clearbit.com')) return { ok: true, json: async () => ([{ domain: 'zenith.io' }]) }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    const result = await enrichCompany('apollo-key', 'Zenith Group', supabase)
+    expect(result.matched).toBe(false)
+    expect(result.logo_url).toBe('https://logo.clearbit.com/zenith.io')
+    vi.unstubAllGlobals()
+  })
+
+  it('returns a cached row\'s previously-resolved logo_url, even for an unmatched company, without any new network call', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const supabase = makeTableAwareSupabase()
+    await supabase.from('company_enrichment').upsert({
+      company_name_key: 'zenith group', company_name: 'Zenith Group',
+      domain: null, matched: false, logo_url: 'https://logo.clearbit.com/zenith.io', apollo_org_id: null,
+    })
+    const result = await enrichCompany('apollo-key', 'Zenith Group', supabase)
+    expect(result.logo_url).toBe('https://logo.clearbit.com/zenith.io')
+    expect(fetchSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+})
+
+// "Any prompt now with a hiring manager, should be addressed directly to
+// them" — for leadership_change signals the AI names the actual appointee
+// (appointedName), and this looks that exact person up by name rather than
+// a generic title search, so the recruiter can be pointed at reaching out
+// to them specifically.
+describe('verifyContact — leadership_change name-based lookup', () => {
+  it('looks up a named appointee via people/match, passing the name and company rather than a title search', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      if (url.includes('people/match')) {
+        const body = JSON.parse(opts.body)
+        if (body.id) return { ok: true, json: async () => ({ person: { email: 'sarah@dewa.gov.ae' } }) }
+        expect(body.name).toBe('Sarah Al Mazrouei')
+        expect(body.organization_name).toBe('DEWA')
+        return { ok: true, json: async () => ({ person: { first_name: 'Sarah', last_name: 'Al Mazrouei', title: 'CEO', id: 'p1' } }) }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    const result = await verifyContact('apollo-key', 'DEWA', [], supabase, 'org_1', 'Sarah Al Mazrouei')
+    expect(result).toEqual({ name: 'Sarah Al Mazrouei', title: 'CEO', linkedin_url: '', email: 'sarah@dewa.gov.ae' })
+    vi.unstubAllGlobals()
+  })
+
+  it('uses a cache bucket separate from an ordinary title-based lookup for the same company, so neither shadows the other', async () => {
+    const supabase = makeTableAwareSupabase()
+    let titleSearchCalls = 0
+    let nameMatchCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      if (url.includes('mixed_people/api_search')) { titleSearchCalls++; return { ok: true, json: async () => ({ people: [] }) } }
+      if (url.includes('people/match')) {
+        const body = JSON.parse(opts.body)
+        if (body.name) nameMatchCalls++
+        return { ok: true, json: async () => ({ person: {} }) }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    await verifyContact('apollo-key', 'DEWA', ['CEO'], supabase, 'org_1')
+    await verifyContact('apollo-key', 'DEWA', ['CEO'], supabase, 'org_1', 'Sarah Al Mazrouei')
+    expect(titleSearchCalls).toBe(1)
+    expect(nameMatchCalls).toBe(1)
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('buildEnrichedSignalRow — candidateProfile and leadership_change contact resolution', () => {
+  it('stores a sanitized candidate_profile, bounding each company list to its max length', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => '' }))
+    const supabase = makeTableAwareSupabase()
+    const row = await buildEnrichedSignalRow(
+      {
+        entryType: 'signal', signalType: 'funding', company: 'Acme Ltd', headline: 'Raises Series B',
+        candidateProfile: {
+          yearsMin: 5, yearsMax: 8, functionalExperience: 'Project finance',
+          directCompetitors: ['Rival Co', 'Second Co', 'Third Co', 'Fourth Co'],
+          similarIndustry: ['Peer Co'],
+          widerScope: ['Big Consulting', 'Second Consulting', 'Third Consulting'],
+        },
+      },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+    )
+    expect(row.candidate_profile).toEqual({
+      yearsMin: 5, yearsMax: 8, functionalExperience: 'Project finance',
+      directCompetitors: ['Rival Co', 'Second Co', 'Third Co'],
+      similarIndustry: ['Peer Co'],
+      widerScope: ['Big Consulting', 'Second Consulting'],
+    })
+    vi.unstubAllGlobals()
+  })
+
+  it('stores null when the AI leaves candidateProfile blank or omits it entirely', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => '' }))
+    const supabase = makeTableAwareSupabase()
+    const row = await buildEnrichedSignalRow(
+      { entryType: 'signal', signalType: 'funding', company: 'Acme Ltd', headline: 'Raises Series B' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+    )
+    expect(row.candidate_profile).toBeNull()
+    vi.unstubAllGlobals()
+  })
+
+  it('only passes appointedName through to contact resolution for leadership_change signals, never for other signal types', async () => {
+    const supabase = makeTableAwareSupabase()
+    let nameMatchCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+      if (url.includes('mixed_people/api_search')) return { ok: true, json: async () => ({ people: [] }) }
+      if (url.includes('people/match')) {
+        const body = JSON.parse(opts.body)
+        if (body.name) nameMatchCalls++
+        return { ok: true, json: async () => ({ person: {} }) }
+      }
+      return { ok: true, text: async () => '' }
+    }))
+    await buildEnrichedSignalRow(
+      { entryType: 'signal', signalType: 'funding', company: 'Acme Ltd', headline: 'Raises Series B', appointedName: 'Someone Irrelevant', titleKeywords: ['CFO'] },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+    )
+    expect(nameMatchCalls).toBe(0)
+    vi.unstubAllGlobals()
+  })
+
+  it("resolves a leadership_change signal's contact by the appointed name", async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'dewa.gov.ae' }] }) }
+      if (url.includes('people/match')) {
+        const body = JSON.parse(opts.body)
+        if (body.id) return { ok: true, json: async () => ({ person: {} }) }
+        return { ok: true, json: async () => ({ person: { first_name: 'Sarah', last_name: 'Al Mazrouei', title: 'CEO', id: 'p1' } }) }
+      }
+      return { ok: true, text: async () => '' }
+    }))
+    const row = await buildEnrichedSignalRow(
+      { entryType: 'signal', signalType: 'leadership_change', company: 'DEWA', headline: 'Appoints new CEO', appointedName: 'Sarah Al Mazrouei' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+    )
+    expect(row.contact_verified).toBe(true)
+    expect(row.contact_name).toBe('Sarah Al Mazrouei')
+    vi.unstubAllGlobals()
   })
 })

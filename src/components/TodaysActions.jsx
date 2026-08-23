@@ -7,6 +7,8 @@ import { callChat } from '../lib/callChat'
 import { extractJson } from '../lib/jsonExtract'
 import { buildOutreachMessage, firstNameOf } from '../lib/outreachMessage'
 import ApproachPicker from './ApproachPicker'
+import CompanyLogo from './CompanyLogo'
+import CandidateProfileBox from './CandidateProfileBox'
 
 // Same two "recommended approach" angles as IntelligenceFeed's version of
 // this — see buildApproaches there and ApproachPicker's own header for why
@@ -141,6 +143,7 @@ export default function TodaysActions() {
             introMessage: s.intro_message,
             candidateAngle: s.candidate_angle,
             benchStrengthAngle: s.bench_strength_angle,
+            candidateProfile: s.candidate_profile,
             verifiedContact: s.contact_verified ? { name: s.contact_name, title: s.contact_title, linkedin_url: s.contact_linkedin_url, email: s.contact_email } : null,
             signalId: s.id,
           }
@@ -277,6 +280,7 @@ export default function TodaysActions() {
                   <div className="w-7 h-7 rounded-full bg-navy text-gold flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5">
                     {i + 1}
                   </div>
+                  {action.company && <CompanyLogo name={action.company} logoUrl={action.companyLogo} size="w-7 h-7 mt-0.5" textSize="text-[10px]" />}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-bold text-navy text-sm">{action.headline}</h3>
@@ -320,6 +324,7 @@ export default function TodaysActions() {
                             ) : (
                               <p className="text-xs text-gray-600 mb-3">{action.whoToApproach} <span className="text-gray-400">(no verified contact found yet, approach by role)</span></p>
                             )}
+                            <CandidateProfileBox profile={action.candidateProfile} />
                             <ApproachPicker
                               approaches={buildApproaches(action)}
                               selectedKey={approachChoice[i]}
