@@ -83,7 +83,7 @@ export default function AdminOverview({ onOpenErrors }) {
     <div className="space-y-4">
       {accounts.activeAccounts === 0 && (
         <div className="card p-3.5 border-l-4 border-gold bg-yellow-50/40 text-xs text-gray-600">
-          No paying accounts yet — every number below will read honestly low until real customers sign up. This page is built and ready for when they do.
+          No paying accounts yet, so every number below will read honestly low until real customers sign up. This page is built and ready for when they do.
         </div>
       )}
 
@@ -114,7 +114,7 @@ export default function AdminOverview({ onOpenErrors }) {
             {signupTrend.map((d) => (
               <div
                 key={d.day}
-                title={`${d.signups} signup${Number(d.signups) === 1 ? '' : 's'} — ${d.day}`}
+                title={`${d.signups} signup${Number(d.signups) === 1 ? '' : 's'} on ${d.day}`}
                 className="flex-1 bg-series-1 rounded-t hover:opacity-75 transition-opacity"
                 style={{ height: `${Math.max((Number(d.signups) / maxSignups) * 100, 3)}%` }}
               />
@@ -147,14 +147,14 @@ export default function AdminOverview({ onOpenErrors }) {
               )
             })}
           </div>
-          <p className="text-[10.5px] text-gray-400 mt-3">Team's share is approximate — MRR there depends on seats per account, not shown per-tier here.</p>
+          <p className="text-[10.5px] text-gray-400 mt-3">Team's share is approximate: MRR there depends on seats per account, not shown per-tier here.</p>
         </div>
       </div>
 
       {/* funnel */}
       <div className="card p-4">
         <h2 className="text-sm font-bold text-navy">Signup funnel</h2>
-        <p className="text-xs text-gray-400 mb-2">Where new firms drop off — more useful than MRR alone this early</p>
+        <p className="text-xs text-gray-400 mb-2">Where new firms drop off, more useful than MRR alone this early</p>
         {funnel ? (
           <div>
             <FunnelStage name="Signed up" count={funnel.total_signups} total={funnelTotal} />
@@ -163,7 +163,7 @@ export default function AdminOverview({ onOpenErrors }) {
             <FunnelStage name="First scan run" count={funnel.first_scan_run} total={funnelTotal} />
             <FunnelStage name="First action taken" count={funnel.first_action_taken} total={funnelTotal} />
             <FunnelStage name="Live subscription" count={funnel.converted_to_paid} total={funnelTotal} isLast />
-            <p className="text-[10.5px] text-gray-400 mt-1">"Live subscription" counts active + trialing together — it's whether they currently have a subscription relationship with Annie, not strictly "paying today".</p>
+            <p className="text-[10.5px] text-gray-400 mt-1">"Live subscription" counts active + trialing together. It's whether they currently have a subscription relationship with Annie, not strictly "paying today".</p>
           </div>
         ) : <p className="text-sm text-gray-400">No signups yet.</p>}
       </div>

@@ -66,7 +66,7 @@ export default class ErrorBoundary extends React.Component {
           <div className="card p-8 max-w-sm text-center">
             <h1 className="text-xl font-bold text-navy mb-2">Something went wrong</h1>
             <p className="text-gray-500 text-sm mb-5">
-              Annie hit an unexpected error. This has been logged — reloading the page usually fixes it.
+              Annie hit an unexpected error. This has been logged, and reloading the page usually fixes it.
             </p>
             <button
               onClick={() => window.location.reload()}

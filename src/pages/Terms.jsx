@@ -25,7 +25,7 @@ export default function Terms() {
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">2. Your account</h2>
-              <p>You're responsible for the accuracy of information you provide and for keeping your login credentials secure. You must be authorized to act on behalf of the firm you sign up under. One account is for one firm's use — don't share login credentials across separate organizations.</p>
+              <p>You're responsible for the accuracy of information you provide and for keeping your login credentials secure. You must be authorized to act on behalf of the firm you sign up under. One account is for one firm's use, so don't share login credentials across separate organizations.</p>
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">3. AI-generated content</h2>
@@ -41,7 +41,7 @@ export default function Terms() {
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">6. Trials, plans, and billing</h2>
-              <p>Where a free trial is offered, its length and what happens afterward will be stated clearly at signup. We'll tell you before any charge is made — nothing is billed automatically without your explicit setup of a paid plan.</p>
+              <p>Where a free trial is offered, its length and what happens afterward will be stated clearly at signup. We'll tell you before any charge is made. Nothing is billed automatically without your explicit setup of a paid plan.</p>
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">7. Changes and termination</h2>
@@ -49,7 +49,7 @@ export default function Terms() {
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">8. Liability</h2>
-              <p>Annie is provided "as is." Business decisions made from Annie's research are yours to make and verify — we're not liable for outreach sent, deals pursued, or opportunities missed based on information Annie surfaced.</p>
+              <p>Annie is provided "as is." Business decisions made from Annie's research are yours to make and verify, and we're not liable for outreach sent, deals pursued, or opportunities missed based on information Annie surfaced.</p>
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">9. Eligibility</h2>

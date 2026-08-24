@@ -105,7 +105,7 @@ export default function Billing() {
     try {
       const result = await authedPost('/api/team-invite', { email: inviteEmail.trim() })
       setInviteEmail('')
-      setTeamNotice(result.status === 'added' ? 'Added to your team — they have access now.' : 'Invite sent — they\'ll get an email to set up their account.')
+      setTeamNotice(result.status === 'added' ? 'Added to your team, they have access now.' : 'Invite sent, they\'ll get an email to set up their account.')
       await loadTeam()
     } catch (err) {
       setTeamError(err.message || 'Could not send that invite.')
@@ -181,12 +181,12 @@ export default function Billing() {
 
       {checkoutStatus === 'success' && !isActive && (
         <div className="bg-green-50 border border-green-200 text-green-700 rounded-lg px-4 py-3 text-sm mb-6">
-          Payment received — your plan will show as active here in a moment. Refresh if it doesn't update shortly.
+          Payment received. Your plan will show as active here in a moment. Refresh if it doesn't update shortly.
         </div>
       )}
       {checkoutStatus === 'cancelled' && (
         <div className="bg-gray-50 border border-gray-200 text-gray-600 rounded-lg px-4 py-3 text-sm mb-6">
-          Checkout was cancelled — no charge was made.
+          Checkout was cancelled. No charge was made.
         </div>
       )}
       <ErrorBanner>{error}</ErrorBanner>
@@ -211,7 +211,7 @@ export default function Billing() {
           <button onClick={manageBilling} disabled={openingPortal} className="btn-primary">
             {openingPortal ? 'Opening...' : 'Manage billing'}
           </button>
-          <p className="text-xs text-gray-400 mt-3">Update your card, change plans, view invoices, or cancel — all handled securely by Stripe.</p>
+          <p className="text-xs text-gray-400 mt-3">Update your card, change plans, view invoices, or cancel, all handled securely by Stripe.</p>
         </div>
       ) : null}
 
@@ -219,7 +219,7 @@ export default function Billing() {
         <div className="card p-6 mt-5">
           <h2 className="text-lg font-bold text-navy mb-1">Team members</h2>
           <p className="text-sm text-gray-500 mb-4">
-            Everyone on your team shares one CRM — the same contacts, jobs, deals, candidates, and meetings, kept in sync for the whole desk.
+            Everyone on your team shares one CRM: the same contacts, jobs, deals, candidates, and meetings, kept in sync for the whole desk.
             Each person's Intelligence Feed and Today's Actions stay tuned to their own market, since recruiters on the same team can be working entirely different sectors.
             {subscription.seats > 0 && <> Your plan includes {subscription.seats} seats.</>}
           </p>

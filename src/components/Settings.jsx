@@ -242,7 +242,7 @@ Only return the style profile text, nothing else.`
             <div><span className="font-semibold text-gray-600">Markets:</span> <span className="text-gray-700">{onboarding.locations?.join(', ') || 'Not set'}</span></div>
             <div><span className="font-semibold text-gray-600">Tone:</span> <span className="text-gray-700 capitalize">{onboarding.tone || 'Professional'}</span></div>
           </div>
-          <p className="text-xs text-gray-400 mt-4">To change your sectors, functions, or markets, contact support — this isn't self-serve editable yet.</p>
+          <p className="text-xs text-gray-400 mt-4">To change your sectors, functions, or markets, contact support. This isn't self-serve editable yet.</p>
 
           <div className="border-t border-gray-100 mt-5 pt-5">
             <h3 className="text-sm font-bold text-navy mb-1">Research scan</h3>
@@ -260,11 +260,11 @@ Only return the style profile text, nothing else.`
 
             {scanState === 'done' && scanResult && (
               <p className="text-sm mt-3">
-                {scanResult.reason === 'ok' && `Found ${scanResult.signalsFound} new signal${scanResult.signalsFound === 1 ? '' : 's'} — check your Intelligence Feed.`}
-                {scanResult.reason === 'no_results' && "Annie searched your sectors and markets thoroughly but didn't find anything strong enough to flag right now. Worth trying again later — news cycles shift."}
+                {scanResult.reason === 'ok' && `Found ${scanResult.signalsFound} new signal${scanResult.signalsFound === 1 ? '' : 's'}, check your Intelligence Feed.`}
+                {scanResult.reason === 'no_results' && "Annie searched your sectors and markets thoroughly but didn't find anything strong enough to flag right now. Worth trying again later, news cycles shift."}
                 {scanResult.reason === 'cooldown' && `Annie already ran a scan for you recently. You can run another after ${scanResult.retryAfter ? new Date(scanResult.retryAfter).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : 'a short wait'}.`}
-                {scanResult.reason === 'error' && "Annie hit an error reaching her research tools. This has been logged — if it keeps happening, let support know."}
-                {scanResult.reason === 'still_running' && "Still researching — this can take a few minutes for a broad market. Check your Overview or Intelligence Feed shortly; no need to keep this page open."}
+                {scanResult.reason === 'error' && "Annie hit an error reaching her research tools. This has been logged, and if it keeps happening, let support know."}
+                {scanResult.reason === 'still_running' && "Still researching. This can take a few minutes for a broad market. Check your Overview or Intelligence Feed shortly; no need to keep this page open."}
                 {!['ok', 'no_results', 'cooldown', 'error', 'still_running'].includes(scanResult.reason) && "Scan finished. Check your Intelligence Feed for results."}
               </p>
             )}
@@ -312,7 +312,7 @@ Only return the style profile text, nothing else.`
         onClose={() => setConfirmDelete(false)}
         onConfirm={() => fileAccountRequest('delete')}
         title="Request account deletion?"
-        message="This files a request with our team to delete your account and associated data. It doesn't happen instantly — we'll follow up before anything is removed."
+        message="This files a request with our team to delete your account and associated data. It doesn't happen instantly, and we'll follow up before anything is removed."
         confirmLabel="Request deletion"
       />
     </div>

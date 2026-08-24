@@ -19,11 +19,11 @@ export default function Privacy() {
           <div className="space-y-5 text-sm text-gray-700 leading-relaxed">
             <section>
               <h2 className="font-bold text-navy mb-1">What we collect</h2>
-              <p>Account information you provide (name, firm name, email). Contacts and companies you import or add, including any you import from LinkedIn. Business signals Annie's research surfaces about companies and contacts in your target sectors — company names, public news, job postings, and publicly available contact details (name, title, LinkedIn URL) for people at those companies. Basic diagnostic data when something goes wrong (error messages, the page it happened on) so we can fix it.</p>
+              <p>Account information you provide (name, firm name, email). Contacts and companies you import or add, including any you import from LinkedIn. Business signals Annie's research surfaces about companies and contacts in your target sectors: company names, public news, job postings, and publicly available contact details (name, title, LinkedIn URL) for people at those companies. Basic diagnostic data when something goes wrong (error messages, the page it happened on) so we can fix it.</p>
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">Where contact data comes from</h2>
-              <p>Some of the people in Annie's research (contacts at companies it surfaces as opportunities) have not directly given Annie their information — it comes from public sources (company websites, LinkedIn, news coverage, public job postings) or from data you import yourself. We process this on the basis of legitimate business interest — identifying genuine business-development opportunities for recruitment purposes — and only what's reasonably necessary for that (typically name, job title, and a public professional profile URL, never anything sensitive).</p>
+              <p>Some of the people in Annie's research (contacts at companies it surfaces as opportunities) have not directly given Annie their information; it comes from public sources (company websites, LinkedIn, news coverage, public job postings) or from data you import yourself. We process this on the basis of legitimate business interest, identifying genuine business-development opportunities for recruitment purposes, and only what's reasonably necessary for that (typically name, job title, and a public professional profile URL, never anything sensitive).</p>
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">How we use it</h2>
@@ -31,11 +31,11 @@ export default function Privacy() {
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">Third parties we share data with</h2>
-              <p>Supabase (database and authentication hosting), Netlify (application hosting), Anthropic (AI research), Apollo.io (contact and company enrichment), Adzuna (job listings), the UK's Companies House (public company records), Resend (sending account emails, such as onboarding confirmation and billing alerts), and PostHog (product analytics — see "Cookies & analytics" below). If you're on a paid plan, Stripe processes your payment; we never see or store your card details ourselves. Each only receives what it needs to perform its function — we don't sell data to advertisers or data brokers.</p>
+              <p>Supabase (database and authentication hosting), Netlify (application hosting), Anthropic (AI research), Apollo.io (contact and company enrichment), Adzuna (job listings), the UK's Companies House (public company records), Resend (sending account emails, such as onboarding confirmation and billing alerts), and PostHog (product analytics, see "Cookies & analytics" below). If you're on a paid plan, Stripe processes your payment; we never see or store your card details ourselves. Each only receives what it needs to perform its function, and we don't sell data to advertisers or data brokers.</p>
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">Cookies & analytics</h2>
-              <p>We use PostHog to understand how Annie is used — which pages get visited, which features get clicked — so we can improve the product. This sets a small number of cookies and is tied to your account once you're logged in, not to anonymous visitors browsing the marketing site. It's not used for advertising, and we don't sell this data. You can ask us to stop this tracking for your account by contacting us (see below).</p>
+              <p>We use PostHog to understand how Annie is used, which pages get visited and which features get clicked, so we can improve the product. This sets a small number of cookies and is tied to your account once you're logged in, not to anonymous visitors browsing the marketing site. It's not used for advertising, and we don't sell this data. You can ask us to stop this tracking for your account by contacting us (see below).</p>
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">International data transfers</h2>
@@ -43,7 +43,7 @@ export default function Privacy() {
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">Your rights</h2>
-              <p>You can export or request deletion of your account's data at any time from Settings → Data & Privacy. If you're a contact Annie has surfaced and never worked with us directly, you can request removal by contacting us through the email address on our site — we'll act on it within a reasonable time.</p>
+              <p>You can export or request deletion of your account's data at any time from Settings → Data & Privacy. If you're a contact Annie has surfaced and never worked with us directly, you can request removal by contacting us through the email address on our site, and we'll act on it within a reasonable time.</p>
             </section>
             <section>
               <h2 className="font-bold text-navy mb-1">Retention</h2>

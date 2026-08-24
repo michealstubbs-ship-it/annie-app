@@ -234,10 +234,10 @@ export default function TodaysActions() {
                                             c.aiGenerated ? (
                                               <span
                                                 key={ci}
-                                                title="Annie's read — an AI-written pitch grounded in this candidate's own profile and notes, not a verified fact."
+                                                title="Annie's read: an AI-written pitch grounded in this candidate's own profile and notes, not a verified fact."
                                                 className="text-[10.5px] font-semibold px-2.5 py-[3px] rounded-full bg-white border border-dashed border-green-300 text-[#166534] whitespace-nowrap"
                                               >
-                                                {c.icon} {c.text} <span className="italic text-[#4d7c5f]">— Annie's read</span>
+                                                {c.icon} {c.text} <span className="italic text-[#4d7c5f]">(Annie's read)</span>
                                               </span>
                                             ) : (
                                               <span key={ci} className="text-[10.5px] font-semibold px-2.5 py-[3px] rounded-full bg-white border border-green-200 text-[#166534] whitespace-nowrap">
