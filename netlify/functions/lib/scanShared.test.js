@@ -9,7 +9,7 @@ import {
   mapLocationsToAdzunaCountries, SIGNAL_TYPES, reserveApolloCredits,
   normalizeCompanyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
-  enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions,
+  enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
 } from './scanShared.js'
 
 // Full behavioural coverage for extractJson now lives in
@@ -1013,6 +1013,34 @@ describe('buildEnrichedSignalRow — always a contact recommendation on the 4 wh
       { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
     )
     expect(row.signal_type).toBe('live_job')
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('createTimeoutFetch (2026-08-24 scan-now-background.js stall fix)', () => {
+  // The actual regression: supabase-js gives its own internal fetch no
+  // timeout at all, so a client built without this would hang on a stuck
+  // connection forever — this pins that the wrapped fetch instead rejects
+  // once its timeout elapses, the same guarantee fetchWithTimeout already
+  // gives every direct external API call in this file.
+  it('rejects a request that never resolves, once the timeout elapses', async () => {
+    vi.stubGlobal('fetch', vi.fn((url, opts) => new Promise((resolve, reject) => {
+      // A real hung connection: nothing ever calls resolve/reject on its
+      // own — the only way this promise ever settles is via the abort
+      // signal the wrapped fetch attaches, exactly like a real stuck
+      // Postgres/PostgREST connection would only end via that same signal.
+      opts?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+    })))
+    const timeoutFetch = createTimeoutFetch(20)
+    await expect(timeoutFetch('https://example.supabase.co/rest/v1/x')).rejects.toThrow()
+    vi.unstubAllGlobals()
+  })
+
+  it('resolves normally for a request that completes well within the timeout', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) }))
+    const timeoutFetch = createTimeoutFetch(20000)
+    const resp = await timeoutFetch('https://example.supabase.co/rest/v1/x')
+    expect(resp.ok).toBe(true)
     vi.unstubAllGlobals()
   })
 })

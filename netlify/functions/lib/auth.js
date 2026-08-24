@@ -7,6 +7,7 @@
 // (apollo-enrich-companies.js previously shipped with no auth check at
 // all, per that file's own comment).
 import { createClient } from '@supabase/supabase-js'
+import { createTimeoutFetch } from './scanShared.js'
 
 export function extractBearerToken(req) {
   const header = req.headers.get('authorization') || ''
@@ -34,7 +35,7 @@ export async function getAuthedClient(req, supabaseUrl, anonKey) {
   if (!supabaseUrl || !anonKey) return { client: null, user: null, error: 'not_configured' }
 
   const client = createClient(supabaseUrl, anonKey, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
+    global: { headers: { Authorization: `Bearer ${token}` }, fetch: createTimeoutFetch() },
     auth: { persistSession: false, autoRefreshToken: false },
   })
   const { data, error } = await client.auth.getUser(token)

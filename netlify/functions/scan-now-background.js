@@ -33,7 +33,7 @@ import { reserveAnthropicTokens } from './lib/aiUsage.js'
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, splitToKeywords, extractJson,
   discoverHotCompanies, discoverAdzunaJobs, fetchWithRetry,
-  dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows,
+  dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
 } from './lib/scanShared.js'
 
 // How many sector groups to research in parallel, and the minimum number of
@@ -51,6 +51,19 @@ const MIN_SIGNAL_TARGET = 3
 // still gets full Apollo/Companies House/source-verification enrichment,
 // same as before — this only changes how many get the chance.
 const MAX_TOTAL_SIGNALS = 40
+
+// Defense in depth alongside createTimeoutFetch (see that function's own
+// header in scanShared.js for the actual root-cause fix): even with every
+// individual call now bounded, a genuinely slow run (many signals, a
+// degraded upstream API retrying its full backoff on every call) could
+// still add up close to Netlify's hard 15-minute kill. Same pattern
+// intelligence-scan.js already uses (RUN_BUDGET_MS) — checked before the
+// optional broaden pass, which is the one phase safe to skip outright: a
+// thinner-than-ideal first scan that actually finishes and writes a status
+// is always better than a thorough one that gets hard-killed and writes
+// nothing. Leaves a wide margin (15 - 10 = 5 minutes) for the group calls
+// already in flight plus the enrichment phase that follows.
+const WALL_CLOCK_BUDGET_MS = 10 * 60 * 1000
 
 // This pass is deliberately the expensive one (stronger model, up to 4
 // parallel sector-group calls plus a broaden pass) — see the file header.
@@ -244,10 +257,17 @@ export default async (req) => {
   // The scan's writes use the service role, same as the scheduled cron —
   // these are Annie's own findings, not user-authored data, and RLS on
   // intelligence_signals rightly doesn't grant customers insert access.
-  const supabase = createClient(supabaseUrl, serviceKey)
+  //
+  // 2026-08-24: the actual fix for this function's silent full-budget
+  // stall — see createTimeoutFetch's header in scanShared.js. Every direct
+  // API call here was already timeout-guarded; every Supabase call this
+  // client makes (deep inside buildEnrichedSignalRows, several layers down)
+  // was not, and a single hung one was enough to stall the whole run past
+  // Netlify's hard kill with nothing ever written, not even an error.
+  const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
 
   const startedAt = Date.now()
-  await setStatus(userId, { status: 'running', startedAt })
+  await setStatus(userId, { status: 'running', stage: 'starting', startedAt })
 
   try {
     // Guard against duplicate triggers (a retried request, a second tab)
@@ -310,6 +330,14 @@ export default async (req) => {
     }
     await supabase.from('onboarding').update({ initial_scan_triggered_at: new Date().toISOString() }).eq('user_id', userId)
 
+    // Phase-tagged status from here on (2026-08-24): if this function ever
+    // stalls again, `stage` on the status blob says exactly which phase it
+    // was last known to be in, instead of the investigation having to infer
+    // it after the fact from what did or didn't get written. See
+    // createTimeoutFetch and WALL_CLOCK_BUDGET_MS above for the actual fix
+    // — this is purely visibility, not a second line of defense on its own.
+    await setStatus(userId, { status: 'running', stage: 'researching', startedAt })
+
     // Pass 1: research each sector group in parallel, each with its own
     // full search budget, instead of one call rationing searches across
     // everything the customer picked. Each group first asks Apollo and
@@ -353,8 +381,16 @@ export default async (req) => {
 
     // Safety net: a brand new customer should not land on an empty first
     // dashboard just because the narrower per-sector passes came up thin.
-    // Run one more deliberately broader pass before accepting that.
-    if (merged.length < MIN_SIGNAL_TARGET) {
+    // Run one more deliberately broader pass before accepting that — unless
+    // the run is already deep into its wall-clock budget (see
+    // WALL_CLOCK_BUDGET_MS above), in which case skipping this optional
+    // pass and moving straight to enrichment is what actually gets this
+    // customer a working dashboard instead of a hard-killed function.
+    const elapsedBeforeBroaden = Date.now() - startedAt
+    if (merged.length < MIN_SIGNAL_TARGET && elapsedBeforeBroaden > WALL_CLOCK_BUDGET_MS) {
+      console.log('[scan-now] skipping broaden pass for', userId, '- already', Math.round(elapsedBeforeBroaden / 1000) + 's into the run')
+    } else if (merged.length < MIN_SIGNAL_TARGET) {
+      await setStatus(userId, { status: 'running', stage: 'broadening', startedAt })
       try {
         const broadenText = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { broaden: true }), { maxUses: 10, supabase })
         const broadenFound = extractJson(broadenText)
@@ -401,6 +437,8 @@ export default async (req) => {
       })
       return
     }
+
+    await setStatus(userId, { status: 'running', stage: 'enriching', startedAt })
 
     // Dedupe against this customer's existing signals BEFORE spending Apollo
     // credits, not after. For a brand new account this set is normally

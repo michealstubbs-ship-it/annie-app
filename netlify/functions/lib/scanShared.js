@@ -63,6 +63,38 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
   }
 }
 
+// 2026-08-24: root cause of scan-now-background.js silently consuming its
+// entire 15-minute background-function budget with zero signals, zero
+// errors, and zero status update. Every direct external call in this file
+// (Apollo/Adzuna/Companies House/Anthropic) already goes through
+// fetchWithTimeout/fetchWithRetry above — but every Supabase call
+// (verifyContact's company_contacts cache read/write, enrichCompany's
+// company_enrichment cache, the apollo_reserve_credits/anthropic_reserve_tokens
+// RPCs, the final intelligence_signals upsert) had no timeout anywhere,
+// because supabase-js's own internal fetch has none by default. Those calls
+// run deep inside buildEnrichedSignalRows's per-company sequential loop,
+// itself run by a handful of concurrent workers (mapWithConcurrency) whose
+// own outer Promise.all only resolves once every worker returns — so a
+// single hung Postgres/PostgREST connection anywhere in that chain was
+// enough to permanently stall every worker's queue, and therefore the whole
+// function, past Netlify's hard kill, with the code still parked inside one
+// unresolved `await` the entire time (which is exactly why nothing ever
+// reached a catch block or a status write).
+//
+// Passed into createClient's `global.fetch` option, this timeout covers
+// every REST and RPC call the resulting client makes — one guard at each
+// client's construction site, rather than hunting down and individually
+// wrapping every one of the ~10 call sites spread across this file. 20s is
+// far more than any of these calls should ever legitimately need (they're
+// simple keyed reads/writes/RPCs, not web search), so this should never
+// fire under normal conditions — it exists purely to convert "hangs
+// forever" into "fails after 20s, gets caught, gets logged, gets retried
+// next run" the same way every external HTTP call in this file already
+// behaves.
+export function createTimeoutFetch(timeoutMs = 20000) {
+  return (url, options = {}) => fetchWithTimeout(url, options, timeoutMs)
+}
+
 // Exponential backoff for the external calls where a transient 429/5xx
 // shouldn't mean "customer sees nothing this run." A genuine 4xx other than
 // 429 (bad request, bad key) is NOT retried — retrying that just spends the

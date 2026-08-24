@@ -23,7 +23,7 @@ import { reserveAnthropicTokens } from './lib/aiUsage.js'
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, extractJson,
   discoverAdzunaJobs, fetchWithRetry, alertIfConfigured,
-  dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows,
+  dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
 } from './lib/scanShared.js'
 
 // Hard ceiling on how many NEW (never-seen-before) signals get enriched via
@@ -197,7 +197,13 @@ export default async (req, context) => {
     return new Response('Not configured', { status: 200 })
   }
 
-  const supabase = createClient(supabaseUrl, serviceKey)
+  // 2026-08-24: see createTimeoutFetch's own header in scanShared.js — a
+  // single hung Supabase call anywhere in the per-customer scan loop below
+  // had no timeout at all, unlike every external API call in this file.
+  // Same fix applied to scan-now-background.js, which is where this was
+  // actually caught stalling; applied here too so the two scan entry points
+  // don't drift back out of sync on a gap this fundamental.
+  const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
 
   // Ordered so that which customers get scanned first is deterministic run
   // to run, not whatever order Postgres happens to return — matters once
