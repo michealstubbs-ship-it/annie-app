@@ -112,7 +112,7 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
       <form onSubmit={e => { e.preventDefault(); save() }}>
         <ErrorBanner>{error}</ErrorBanner>
         <div className="space-y-3">
-          <div><label className="label">Job title *</label><input required className="input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Senior Software Engineer" /></div>
+          <div><label className="label" htmlFor="job-title">Job title *</label><input id="job-title" required className="input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Senior Software Engineer" /></div>
 
           {lockedCompanyId ? (
             <div>
@@ -124,37 +124,37 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
           )}
 
           <div className="grid grid-cols-2 gap-3">
-            <div><label className="label">Industry</label><input className="input" value={form.industry} onChange={e => setForm(p => ({ ...p, industry: e.target.value }))} placeholder="e.g. SaaS" /></div>
-            <div><label className="label">Annual salary (AED)</label><input type="number" className="input" value={form.salary_num} onChange={e => setForm(p => ({ ...p, salary_num: e.target.value }))} placeholder="e.g. 300000" /></div>
-            <div><label className="label">Fee % (your %)</label><input type="number" min="1" max="50" className="input" value={form.fee_pct} onChange={e => setForm(p => ({ ...p, fee_pct: e.target.value }))} placeholder="e.g. 20" /></div>
+            <div><label className="label" htmlFor="job-industry">Industry</label><input id="job-industry" className="input" value={form.industry} onChange={e => setForm(p => ({ ...p, industry: e.target.value }))} placeholder="e.g. SaaS" /></div>
+            <div><label className="label" htmlFor="job-salary-num">Annual salary (AED)</label><input id="job-salary-num" type="number" className="input" value={form.salary_num} onChange={e => setForm(p => ({ ...p, salary_num: e.target.value }))} placeholder="e.g. 300000" /></div>
+            <div><label className="label" htmlFor="job-fee-pct">Fee % (your %)</label><input id="job-fee-pct" type="number" min="1" max="50" className="input" value={form.fee_pct} onChange={e => setForm(p => ({ ...p, fee_pct: e.target.value }))} placeholder="e.g. 20" /></div>
             <div><label className="label">Calculated fee</label><div className="input bg-gray-50 font-bold text-navy flex items-center">{feeValue ? `AED ${feeValue.toLocaleString()}` : '-'}</div></div>
             <div>
-              <label className="label">Likelihood to fill</label>
-              <select className="input" value={form.likelihood} onChange={e => setForm(p => ({ ...p, likelihood: e.target.value }))}>
+              <label className="label" htmlFor="job-likelihood">Likelihood to fill</label>
+              <select id="job-likelihood" className="input" value={form.likelihood} onChange={e => setForm(p => ({ ...p, likelihood: e.target.value }))}>
                 {LIKELIHOOD_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
             <div>
-              <label className="label">Job type</label>
-              <select className="input" value={form.job_type} onChange={e => setForm(p => ({ ...p, job_type: e.target.value }))}>
+              <label className="label" htmlFor="job-type">Job type</label>
+              <select id="job-type" className="input" value={form.job_type} onChange={e => setForm(p => ({ ...p, job_type: e.target.value }))}>
                 <option value="permanent">Permanent</option>
                 <option value="contract">Contract</option>
                 <option value="interim">Interim</option>
               </select>
             </div>
             <div>
-              <label className="label">Status</label>
-              <select className="input" value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}>
+              <label className="label" htmlFor="job-status">Status</label>
+              <select id="job-status" className="input" value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}>
                 <option value="active">Active</option>
                 <option value="onhold">On hold</option>
                 <option value="filled">Filled</option>
                 <option value="lost">Lost</option>
               </select>
             </div>
-            <div><label className="label">Date received</label><input type="date" className="input" value={form.received} onChange={e => setForm(p => ({ ...p, received: e.target.value }))} /></div>
-            <div><label className="label">Deadline / start date</label><input type="date" className="input" value={form.deadline} onChange={e => setForm(p => ({ ...p, deadline: e.target.value }))} /></div>
+            <div><label className="label" htmlFor="job-received">Date received</label><input id="job-received" type="date" className="input" value={form.received} onChange={e => setForm(p => ({ ...p, received: e.target.value }))} /></div>
+            <div><label className="label" htmlFor="job-deadline">Deadline / start date</label><input id="job-deadline" type="date" className="input" value={form.deadline} onChange={e => setForm(p => ({ ...p, deadline: e.target.value }))} /></div>
           </div>
-          <div><label className="label">Brief / job description</label><textarea className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Key requirements, must-haves, skills needed, context about the role..." /></div>
+          <div><label className="label" htmlFor="job-notes">Brief / job description</label><textarea id="job-notes" className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Key requirements, must-haves, skills needed, context about the role..." /></div>
         </div>
         <div className="flex gap-3 justify-end mt-5">
           <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>

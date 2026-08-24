@@ -182,43 +182,43 @@ export default function Meetings() {
             <form onSubmit={e => { e.preventDefault(); save() }}>
               <div className="space-y-3">
                 <div>
-                  <label className="label">Title *</label>
-                  <input className="input" required value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Intro call with Wio Bank" />
+                  <label className="label" htmlFor="meeting-title">Title *</label>
+                  <input id="meeting-title" className="input" required value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Intro call with Wio Bank" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="label">Type</label>
-                    <select className="input" value={form.meeting_type} onChange={e => setForm(p => ({ ...p, meeting_type: e.target.value }))}>
+                    <label className="label" htmlFor="meeting-type">Type</label>
+                    <select id="meeting-type" className="input" value={form.meeting_type} onChange={e => setForm(p => ({ ...p, meeting_type: e.target.value }))}>
                       {Object.entries(TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label className="label">Date & time *</label>
-                    <input className="input" type="datetime-local" required value={form.meeting_date} onChange={e => setForm(p => ({ ...p, meeting_date: e.target.value }))} />
+                    <label className="label" htmlFor="meeting-date">Date & time *</label>
+                    <input id="meeting-date" className="input" type="datetime-local" required value={form.meeting_date} onChange={e => setForm(p => ({ ...p, meeting_date: e.target.value }))} />
                   </div>
                 </div>
                 <div>
-                  <label className="label">Contact</label>
-                  <select className="input" value={form.contact_id} onChange={e => setForm(p => ({ ...p, contact_id: e.target.value }))}>
+                  <label className="label" htmlFor="meeting-contact">Contact</label>
+                  <select id="meeting-contact" className="input" value={form.contact_id} onChange={e => setForm(p => ({ ...p, contact_id: e.target.value }))}>
                     <option value="">Not linked to a contact</option>
                     {contacts.map(c => <option key={c.id} value={c.id}>{c.name}{c.company ? ` (${c.company})` : ''}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="label">Outcome</label>
-                  <textarea className="input resize-none" rows={2} value={form.outcome} onChange={e => setForm(p => ({ ...p, outcome: e.target.value }))} />
+                  <label className="label" htmlFor="meeting-outcome">Outcome</label>
+                  <textarea id="meeting-outcome" className="input resize-none" rows={2} value={form.outcome} onChange={e => setForm(p => ({ ...p, outcome: e.target.value }))} />
                 </div>
                 <div>
-                  <label className="label">Next steps</label>
-                  <textarea className="input resize-none" rows={2} value={form.next_steps} onChange={e => setForm(p => ({ ...p, next_steps: e.target.value }))} />
+                  <label className="label" htmlFor="meeting-next-steps">Next steps</label>
+                  <textarea id="meeting-next-steps" className="input resize-none" rows={2} value={form.next_steps} onChange={e => setForm(p => ({ ...p, next_steps: e.target.value }))} />
                 </div>
                 <div>
-                  <label className="label">Follow-up date</label>
-                  <input className="input" type="date" value={form.follow_up_date} onChange={e => setForm(p => ({ ...p, follow_up_date: e.target.value }))} />
+                  <label className="label" htmlFor="meeting-follow-up-date">Follow-up date</label>
+                  <input id="meeting-follow-up-date" className="input" type="date" value={form.follow_up_date} onChange={e => setForm(p => ({ ...p, follow_up_date: e.target.value }))} />
                 </div>
                 <div>
-                  <label className="label">Notes</label>
-                  <textarea className="input resize-none" rows={2} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
+                  <label className="label" htmlFor="meeting-notes">Notes</label>
+                  <textarea id="meeting-notes" className="input resize-none" rows={2} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
                 </div>
               </div>
               <div className="flex gap-3 justify-end mt-5">

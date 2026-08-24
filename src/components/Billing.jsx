@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { getTeamActivitySummary } from '../lib/data/teamActivity'
 import ErrorBanner from './ErrorBanner'
 
 // Tier copy lives here, not in a shared constants file — the ONLY thing
@@ -63,6 +64,10 @@ export default function Billing() {
   // caps that RLS alone doesn't express.
   const [teamMembers, setTeamMembers] = useState([])
   const [myRole, setMyRole] = useState(null)
+  // Owner-only — populated from the "Team owners can view members' ..." RLS
+  // policies (2026-08-24). A non-owner's query would just come back empty,
+  // so this only ever gets fetched once loadTeam() has confirmed the role.
+  const [teamActivity, setTeamActivity] = useState(new Map())
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviting, setInviting] = useState(false)
   const [teamError, setTeamError] = useState('')
@@ -103,7 +108,21 @@ export default function Billing() {
 
     const enriched = (members || []).map(m => ({ ...m, profile: m.user_id ? profileById.get(m.user_id) : null }))
     setTeamMembers(enriched)
-    setMyRole(enriched.find(m => m.user_id === user.id)?.role || null)
+    const role = enriched.find(m => m.user_id === user.id)?.role || null
+    setMyRole(role)
+
+    // Owner-only "what's everyone working on" view — the "Team admin &
+    // insights view" already named in the pricing copy below. Skipped
+    // entirely for a non-owner rather than fetched-and-discarded, since the
+    // RLS policies backing this only ever return anything for an owner
+    // anyway (see teamActivity.js's header comment).
+    if (role === 'owner') {
+      const activeMemberIds = enriched.filter(m => m.status === 'active' && m.user_id).map(m => m.user_id)
+      const activity = await getTeamActivitySummary(activeMemberIds)
+      setTeamActivity(activity)
+    } else {
+      setTeamActivity(new Map())
+    }
   }
 
   async function sendInvite(e) {
@@ -228,7 +247,8 @@ export default function Billing() {
         <div className="card p-6 mt-5">
           <h2 className="text-lg font-bold text-navy mb-1">Team members</h2>
           <p className="text-sm text-gray-500 mb-4">
-            Everyone on your team shares one CRM — the same contacts, deals, and signals, kept in sync for the whole desk.
+            Everyone on your team shares one CRM — the same contacts, jobs, deals, candidates, and meetings, kept in sync for the whole desk.
+            Each person's Intelligence Feed and Today's Actions stay tuned to their own market, since recruiters on the same team can be working entirely different sectors.
             {subscription.seats > 0 && <> Your plan includes {subscription.seats} seats.</>}
           </p>
 
@@ -236,7 +256,9 @@ export default function Billing() {
           {teamNotice && <div className="bg-green-50 border border-green-200 text-green-700 rounded-lg px-4 py-2 text-sm mb-4">{teamNotice}</div>}
 
           <ul className="divide-y divide-gray-100 mb-4">
-            {teamMembers.map(m => (
+            {teamMembers.map(m => {
+              const activity = m.user_id ? teamActivity.get(m.user_id) : null
+              return (
               <li key={m.id} className="flex items-center justify-between py-2.5">
                 <div>
                   <div className="text-sm font-medium text-navy">
@@ -245,6 +267,16 @@ export default function Billing() {
                   <div className="text-xs text-gray-400">
                     {m.role === 'owner' ? 'Owner' : 'Member'}
                     {m.status === 'invited' && ' · Invite pending'}
+                    {/* Owner-only visibility into what each teammate is
+                        working on — "Team admin & insights view" from the
+                        pricing copy above, backed by the read-only RLS
+                        policies added alongside this. Not shown for the
+                        viewer's own row (myRole==='owner' already sees
+                        their own feed directly) or for a still-pending
+                        invite (nothing to report on yet). */}
+                    {myRole === 'owner' && activity && m.user_id !== user.id && (
+                      <> · {activity.newSignals} new signal{activity.newSignals === 1 ? '' : 's'} this week · {activity.actionsPending} action{activity.actionsPending === 1 ? '' : 's'} open, {activity.actionsDone} done</>
+                    )}
                   </div>
                 </div>
                 {myRole === 'owner' && m.role !== 'owner' && (
@@ -253,7 +285,8 @@ export default function Billing() {
                   </button>
                 )}
               </li>
-            ))}
+              )
+            })}
           </ul>
 
           {myRole === 'owner' && (

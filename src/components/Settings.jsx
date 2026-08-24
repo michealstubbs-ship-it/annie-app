@@ -183,12 +183,12 @@ Only return the style profile text, nothing else.`
         <h2 className="text-lg font-bold text-navy mb-4">Your Profile</h2>
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            <div><label className="label">Full name</label><input className="input" value={form.full_name} onChange={e => setForm(p => ({ ...p, full_name: e.target.value }))} /></div>
-            <div><label className="label">Job title</label><input className="input" value={form.job_title} onChange={e => setForm(p => ({ ...p, job_title: e.target.value }))} /></div>
+            <div><label className="label" htmlFor="settings-full-name">Full name</label><input id="settings-full-name" className="input" value={form.full_name} onChange={e => setForm(p => ({ ...p, full_name: e.target.value }))} /></div>
+            <div><label className="label" htmlFor="settings-job-title">Job title</label><input id="settings-job-title" className="input" value={form.job_title} onChange={e => setForm(p => ({ ...p, job_title: e.target.value }))} /></div>
           </div>
-          <div><label className="label">Firm name</label><input className="input" value={form.firm_name} onChange={e => setForm(p => ({ ...p, firm_name: e.target.value }))} /></div>
-          <div><label className="label">Phone</label><input className="input" type="tel" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
-          <div><label className="label">Email</label><input className="input opacity-60 cursor-not-allowed" value={user?.email || ''} disabled /></div>
+          <div><label className="label" htmlFor="settings-firm-name">Firm name</label><input id="settings-firm-name" className="input" value={form.firm_name} onChange={e => setForm(p => ({ ...p, firm_name: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="settings-phone">Phone</label><input id="settings-phone" className="input" type="tel" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="settings-email">Email</label><input id="settings-email" className="input opacity-60 cursor-not-allowed" value={user?.email || ''} disabled /></div>
         </div>
         <div className="flex items-center gap-3 mt-5">
           <button onClick={saveProfile} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save changes'}</button>
@@ -206,8 +206,9 @@ Only return the style profile text, nothing else.`
         <h2 className="text-lg font-bold text-navy mb-1">Writing style</h2>
         <p className="text-sm text-gray-500 mb-4">Paste in a few messages you've actually sent (emails, LinkedIn messages, anything in your own words). Annie analyses how you actually write and uses it to draft outreach that sounds like you, not a template.</p>
 
-        <label className="label">Paste example messages</label>
+        <label className="label" htmlFor="settings-pasted-messages">Paste example messages</label>
         <textarea
+          id="settings-pasted-messages"
           className="input resize-none mb-2"
           rows={5}
           placeholder="Paste 2-3 real messages you've sent, separated by a blank line..."
@@ -217,8 +218,9 @@ Only return the style profile text, nothing else.`
         <ErrorBanner>{styleError}</ErrorBanner>
         <button onClick={analyseStyle} disabled={analysing} className="btn-ghost mb-4">{analysing ? 'Analysing...' : 'Analyse my style'}</button>
 
-        <label className="label">Your style profile</label>
+        <label className="label" htmlFor="settings-writing-style">Your style profile</label>
         <textarea
+          id="settings-writing-style"
           className="input resize-none"
           rows={5}
           placeholder="Your style profile will appear here after analysing, or you can write/edit it directly."

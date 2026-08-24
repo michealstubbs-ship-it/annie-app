@@ -80,9 +80,9 @@ export default function ContactFormModal({ open, editContact, lockedCompanyId, l
           of submitting a form. */}
       <form onSubmit={save}>
         <div className="space-y-3">
-          <div><label className="label">Name *</label><input className="input" value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} autoFocus required /></div>
-          <div><label className="label">Email</label><input className="input" type="email" value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} /></div>
-          <div><label className="label">Phone</label><input className="input" type="tel" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="contact-name">Name *</label><input id="contact-name" className="input" value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} autoFocus required /></div>
+          <div><label className="label" htmlFor="contact-email">Email</label><input id="contact-email" className="input" type="email" value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="contact-phone">Phone</label><input id="contact-phone" className="input" type="tel" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
 
           {lockedCompanyId ? (
             <div>
@@ -93,15 +93,15 @@ export default function ContactFormModal({ open, editContact, lockedCompanyId, l
             <CompanySelect value={form.company_id} onChange={(id, name) => setForm(p => ({ ...p, company_id: id, company: name }))} />
           )}
 
-          <div><label className="label">Job Title</label><input className="input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} /></div>
-          <div><label className="label">LinkedIn URL</label><input className="input" type="url" value={form.linkedin_url} onChange={e => setForm(p => ({ ...p, linkedin_url: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="contact-title">Job Title</label><input id="contact-title" className="input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="contact-linkedin-url">LinkedIn URL</label><input id="contact-linkedin-url" className="input" type="url" value={form.linkedin_url} onChange={e => setForm(p => ({ ...p, linkedin_url: e.target.value }))} /></div>
           <div>
-            <label className="label">Status</label>
-            <select className="input" value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}>
+            <label className="label" htmlFor="contact-status">Status</label>
+            <select id="contact-status" className="input" value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}>
               {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
-          <div><label className="label">Notes</label><textarea className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="contact-notes">Notes</label><textarea id="contact-notes" className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
         </div>
         <div className="flex gap-3 justify-end mt-5">
           <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>

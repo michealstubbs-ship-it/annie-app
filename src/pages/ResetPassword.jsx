@@ -70,12 +70,12 @@ export default function ResetPassword() {
               {ready && (
                 <form onSubmit={handleSubmit} className="space-y-4">
                   <div>
-                    <label className="label">New password</label>
-                    <input className="input" type="password" placeholder="Min. 8 characters" value={password} onChange={e => setPassword(e.target.value)} required />
+                    <label className="label" htmlFor="reset-password-new">New password</label>
+                    <input id="reset-password-new" className="input" type="password" placeholder="Min. 8 characters" value={password} onChange={e => setPassword(e.target.value)} required />
                   </div>
                   <div>
-                    <label className="label">Confirm new password</label>
-                    <input className="input" type="password" placeholder="Repeat your password" value={confirm} onChange={e => setConfirm(e.target.value)} required />
+                    <label className="label" htmlFor="reset-password-confirm">Confirm new password</label>
+                    <input id="reset-password-confirm" className="input" type="password" placeholder="Repeat your password" value={confirm} onChange={e => setConfirm(e.target.value)} required />
                   </div>
                   <button type="submit" disabled={loading} className="btn-primary w-full mt-2">
                     {loading ? 'Updating...' : 'Update password'}

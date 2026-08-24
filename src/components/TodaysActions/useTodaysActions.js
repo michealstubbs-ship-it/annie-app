@@ -60,13 +60,19 @@ export function useTodaysActions({ user, profile }) {
     setError('')
     try {
       const [{ data: contacts }, { data: deals }, { data: intelSignals }, { data: freshOnboarding }, candidates] = await Promise.all([
-        // 2026-08-24: contacts/deals/intelligence_signals are team-scoped by
-        // RLS — no client-side user_id filter on top of it, so Today's
-        // Actions surfaces the whole team's pipeline, not just this user's.
+        // 2026-08-24: contacts/deals are the shared CRM — team-scoped by
+        // RLS, no client-side user_id filter on top of it, so Today's
+        // Actions can match a signal against any teammate's contact, the
+        // same way the rest of the shared CRM works.
         supabase.from('contacts').select('*').limit(500),
         supabase.from('deals').select('*').limit(200),
-        // Reads what the background scan already found, no search happens here.
-        supabase.from('intelligence_signals').select('*').neq('status', 'actioned').order('found_at', { ascending: false }).limit(300),
+        // intelligence_signals is the opposite: PERSONAL, not team-scoped —
+        // different recruiters on the same team can be working entirely
+        // different markets, so this must stay this user's own signals only
+        // (see lib/data/signals.js's header comment for the fuller
+        // reasoning and the RLS migration that backs it). Reads what the
+        // background scan already found, no search happens here.
+        supabase.from('intelligence_signals').select('*').eq('user_id', user.id).neq('status', 'actioned').order('found_at', { ascending: false }).limit(300),
         supabase.from('onboarding').select('*').eq('user_id', user.id).single(),
         // Same lightweight pipeline-match check IntelligenceFeed.jsx already
         // does, computed once here, baked into each resolved action below

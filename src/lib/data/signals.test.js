@@ -29,12 +29,12 @@ beforeEach(() => {
 })
 
 describe('listActiveSignals', () => {
-  it('excludes actioned and live_job rows, team-scoped by RLS, newest first, capped at 200, no client-side user_id filter', async () => {
+  it('is personal to the caller (explicit user_id filter), excludes actioned and live_job rows, newest first, capped at 200', async () => {
     builder = makeBuilder({ data: [{ id: 's1' }], error: null })
     fromMock.mockReturnValue(builder)
     const result = await listActiveSignals('user_1')
     expect(fromMock).toHaveBeenCalledWith('intelligence_signals')
-    expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
+    expect(builder.eq).toHaveBeenCalledWith('user_id', 'user_1')
     expect(builder.neq).toHaveBeenCalledWith('status', 'actioned')
     expect(builder.neq).toHaveBeenCalledWith('signal_type', 'live_job')
     expect(builder.order).toHaveBeenCalledWith('found_at', { ascending: false })

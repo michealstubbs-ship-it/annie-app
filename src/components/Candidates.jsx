@@ -280,80 +280,80 @@ export default function Candidates() {
 
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2">
-                <label className="label">Name *</label>
-                <input className="input" value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
+                <label className="label" htmlFor="candidate-name">Name *</label>
+                <input id="candidate-name" className="input" value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
               </div>
               <div>
-                <label className="label">Role</label>
-                <input className="input" value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))} />
+                <label className="label" htmlFor="candidate-role">Role</label>
+                <input id="candidate-role" className="input" value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))} />
               </div>
               <div>
-                <label className="label">Current company</label>
-                <input className="input" value={form.company} onChange={e => setForm(p => ({ ...p, company: e.target.value }))} />
+                <label className="label" htmlFor="candidate-company">Current company</label>
+                <input id="candidate-company" className="input" value={form.company} onChange={e => setForm(p => ({ ...p, company: e.target.value }))} />
               </div>
               <div>
-                <label className="label">Location</label>
-                <input className="input" value={form.location} onChange={e => setForm(p => ({ ...p, location: e.target.value }))} />
+                <label className="label" htmlFor="candidate-location">Location</label>
+                <input id="candidate-location" className="input" value={form.location} onChange={e => setForm(p => ({ ...p, location: e.target.value }))} />
               </div>
               <div>
-                <label className="label">Industry</label>
-                <input className="input" value={form.industry} onChange={e => setForm(p => ({ ...p, industry: e.target.value }))} />
+                <label className="label" htmlFor="candidate-industry">Industry</label>
+                <input id="candidate-industry" className="input" value={form.industry} onChange={e => setForm(p => ({ ...p, industry: e.target.value }))} />
               </div>
               <div>
-                <label className="label">Email</label>
-                <input className="input" type="email" value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} />
+                <label className="label" htmlFor="candidate-email">Email</label>
+                <input id="candidate-email" className="input" type="email" value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} />
               </div>
               <div>
-                <label className="label">Phone</label>
-                <input className="input" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} />
+                <label className="label" htmlFor="candidate-phone">Phone</label>
+                <input id="candidate-phone" className="input" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} />
               </div>
               <div>
-                <label className="label">Current salary (AED)</label>
-                <input className="input" type="number" value={form.curr_sal} onChange={e => setForm(p => ({ ...p, curr_sal: e.target.value }))} />
+                <label className="label" htmlFor="candidate-curr-sal">Current salary (AED)</label>
+                <input id="candidate-curr-sal" className="input" type="number" value={form.curr_sal} onChange={e => setForm(p => ({ ...p, curr_sal: e.target.value }))} />
               </div>
               <div>
-                <label className="label">Desired salary (AED)</label>
-                <input className="input" type="number" value={form.want_sal} onChange={e => setForm(p => ({ ...p, want_sal: e.target.value }))} />
+                <label className="label" htmlFor="candidate-want-sal">Desired salary (AED)</label>
+                <input id="candidate-want-sal" className="input" type="number" value={form.want_sal} onChange={e => setForm(p => ({ ...p, want_sal: e.target.value }))} />
               </div>
               <div>
-                <label className="label">Notice period</label>
-                <input className="input" value={form.notice_period} onChange={e => setForm(p => ({ ...p, notice_period: e.target.value }))} />
+                <label className="label" htmlFor="candidate-notice-period">Notice period</label>
+                <input id="candidate-notice-period" className="input" value={form.notice_period} onChange={e => setForm(p => ({ ...p, notice_period: e.target.value }))} />
               </div>
               <div>
-                <label className="label">Availability</label>
-                <input className="input" value={form.availability} onChange={e => setForm(p => ({ ...p, availability: e.target.value }))} />
+                <label className="label" htmlFor="candidate-availability">Availability</label>
+                <input id="candidate-availability" className="input" value={form.availability} onChange={e => setForm(p => ({ ...p, availability: e.target.value }))} />
               </div>
               <div className="col-span-2">
-                <label className="label">LinkedIn URL</label>
-                <input className="input" value={form.linkedin_url} onChange={e => setForm(p => ({ ...p, linkedin_url: e.target.value }))} />
+                <label className="label" htmlFor="candidate-linkedin-url">LinkedIn URL</label>
+                <input id="candidate-linkedin-url" className="input" value={form.linkedin_url} onChange={e => setForm(p => ({ ...p, linkedin_url: e.target.value }))} />
               </div>
               <div>
-                <label className="label">Stage</label>
-                <select className="input" value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}>
+                <label className="label" htmlFor="candidate-stage">Stage</label>
+                <select id="candidate-stage" className="input" value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}>
                   {STAGES.map(s => <option key={s} value={s}>{STAGE_LABEL[s]}</option>)}
                 </select>
               </div>
               <div>
-                <label className="label">Source</label>
-                <input className="input" value={form.source} onChange={e => setForm(p => ({ ...p, source: e.target.value }))} />
+                <label className="label" htmlFor="candidate-source">Source</label>
+                <input id="candidate-source" className="input" value={form.source} onChange={e => setForm(p => ({ ...p, source: e.target.value }))} />
               </div>
               <div>
-                <label className="label">Follow-up date</label>
-                <input className="input" type="date" value={form.follow_up_date} onChange={e => setForm(p => ({ ...p, follow_up_date: e.target.value }))} />
+                <label className="label" htmlFor="candidate-follow-up-date">Follow-up date</label>
+                <input id="candidate-follow-up-date" className="input" type="date" value={form.follow_up_date} onChange={e => setForm(p => ({ ...p, follow_up_date: e.target.value }))} />
               </div>
               <div className="col-span-2">
-                <label className="label">Job / mandate they're being considered for</label>
-                <select className="input" value={form.job_id} onChange={e => setForm(p => ({ ...p, job_id: e.target.value }))}>
+                <label className="label" htmlFor="candidate-job-id">Job / mandate they're being considered for</label>
+                <select id="candidate-job-id" className="input" value={form.job_id} onChange={e => setForm(p => ({ ...p, job_id: e.target.value }))}>
                   <option value="">Not tied to a specific job</option>
                   {jobs.map(j => <option key={j.id} value={j.id}>{j.title}{j.companies?.name ? ` @ ${j.companies.name}` : ''}</option>)}
                 </select>
               </div>
               <div className="col-span-2">
-                <label className="label">Notes</label>
-                <textarea className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
+                <label className="label" htmlFor="candidate-notes">Notes</label>
+                <textarea id="candidate-notes" className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
               </div>
               <div className="col-span-2">
-                <label className="label">CV</label>
+                <label className="label" htmlFor="candidate-cv">CV</label>
                 {existingCvPath && !cvFile ? (
                   <div className="flex items-center gap-2 bg-page-bg rounded-lg px-3 py-2">
                     <span className="text-xs text-gray-600 flex-1 truncate">CV on file</span>
@@ -362,7 +362,7 @@ export default function Candidates() {
                   </div>
                 ) : (
                   <div className="border-2 border-dashed border-gray-200 rounded-lg p-4 text-center">
-                    <input type="file" accept=".pdf,.doc,.docx" onChange={e => setCvFile(e.target.files?.[0] || null)} className="text-xs" />
+                    <input id="candidate-cv" type="file" accept=".pdf,.doc,.docx" onChange={e => setCvFile(e.target.files?.[0] || null)} className="text-xs" />
                     <p className="text-[11px] text-gray-400 mt-1">{cvFile ? cvFile.name + ' ready to upload' : 'PDF or Word doc, max 20MB'}</p>
                   </div>
                 )}

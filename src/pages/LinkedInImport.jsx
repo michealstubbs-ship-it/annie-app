@@ -510,8 +510,8 @@ export default function LinkedInImport({ embedded = false }) {
             </div>
 
             <div className="flex items-center gap-3 mt-4">
-              <label className="text-sm text-gray-700 min-w-[130px]">Connected in last</label>
-              <input type="range" min="1" max="10" value={years} onChange={e => setYears(Number(e.target.value))} className="flex-1 accent-gold" />
+              <label className="text-sm text-gray-700 min-w-[130px]" htmlFor="li-import-years">Connected in last</label>
+              <input id="li-import-years" type="range" min="1" max="10" value={years} onChange={e => setYears(Number(e.target.value))} className="flex-1 accent-gold" />
               <span className="text-sm font-semibold text-navy min-w-[70px] text-right">{years} year{years === 1 ? '' : 's'}</span>
             </div>
           </div>

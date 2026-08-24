@@ -179,12 +179,17 @@ export default function Companies() {
       {/* Add/Edit company modal */}
       <Modal open={showCoModal} onClose={() => setShowCoModal(false)} title={editCo ? 'Edit Company' : 'Add Company'} maxWidth="max-w-md">
         <ErrorBanner>{coError}</ErrorBanner>
+        {/* co-edit-* prefix: this modal (showCoModal) can be mounted at the
+            same time as ContactFormModal/JobFormModal's CompanySelect (e.g.
+            open the company detail modal -> Edit -> without closing it,
+            Add contact -> Add new company), so its ids must not collide with
+            CompanySelect's own company-select-new-* ids. */}
         <div className="space-y-3">
-          <div><label className="label">Company name *</label><input className="input" value={coForm.name} onChange={e => setCoForm(p => ({ ...p, name: e.target.value }))} autoFocus /></div>
-          <div><label className="label">Industry</label><input className="input" value={coForm.industry} onChange={e => setCoForm(p => ({ ...p, industry: e.target.value }))} /></div>
-          <div><label className="label">Location</label><input className="input" value={coForm.location} onChange={e => setCoForm(p => ({ ...p, location: e.target.value }))} /></div>
-          <div><label className="label">Website</label><input className="input" value={coForm.website} onChange={e => setCoForm(p => ({ ...p, website: e.target.value }))} /></div>
-          <div><label className="label">Notes</label><textarea className="input resize-none" rows={3} value={coForm.notes} onChange={e => setCoForm(p => ({ ...p, notes: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="co-edit-name">Company name *</label><input id="co-edit-name" className="input" value={coForm.name} onChange={e => setCoForm(p => ({ ...p, name: e.target.value }))} autoFocus /></div>
+          <div><label className="label" htmlFor="co-edit-industry">Industry</label><input id="co-edit-industry" className="input" value={coForm.industry} onChange={e => setCoForm(p => ({ ...p, industry: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="co-edit-location">Location</label><input id="co-edit-location" className="input" value={coForm.location} onChange={e => setCoForm(p => ({ ...p, location: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="co-edit-website">Website</label><input id="co-edit-website" className="input" value={coForm.website} onChange={e => setCoForm(p => ({ ...p, website: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="co-edit-notes">Notes</label><textarea id="co-edit-notes" className="input resize-none" rows={3} value={coForm.notes} onChange={e => setCoForm(p => ({ ...p, notes: e.target.value }))} /></div>
         </div>
         <div className="flex gap-3 justify-end mt-5">
           <button onClick={() => setShowCoModal(false)} className="btn-ghost">Cancel</button>

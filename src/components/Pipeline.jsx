@@ -175,19 +175,19 @@ export default function Pipeline() {
       <Modal open={showModal} onClose={() => setShowModal(false)} title={editId ? 'Edit Deal' : 'Add Deal'} maxWidth="max-w-lg">
             <div className="space-y-3">
               {[['company','Company *','text'],['role','Role/Position','text'],['next_action','Next Action','text']].map(([f,l,t]) => (
-                <div key={f}><label className="label">{l}</label><input className="input" type={t} value={form[f]} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} /></div>
+                <div key={f}><label className="label" htmlFor={`pipeline-${f}`}>{l}</label><input id={`pipeline-${f}`} className="input" type={t} value={form[f]} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} /></div>
               ))}
               <div className="grid grid-cols-2 gap-3">
-                <div><label className="label">Value ({currencyLabel(currency)})</label><input className="input" type="number" value={form.value} onChange={e => setForm(p => ({ ...p, value: e.target.value }))} /></div>
-                <div><label className="label">Probability (%)</label><input className="input" type="number" min="0" max="100" value={form.probability} onChange={e => setForm(p => ({ ...p, probability: e.target.value }))} /></div>
+                <div><label className="label" htmlFor="pipeline-value">Value ({currencyLabel(currency)})</label><input id="pipeline-value" className="input" type="number" value={form.value} onChange={e => setForm(p => ({ ...p, value: e.target.value }))} /></div>
+                <div><label className="label" htmlFor="pipeline-probability">Probability (%)</label><input id="pipeline-probability" className="input" type="number" min="0" max="100" value={form.probability} onChange={e => setForm(p => ({ ...p, probability: e.target.value }))} /></div>
               </div>
-              <div><label className="label">Stage</label>
-                <select className="input" value={form.stage} onChange={e => setForm(p => ({ ...p, stage: e.target.value }))}>
+              <div><label className="label" htmlFor="pipeline-stage">Stage</label>
+                <select id="pipeline-stage" className="input" value={form.stage} onChange={e => setForm(p => ({ ...p, stage: e.target.value }))}>
                   {STAGES.map(s => <option key={s} value={s}>{STAGE_LABELS[s]}</option>)}
                 </select>
               </div>
-              <div><label className="label">Next action date</label><input className="input" type="date" value={form.next_action_date} onChange={e => setForm(p => ({ ...p, next_action_date: e.target.value }))} /></div>
-              <div><label className="label">Notes</label><textarea className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
+              <div><label className="label" htmlFor="pipeline-next-action-date">Next action date</label><input id="pipeline-next-action-date" className="input" type="date" value={form.next_action_date} onChange={e => setForm(p => ({ ...p, next_action_date: e.target.value }))} /></div>
+              <div><label className="label" htmlFor="pipeline-notes">Notes</label><textarea id="pipeline-notes" className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
             </div>
             <div className="flex gap-3 justify-end mt-5">
               <button onClick={() => setShowModal(false)} className="btn-ghost">Cancel</button>

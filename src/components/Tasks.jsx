@@ -222,17 +222,17 @@ export default function Tasks() {
             <form onSubmit={e => { e.preventDefault(); save() }}>
               <div className="space-y-3">
                 <div>
-                  <label className="label">Title *</label>
-                  <input className="input" required value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Follow up on proposal" />
+                  <label className="label" htmlFor="task-title">Title *</label>
+                  <input id="task-title" className="input" required value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Follow up on proposal" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="label">Due date</label>
-                    <input className="input" type="date" value={form.due_date} onChange={e => setForm(p => ({ ...p, due_date: e.target.value }))} />
+                    <label className="label" htmlFor="task-due-date">Due date</label>
+                    <input id="task-due-date" className="input" type="date" value={form.due_date} onChange={e => setForm(p => ({ ...p, due_date: e.target.value }))} />
                   </div>
                   <div>
-                    <label className="label">Priority</label>
-                    <select className="input" value={form.priority} onChange={e => setForm(p => ({ ...p, priority: e.target.value }))}>
+                    <label className="label" htmlFor="task-priority">Priority</label>
+                    <select id="task-priority" className="input" value={form.priority} onChange={e => setForm(p => ({ ...p, priority: e.target.value }))}>
                       <option value="low">Low</option>
                       <option value="normal">Normal</option>
                       <option value="high">High</option>
@@ -241,23 +241,23 @@ export default function Tasks() {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="label">Contact</label>
-                    <select className="input" value={form.contact_id} onChange={e => setForm(p => ({ ...p, contact_id: e.target.value }))}>
+                    <label className="label" htmlFor="task-contact">Contact</label>
+                    <select id="task-contact" className="input" value={form.contact_id} onChange={e => setForm(p => ({ ...p, contact_id: e.target.value }))}>
                       <option value="">None</option>
                       {contacts.map(c => <option key={c.id} value={c.id}>{c.name}{c.company ? ` (${c.company})` : ''}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label className="label">Candidate</label>
-                    <select className="input" value={form.candidate_id} onChange={e => setForm(p => ({ ...p, candidate_id: e.target.value }))}>
+                    <label className="label" htmlFor="task-candidate">Candidate</label>
+                    <select id="task-candidate" className="input" value={form.candidate_id} onChange={e => setForm(p => ({ ...p, candidate_id: e.target.value }))}>
                       <option value="">None</option>
                       {candidates.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
                 </div>
                 <div>
-                  <label className="label">Notes</label>
-                  <textarea className="input resize-none" rows={2} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
+                  <label className="label" htmlFor="task-notes">Notes</label>
+                  <textarea id="task-notes" className="input resize-none" rows={2} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
                 </div>
               </div>
               <div className="flex gap-3 justify-end mt-5">

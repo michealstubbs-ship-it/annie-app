@@ -136,32 +136,32 @@ export default function Login() {
             {mode === 'signup' && (
               <>
                 <div>
-                  <label className="label">Full name</label>
-                  <input className="input" type="text" placeholder="Michael Stubbs" value={form.fullName} onChange={e => update('fullName', e.target.value)} required />
+                  <label className="label" htmlFor="login-full-name">Full name</label>
+                  <input id="login-full-name" className="input" type="text" placeholder="Michael Stubbs" value={form.fullName} onChange={e => update('fullName', e.target.value)} required />
                 </div>
                 <div>
-                  <label className="label">Firm name</label>
-                  <input className="input" type="text" placeholder="Vantage Search Group" value={form.firmName} onChange={e => update('firmName', e.target.value)} required />
+                  <label className="label" htmlFor="login-firm-name">Firm name</label>
+                  <input id="login-firm-name" className="input" type="text" placeholder="Vantage Search Group" value={form.firmName} onChange={e => update('firmName', e.target.value)} required />
                 </div>
               </>
             )}
 
             <div>
-              <label className="label">Email address</label>
-              <input className="input" type="email" placeholder="you@yourfirm.com" value={form.email} onChange={e => update('email', e.target.value)} required />
+              <label className="label" htmlFor="login-email">Email address</label>
+              <input id="login-email" className="input" type="email" placeholder="you@yourfirm.com" value={form.email} onChange={e => update('email', e.target.value)} required />
             </div>
 
             {mode !== 'forgot' && (
               <div>
                 <div className="flex items-center justify-between">
-                  <label className="label">Password</label>
+                  <label className="label" htmlFor="login-password">Password</label>
                   {mode === 'login' && (
                     <button type="button" onClick={() => { setMode('forgot'); setError(''); setSuccess('') }} className="text-xs text-gold font-semibold hover:underline mb-1.5">
                       Forgot password?
                     </button>
                   )}
                 </div>
-                <input className="input" type="password" placeholder={mode === 'signup' ? 'Min. 8 characters' : '••••••••'} value={form.password} onChange={e => update('password', e.target.value)} required />
+                <input id="login-password" className="input" type="password" placeholder={mode === 'signup' ? 'Min. 8 characters' : '••••••••'} value={form.password} onChange={e => update('password', e.target.value)} required />
               </div>
             )}
 

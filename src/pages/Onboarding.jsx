@@ -275,8 +275,8 @@ export default function Onboarding() {
             <h2 className="text-2xl font-bold text-navy mb-1">Tell us about your firm</h2>
             <p className="text-gray-500 text-sm mb-6">Annie uses this to personalise everything for you.</p>
             <div>
-              <label className="label">Firm name</label>
-              <input className="input" placeholder="e.g. Vantage Search Group" value={form.firmName} onChange={e => update('firmName', e.target.value)} />
+              <label className="label" htmlFor="onboarding-firm-name">Firm name</label>
+              <input id="onboarding-firm-name" className="input" placeholder="e.g. Vantage Search Group" value={form.firmName} onChange={e => update('firmName', e.target.value)} />
             </div>
           </div>
         )}

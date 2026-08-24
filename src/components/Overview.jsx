@@ -120,10 +120,13 @@ export default function Overview() {
 
   async function pollSignals() {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-    // 2026-08-24: intelligence_signals is team-scoped by RLS — no client-side user_id filter on top of it.
+    // 2026-08-24: intelligence_signals is PERSONAL, not team-scoped — see
+    // lib/data/signals.js's header comment. A previous pass here incorrectly
+    // dropped this filter; restored, since different recruiters on the same
+    // team can be working entirely different markets.
     const [{ data: signalRows }, { data: signalCountRows }] = await Promise.all([
-      supabase.from('intelligence_signals').select('id, company_name, company_logo_url, headline, found_at').neq('status', 'actioned').order('found_at', { ascending: false }).limit(3),
-      supabase.from('intelligence_signals').select('id').gte('found_at', sevenDaysAgo),
+      supabase.from('intelligence_signals').select('id, company_name, company_logo_url, headline, found_at').eq('user_id', user.id).neq('status', 'actioned').order('found_at', { ascending: false }).limit(3),
+      supabase.from('intelligence_signals').select('id').eq('user_id', user.id).gte('found_at', sevenDaysAgo),
     ])
     setSignals(signalRows || [])
     setNewSignalsCount(signalCountRows?.length || 0)
@@ -150,14 +153,16 @@ export default function Overview() {
       // Actions cache (superseded by todays_action_state, see
       // TodaysActions/), not part of the 2026-08-24 team-scoping pass.
       supabase.from('actions_cache').select('*').eq('user_id', user.id).gt('expires_at', new Date().toISOString()).order('generated_at', { ascending: false }).limit(1).single(),
-      // Below: jobs/candidates/intelligence_signals/meetings/bd_tasks/contacts
-      // are all team-scoped by RLS now — dropping the user_id filter is what
-      // makes the dashboard reflect the whole team's pipeline, not just this
-      // user's slice of it, same as everywhere else in this pass.
+      // jobs/candidates/meetings/bd_tasks/contacts are the shared CRM —
+      // team-scoped by RLS, dropping the user_id filter is what makes the
+      // dashboard reflect the whole team's pipeline, not just this user's
+      // slice of it. intelligence_signals is the opposite (see
+      // lib/data/signals.js) and keeps its own explicit user_id filter
+      // below so the dashboard's signal widget stays personal too.
       supabase.from('jobs').select('id, status, fee_value'),
       supabase.from('candidates').select('id, status'),
-      supabase.from('intelligence_signals').select('id, company_name, company_logo_url, headline, found_at').neq('status', 'actioned').order('found_at', { ascending: false }).limit(3),
-      supabase.from('intelligence_signals').select('id').gte('found_at', sevenDaysAgo),
+      supabase.from('intelligence_signals').select('id, company_name, company_logo_url, headline, found_at').eq('user_id', user.id).neq('status', 'actioned').order('found_at', { ascending: false }).limit(3),
+      supabase.from('intelligence_signals').select('id').eq('user_id', user.id).gte('found_at', sevenDaysAgo),
       supabase.from('meetings').select('id, title, meeting_type, meeting_date').gte('meeting_date', todayStart).lte('meeting_date', todayEnd).order('meeting_date', { ascending: true }),
       supabase.from('bd_tasks').select('id, title, due_date').eq('status', 'open').lte('due_date', todayDateStr).order('due_date', { ascending: true }).limit(5),
       // head:true — just the count, no rows. Zero contacts is the signal that LinkedIn

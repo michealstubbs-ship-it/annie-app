@@ -77,8 +77,18 @@ export default function CompanySelect({ value, onChange, required = false, label
 
   return (
     <div>
-      {label && <label className="label">{label}{required ? ' *' : ''}</label>}
-      <select className="input" value={value || ''} onChange={handleSelect} disabled={loading}>
+      {/* Static ids: CompanySelect only ever has one mounted, visible
+          instance at a time (it's only rendered inside JobFormModal /
+          ContactFormModal, and those two are never open simultaneously —
+          see Companies.jsx's showContactModal/showJobModal gating). Its own
+          nested "Add company" modal below is prefixed separately
+          (company-select-new-*) so it can never collide with Companies.jsx's
+          own Add/Edit Company modal (co-edit-*), which can legitimately be
+          mounted at the same time as this component in a stacked-modal
+          scenario (Company detail modal -> Edit, plus Add contact -> Add
+          new company, both left open). */}
+      {label && <label className="label" htmlFor="company-select">{label}{required ? ' *' : ''}</label>}
+      <select id="company-select" className="input" value={value || ''} onChange={handleSelect} disabled={loading}>
         <option value="">{loading ? 'Loading companies...' : required ? 'Select a company...' : 'No company'}</option>
         {companies.map(c => <option key={c.id} value={c.id}>{c.name}{c.industry ? ` (${c.industry})` : ''}</option>)}
         <option value="__add__">+ Add new company...</option>
@@ -92,10 +102,10 @@ export default function CompanySelect({ value, onChange, required = false, label
         <p className="text-xs text-gray-500 mb-3">This creates a real company record. Everything you attach to it later (contacts, jobs) links back here, instead of typing the name fresh each time.</p>
         <ErrorBanner>{error}</ErrorBanner>
         <div className="space-y-3">
-          <div><label className="label">Company name *</label><input className="input" value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} autoFocus /></div>
-          <div><label className="label">Industry</label><input className="input" value={form.industry} onChange={e => setForm(p => ({ ...p, industry: e.target.value }))} /></div>
-          <div><label className="label">Location</label><input className="input" value={form.location} onChange={e => setForm(p => ({ ...p, location: e.target.value }))} /></div>
-          <div><label className="label">Website</label><input className="input" value={form.website} onChange={e => setForm(p => ({ ...p, website: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="company-select-new-name">Company name *</label><input id="company-select-new-name" className="input" value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} autoFocus /></div>
+          <div><label className="label" htmlFor="company-select-new-industry">Industry</label><input id="company-select-new-industry" className="input" value={form.industry} onChange={e => setForm(p => ({ ...p, industry: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="company-select-new-location">Location</label><input id="company-select-new-location" className="input" value={form.location} onChange={e => setForm(p => ({ ...p, location: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="company-select-new-website">Website</label><input id="company-select-new-website" className="input" value={form.website} onChange={e => setForm(p => ({ ...p, website: e.target.value }))} /></div>
         </div>
         <div className="flex gap-3 justify-end mt-5">
           <button onClick={() => setShowAdd(false)} className="btn-ghost">Cancel</button>
