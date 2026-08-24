@@ -122,7 +122,7 @@ describe('buildSourcedPool — the M2 "never ages out" fix', () => {
   })
 
   it('a manually-added signal clears the age cutoff even when otherwise past SOURCED_MAX_AGE_DAYS — "Add to Today\'s BD Actions" from the Feed always sticks, no dependency on cache timing', () => {
-    const veryOldButChosen = [{ id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(400), contact_verified: false, signal_type: 'funding', manually_added_at: daysAgoIso(0) }]
+    const veryOldButChosen = [{ id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(400), contact_verified: false, contact_candidates: [{ name: 'Jane Doe' }], signal_type: 'funding', manually_added_at: daysAgoIso(0) }]
     const pool = buildSourcedPool(veryOldButChosen, [])
     expect(pool).toHaveLength(1)
   })
@@ -154,7 +154,7 @@ describe('buildSourcedPool — the M2 "never ages out" fix', () => {
   )
 
   it('still includes a genuinely fresh signal', () => {
-    const freshSignal = [{ id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(2), contact_verified: false, signal_type: 'funding' }]
+    const freshSignal = [{ id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(2), contact_verified: false, contact_candidates: [{ name: 'Jane Doe' }], signal_type: 'funding' }]
     const pool = buildSourcedPool(freshSignal, [])
     expect(pool).toHaveLength(1)
     expect(pool[0].score).toBeGreaterThanOrEqual(20)
@@ -166,22 +166,22 @@ describe('buildSourcedPool — the M2 "never ages out" fix', () => {
     expect(buildSourcedPool(signals, contacts)).toEqual([])
   })
 
-  it('a contact-verified signal scores higher than an otherwise-identical unverified one', () => {
-    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(1), signal_type: 'funding' }
+  it('a contact-verified signal scores higher than an otherwise-identical unverified one (both carrying a contact candidate, so the contact-requirement filter isn\'t what\'s being measured here)', () => {
+    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(1), signal_type: 'funding', contact_candidates: [{ name: 'Jane Doe' }] }
     const [unverified] = buildSourcedPool([{ ...base, contact_verified: false }], [])
     const [verified] = buildSourcedPool([{ ...base, contact_verified: true }], [])
     expect(verified.score).toBeGreaterThan(unverified.score)
   })
 
   it('a live_job entry scores higher than an otherwise-identical generic signal — a specific real open role is the strongest lead this pool surfaces', () => {
-    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(1), contact_verified: false }
+    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(1), contact_verified: false, contact_candidates: [{ name: 'Jane Doe' }] }
     const [generic] = buildSourcedPool([{ ...base, signal_type: 'funding' }], [])
     const [liveJob] = buildSourcedPool([{ ...base, signal_type: 'live_job' }], [])
     expect(liveJob.score).toBeGreaterThan(generic.score)
   })
 
   it('a live_job entry still counts as urgent up to 7 days old, wider than the 3-day window an ordinary racy signal gets — a real open req stays live longer than a news mention', () => {
-    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'live_job', contact_verified: false }
+    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'live_job', contact_verified: false, contact_candidates: [{ name: 'Jane Doe' }] }
     const [recent] = buildSourcedPool([{ ...base, found_at: daysAgoIso(6) }], [])
     expect(recent.urgency).toBe(2)
   })
@@ -191,24 +191,58 @@ describe('buildSourcedPool — the M2 "never ages out" fix', () => {
     // longer whitelisted for Today's BD Actions at all (see
     // BD_ACTION_SIGNAL_TYPES) — expansion is racy and still whitelisted, so
     // it's the one that actually exercises this scoring path today.
-    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'expansion', contact_verified: false }
+    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'expansion', contact_verified: false, contact_candidates: [{ name: 'Jane Doe' }] }
     const [older] = buildSourcedPool([{ ...base, found_at: daysAgoIso(6) }], [])
     expect(older.urgency).toBe(1)
   })
 
   it('a leadership_change entry scores higher than an otherwise-identical generic signal — a new leader is a high-value opportunity', () => {
-    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(1), contact_verified: false }
+    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', found_at: daysAgoIso(1), contact_verified: false, contact_candidates: [{ name: 'Jane Doe' }] }
     const [generic] = buildSourcedPool([{ ...base, signal_type: 'funding' }], [])
     const [leadership] = buildSourcedPool([{ ...base, signal_type: 'leadership_change' }], [])
     expect(leadership.score).toBeGreaterThan(generic.score)
   })
 
   it('a leadership_change entry stays urgency 2 well past the 3-7 day window ordinary signals get, up to 60 days', () => {
-    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'leadership_change', contact_verified: false }
+    const base = { id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'leadership_change', contact_verified: false, contact_candidates: [{ name: 'Jane Doe' }] }
     const [fresh] = buildSourcedPool([{ ...base, found_at: daysAgoIso(1) }], [])
     const [older] = buildSourcedPool([{ ...base, found_at: daysAgoIso(45) }], [])
     expect(fresh.urgency).toBe(2)
     expect(older.urgency).toBe(2)
+  })
+})
+
+describe('buildSourcedPool — a BD action always has someone real to approach (2026-08-23)', () => {
+  // The exact regression this guards: a DP World leadership-change card
+  // reached Today's BD Actions with neither contact_verified nor any
+  // contact_candidates — "no verified contact found yet, approach by role"
+  // — and still rendered a headline, a candidate pitch, and a "lead with
+  // this" prompt as if it were an actionable task for today. Fixing only
+  // the card's own message panel wasn't enough; a card with nobody to
+  // approach shouldn't reach the list at all.
+  const base = { id: 's1', company_name: 'DP World', status: 'new', found_at: daysAgoIso(1), signal_type: 'leadership_change' }
+
+  it('excludes a signal with no verified contact and no contact candidates', () => {
+    expect(buildSourcedPool([{ ...base, contact_verified: false, contact_candidates: [] }], [])).toEqual([])
+  })
+
+  it('excludes a signal where contact_candidates is missing entirely, not just empty', () => {
+    expect(buildSourcedPool([{ ...base, contact_verified: false }], [])).toEqual([])
+  })
+
+  it('includes a signal with a single verified contact, even with no candidate panel', () => {
+    const pool = buildSourcedPool([{ ...base, contact_verified: true, contact_candidates: [] }], [])
+    expect(pool).toHaveLength(1)
+  })
+
+  it('includes a signal with at least one contact candidate, even when not itself contact_verified', () => {
+    const pool = buildSourcedPool([{ ...base, contact_verified: false, contact_candidates: [{ name: 'Jane Doe', function: 'commercial' }] }], [])
+    expect(pool).toHaveLength(1)
+  })
+
+  it('still excludes a contact-less signal even when manually added — same no-bypass rule as the signal-type whitelist', () => {
+    const signals = [{ ...base, contact_verified: false, contact_candidates: [], manually_added_at: daysAgoIso(0) }]
+    expect(buildSourcedPool(signals, [])).toEqual([])
   })
 })
 

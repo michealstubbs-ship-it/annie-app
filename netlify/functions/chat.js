@@ -82,18 +82,45 @@ export default async (req, context) => {
       }),
     }
 
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify(payload),
-    })
+    // Anthropic occasionally answers a well-formed, well-authenticated
+    // request with a transient 429 (rate limited) or 529 (overloaded) —
+    // this is the actual mechanism behind the 2026-08-23 "worked once, then
+    // failed on the very next message" report: two real messages sent
+    // seconds apart, no client bug, just an ordinary upstream blip. One
+    // short retry absorbs that class of failure instead of surfacing it to
+    // the customer as a dead end.
+    const TRANSIENT_ANTHROPIC_STATUSES = [429, 529]
+    let resp, errText
+    for (let attempt = 0; attempt < 2; attempt++) {
+      resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(payload),
+      })
+      if (resp.ok) break
+      errText = await resp.text()
+      if (attempt === 0 && TRANSIENT_ANTHROPIC_STATUSES.includes(resp.status)) {
+        await new Promise(r => setTimeout(r, 500))
+        continue
+      }
+      break
+    }
 
     if (!resp.ok) {
-      const errText = await resp.text()
+      // This branch used to return the failure straight to the caller
+      // without ever calling reportServerError — every Anthropic-side
+      // failure (rate limit, overload, malformed request) was completely
+      // invisible in error_logs, which is exactly how the 2026-08-23
+      // intermittent chat failures went unexplained: real, repeated
+      // production failures, zero trace of any of them anywhere I could
+      // check. Logged here now (status + body, truncated) so a repeat is
+      // diagnosable instead of invisible, and so error-rate-monitor.js's
+      // hourly spike check actually sees it too.
+      await reportServerError('chat', new Error(`Anthropic ${resp.status}: ${(errText || 'no body').slice(0, 500)}`), { status: resp.status })
       // Normalized to the same { error } JSON shape as every other response
       // in this file — this used to forward Anthropic's raw error text
       // verbatim with no Content-Type, a different shape from every other

@@ -63,14 +63,9 @@ export default function SupportWidget() {
     setInput('')
     setLoading(true)
 
-    // Tagging runs in the background and never blocks the reply the customer is waiting on
-    let insertedUserId = null
-    supabase.from('support_messages').insert({ user_id: user.id, role: 'user', content: userMsg.content }).select().single()
-      .then(({ data }) => { insertedUserId = data?.id; return tagTopic(userMsg.content) })
-      .then(topic => {
-        if (topic && insertedUserId) supabase.from('support_messages').update({ topic }).eq('id', insertedUserId)
-      })
-      .catch(() => {})
+    // The user's own message is written immediately — that's a plain DB
+    // insert, not an Anthropic call, so it's free to fire right away.
+    const insertPromise = supabase.from('support_messages').insert({ user_id: user.id, role: 'user', content: userMsg.content }).select().single()
 
     try {
       const { text } = await callChat({
@@ -86,6 +81,21 @@ export default function SupportWidget() {
     } finally {
       setLoading(false)
     }
+
+    // Topic-tagging is cosmetic metadata only, and now deliberately runs
+    // AFTER the real reply above has fully settled rather than
+    // concurrently with it. It used to fire in parallel with the reply's
+    // own callChat request, which meant every single customer message
+    // quietly doubled as two simultaneous Anthropic API calls — right at
+    // the moment the real, user-facing reply needed rate-limit headroom
+    // most. That's the actual mechanism behind the 2026-08-23 report of the
+    // widget working once and then failing on the very next message: not a
+    // one-off outage, a self-inflicted doubling of load on every message.
+    insertPromise
+      .then(({ data }) => data?.id && tagTopic(userMsg.content).then(topic => {
+        if (topic) supabase.from('support_messages').update({ topic }).eq('id', data.id)
+      }))
+      .catch(() => {})
   }
 
   if (!user) return null

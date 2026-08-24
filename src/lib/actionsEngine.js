@@ -227,6 +227,16 @@ export function buildSourcedPool(intelligenceSignals, contacts) {
     // chance to run, so choosing "Add to Today's BD Actions" on one from the
     // Feed can't override this either.
     .filter(s => BD_ACTION_SIGNAL_TYPES.includes(s.signal_type))
+    // 2026-08-23: a real BD action always comes with someone to actually
+    // approach — a card whose "who to approach" is just a generic role
+    // ("CFO or Head of Corporate Development") with nobody's name behind it
+    // isn't a lead yet, it's a headline. This used to only be enforced by
+    // hiding the message/pitch panel inside the card, which meant the card
+    // itself — headline, "what Annie found", a candidate pitch worded as a
+    // ready line — still showed up as if it were a task for today. No
+    // bypass for a manually-added signal either, same as the type whitelist
+    // above: adding a signal to the list doesn't conjure a contact for it.
+    .filter(s => s.contact_verified || (Array.isArray(s.contact_candidates) && s.contact_candidates.length > 0))
     .map(s => {
       const daysFound = daysSince(s.found_at) ?? 999
       // Leadership-change gets a wider cutoff than the ordinary
