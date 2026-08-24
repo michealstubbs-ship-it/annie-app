@@ -20,8 +20,8 @@ export default function Welcome() {
           <div className="w-14 h-14 rounded-full bg-yellow-50 border-2 border-gold flex items-center justify-center mx-auto mb-4">
             <span className="text-2xl">✉️</span>
           </div>
-          <h1 className="text-2xl font-bold text-navy mb-2">You're in — check your email</h1>
-          <p className="text-gray-500 text-sm mb-6">Your trial has started. We've sent a link to set your password and get into Annie — it can take a couple of minutes to arrive, check spam if you don't see it.</p>
+          <h1 className="text-2xl font-bold text-navy mb-2">You're in, check your email</h1>
+          <p className="text-gray-500 text-sm mb-6">Your trial has started. We've sent a link to set your password and get into Annie. It can take a couple of minutes to arrive, check spam if you don't see it.</p>
           <Link to="/login" className="text-gold font-semibold text-sm hover:underline">Already set your password? Sign in</Link>
         </div>
       </div>
