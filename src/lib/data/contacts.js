@@ -8,8 +8,12 @@ import { supabase } from '../supabase'
 // to this table (a renamed column, a new required field, an added RLS
 // concern) has one file to touch instead of three.
 
+// 2026-08-24: contacts is team-scoped — RLS already restricts every row to
+// the caller's active team, so none of the reads below add a client-side
+// user_id filter on top of it. userId is kept as a parameter only where a
+// write still needs to stamp who created a row.
 export async function listContacts(userId) {
-  const { data } = await supabase.from('contacts').select('*').eq('user_id', userId).order('created_at', { ascending: false })
+  const { data } = await supabase.from('contacts').select('*').order('created_at', { ascending: false })
   return data || []
 }
 
@@ -19,7 +23,6 @@ export async function listContactsWithCompany(userId) {
   const { data } = await supabase
     .from('contacts')
     .select('id, name, title, email, status, company_id')
-    .eq('user_id', userId)
     .not('company_id', 'is', null)
   return data || []
 }
@@ -40,7 +43,7 @@ export function deleteContact(id) {
 // to show a name (and company, for disambiguating two "John"s) in a
 // dropdown, not the full contact record.
 export async function listContactsMinimal(userId) {
-  const { data } = await supabase.from('contacts').select('id, name, company').eq('user_id', userId).order('name')
+  const { data } = await supabase.from('contacts').select('id, name, company').order('name')
   return data || []
 }
 
@@ -48,6 +51,6 @@ export async function listContactsMinimal(userId) {
 // contact, just enough fields to match a signal's company against and to
 // show if a match is found.
 export async function listContactsForMatching(userId) {
-  const { data } = await supabase.from('contacts').select('id, name, title, company, linkedin_url').eq('user_id', userId)
+  const { data } = await supabase.from('contacts').select('id, name, title, company, linkedin_url')
   return data || []
 }

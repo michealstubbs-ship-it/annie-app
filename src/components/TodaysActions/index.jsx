@@ -6,6 +6,8 @@ import { firstNameOf } from '../../lib/outreachMessage'
 import ApproachPicker from '../ApproachPicker'
 import CompanyLogo from '../CompanyLogo'
 import CandidateProfileBox from '../CandidateProfileBox'
+import ErrorBanner from '../ErrorBanner'
+import Spinner from '../Spinner'
 
 // Page shell only — all data and mutations come from useTodaysActions.js.
 // Everything kept as local state here is genuinely UI-only: which card is
@@ -53,15 +55,13 @@ export default function TodaysActions() {
 
       {loading && (
         <div className="card p-10 text-center mt-6">
-          <div className="w-12 h-12 border-4 border-gold border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          <Spinner size="lg" className="mx-auto mb-4" />
           <p className="text-navy font-semibold">Annie is thinking...</p>
           <p className="text-gray-500 text-sm mt-1">Scoring your pipeline against what she's already found</p>
         </div>
       )}
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4 mt-6">{error}</div>
-      )}
+      {error && <ErrorBanner className="mt-6">{error}</ErrorBanner>}
 
       {generated && actions.length > 0 && (() => {
         const rows = actions.map((action, i) => ({ action, i }))

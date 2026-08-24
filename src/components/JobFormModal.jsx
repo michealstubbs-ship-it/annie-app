@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
+import { createJob, updateJob } from '../lib/data/jobs'
 import CompanySelect from './CompanySelect'
 import Modal from './Modal'
+import ErrorBanner from './ErrorBanner'
 
 const LIKELIHOOD_OPTIONS = [
   { value: '5', label: '★★★★★ Very likely (90%+)' },
@@ -89,11 +90,11 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
       }
       let result
       if (editJob) {
-        const { data, error: err } = await supabase.from('jobs').update(row).eq('id', editJob.id).select().single()
+        const { data, error: err } = await updateJob(editJob.id, row)
         if (err) throw err
         result = data
       } else {
-        const { data, error: err } = await supabase.from('jobs').insert({ ...row, user_id: user.id }).select().single()
+        const { data, error: err } = await createJob(row, user.id)
         if (err) throw err
         result = data
       }
@@ -109,7 +110,7 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
   return (
     <Modal open={open} onClose={onClose} title={editJob ? 'Edit job' : 'Add job'} maxWidth="max-w-lg">
       <form onSubmit={e => { e.preventDefault(); save() }}>
-        {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{error}</div>}
+        <ErrorBanner>{error}</ErrorBanner>
         <div className="space-y-3">
           <div><label className="label">Job title *</label><input required className="input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Senior Software Engineer" /></div>
 

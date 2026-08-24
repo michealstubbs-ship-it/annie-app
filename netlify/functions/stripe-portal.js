@@ -8,6 +8,7 @@ import { createClient } from '@supabase/supabase-js'
 import Stripe from 'stripe'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
+import { createTimeoutFetch } from './lib/scanShared.js'
 
 export default async (req) => {
   if (req.method !== 'POST') {
@@ -30,7 +31,9 @@ export default async (req) => {
   }
 
   const stripe = new Stripe(stripeKey)
-  const supabase = createClient(supabaseUrl, serviceKey)
+  // 2026-08-24 Task 3: createTimeoutFetch applied — see its own header in
+  // scanShared.js.
+  const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
 
   try {
     const { data: sub } = await supabase

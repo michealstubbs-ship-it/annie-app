@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { callChat } from '../lib/callChat'
 import ConfirmDialog from './ConfirmDialog'
+import ErrorBanner from './ErrorBanner'
 
 export default function Settings() {
   const navigate = useNavigate()
@@ -213,7 +214,7 @@ Only return the style profile text, nothing else.`
           value={pastedMessages}
           onChange={e => setPastedMessages(e.target.value)}
         />
-        {styleError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{styleError}</div>}
+        <ErrorBanner>{styleError}</ErrorBanner>
         <button onClick={analyseStyle} disabled={analysing} className="btn-ghost mb-4">{analysing ? 'Analysing...' : 'Analyse my style'}</button>
 
         <label className="label">Your style profile</label>
@@ -245,7 +246,7 @@ Only return the style profile text, nothing else.`
             <h3 className="text-sm font-bold text-navy mb-1">Research scan</h3>
             <p className="text-sm text-gray-500 mb-3">Ask Annie to research your market again right now, instead of waiting for her automatic scan.</p>
 
-            {scanError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{scanError}</div>}
+            <ErrorBanner>{scanError}</ErrorBanner>
 
             <button
               onClick={runNewScan}
@@ -273,7 +274,7 @@ Only return the style profile text, nothing else.`
         <h2 className="text-lg font-bold text-navy mb-1">Data & privacy</h2>
         <p className="text-sm text-gray-500 mb-4">Request a copy of your data, or request that your account and data be deleted. We handle these requests manually and will follow up at {user?.email || 'your account email'}.</p>
 
-        {requestError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{requestError}</div>}
+        <ErrorBanner>{requestError}</ErrorBanner>
 
         <div className="flex flex-wrap items-center gap-3">
           <button

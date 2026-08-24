@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
+import ErrorBanner from '../components/ErrorBanner'
 
 export default function Login() {
   const { signIn, signUp, resetPassword, resendConfirmation } = useAuth()
@@ -111,7 +112,7 @@ export default function Login() {
           </p>
 
           {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">
+            <ErrorBanner>
               {error}
               {showResend && (
                 <button type="button" onClick={handleResend} className="block mt-2 text-gold font-semibold hover:underline">
@@ -123,7 +124,7 @@ export default function Login() {
                   Sign in instead
                 </button>
               )}
-            </div>
+            </ErrorBanner>
           )}
           {success && (
             <div className="bg-green-50 border border-green-200 text-green-700 rounded-lg px-4 py-3 text-sm mb-4">

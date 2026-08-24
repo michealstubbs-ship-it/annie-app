@@ -7,8 +7,11 @@ import { supabase } from '../supabase'
 
 // Companies.jsx's company-detail panel: just enough per job to count open
 // roles per company client-side (see jobsFor()).
+// 2026-08-24: jobs is team-scoped — RLS already restricts every row to the
+// caller's active team, so none of the reads below add a client-side
+// user_id filter on top of it.
 export async function listJobsMinimal(userId) {
-  const { data } = await supabase.from('jobs').select('id, title, status, company_id').eq('user_id', userId)
+  const { data } = await supabase.from('jobs').select('id, title, status, company_id')
   return data || []
 }
 
@@ -17,7 +20,6 @@ export async function listActiveJobsForPicker(userId) {
   const { data } = await supabase
     .from('jobs')
     .select('id, title, companies(name)')
-    .eq('user_id', userId)
     .in('status', ['active', 'onhold'])
     .order('title')
   return data || []
@@ -29,7 +31,6 @@ export async function listJobsWithCompanies(userId) {
   const { data } = await supabase
     .from('jobs')
     .select('*, companies(name, industry, location)')
-    .eq('user_id', userId)
     .order('created_at', { ascending: false })
   return data || []
 }

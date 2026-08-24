@@ -8,6 +8,7 @@ import CompanyLogo from './CompanyLogo'
 import { logSignalOutcome } from '../lib/signalOutcomes'
 import { trackEvent } from '../lib/analytics'
 import { SIGNAL_TYPE_META as TYPE_META, RACY_SIGNAL_TYPES as RACY_TYPES, NEWS_SIGNAL_TYPES } from '../lib/signalTypes'
+import Spinner from './Spinner'
 
 function timeAgo(dateStr) {
   if (!dateStr) return null
@@ -177,7 +178,7 @@ export default function IntelligenceFeed() {
       )}
 
       {loading ? (
-        <div className="flex justify-center py-20"><div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" /></div>
+        <div className="flex justify-center py-20"><Spinner /></div>
       ) : visible.length === 0 ? (
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">🔍</div>
@@ -194,7 +195,24 @@ export default function IntelligenceFeed() {
               <div
                 key={s.id}
                 onClick={() => markSeen(s)}
-                className={`relative cursor-pointer px-4 py-3.5 border-b border-gray-200 last:border-b-0 ${unread ? 'bg-gold/[0.045]' : ''}`}
+                // 2026-08-24 Task 4: this was mouse-only — no way for a
+                // keyboard user to trigger the same "viewing marks it seen"
+                // behaviour every other interactive element on this card
+                // already gets via real <button>/<a> tags. role="button" +
+                // tabIndex + onKeyDown gives it an equivalent keyboard path;
+                // the nested controls below already stopPropagation and
+                // keep their own independent tab stops, so this doesn't
+                // change how they're reached.
+                role="button"
+                tabIndex={0}
+                aria-label={`${s.company_name}: ${s.headline}${unread ? ' (new, click to mark seen)' : ''}`}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    markSeen(s)
+                  }
+                }}
+                className={`relative cursor-pointer px-4 py-3.5 border-b border-gray-200 last:border-b-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-gold focus-visible:-outline-offset-2 ${unread ? 'bg-gold/[0.045]' : ''}`}
               >
                 {unread && <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-gold" />}
                 <div className="flex gap-3">

@@ -5,11 +5,12 @@ import { supabase } from '../supabase'
 // listTasksWithLinks rather than listBdTasks... to match the table's own
 // name in code (bd_tasks) while reading naturally at the call site.
 
+// 2026-08-24: bd_tasks is team-scoped — RLS already restricts every row to
+// the caller's active team, so no client-side user_id filter on top of it.
 export async function listTasksWithLinks(userId) {
   const { data } = await supabase
     .from('bd_tasks')
     .select('*, contacts(name, company), candidates(name)')
-    .eq('user_id', userId)
     .order('due_date', { ascending: true, nullsFirst: false })
   return data || []
 }

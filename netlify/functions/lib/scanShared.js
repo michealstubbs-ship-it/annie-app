@@ -556,7 +556,14 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase,
   // cache-worthy fact too, see the comment on step 1.
   if (supabase) {
     try {
-      await supabase.from('company_contacts').upsert({
+      // 2026-08-24 Task 5: the try/catch here only ever caught a network-
+      // level throw — the Supabase client resolves normally with `error`
+      // set on a query-level failure (RLS denial, constraint violation), so
+      // that case was silently invisible despite looking handled. Result:
+      // the cache never actually writes, and every future scan re-spends an
+      // Apollo credit re-looking-up a company/contact that was supposedly
+      // already cached, with nothing in the logs to explain the drift.
+      const { error } = await supabase.from('company_contacts').upsert({
         company_name_key: cacheKey,
         title_key: titleKey,
         contact_name: result?.name || null,
@@ -566,6 +573,7 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase,
         contact_verified: !!result,
         checked_at: new Date().toISOString(),
       }, { onConflict: 'company_name_key,title_key' })
+      if (error) console.error(`[scanShared] contact cache write failed for "${company}" (${titleKey}):`, error.message)
     } catch (err) {
       console.error(`[scanShared] contact cache write failed for "${company}" (${titleKey}):`, err.message)
     }
@@ -887,7 +895,10 @@ export async function enrichCompany(apolloKey, company, supabase) {
   // at most once per company rather than re-guessed on every scan.
   if (supabase) {
     try {
-      await supabase.from('company_enrichment').upsert({
+      // 2026-08-24 Task 5: same gap as company_contacts above — a
+      // query-level `error` resolves normally rather than throwing, so this
+      // catch alone never saw it. Checked explicitly now.
+      const { error } = await supabase.from('company_enrichment').upsert({
         company_name_key: cacheKey,
         company_name: company,
         domain: result?.domain || null,
@@ -900,6 +911,7 @@ export async function enrichCompany(apolloKey, company, supabase) {
         matched: !!result,
         enriched_at: new Date().toISOString(),
       }, { onConflict: 'company_name_key' })
+      if (error) console.error(`[scanShared] company_enrichment cache write failed for "${company}":`, error.message)
     } catch (err) {
       console.error(`[scanShared] company_enrichment cache write failed for "${company}":`, err.message)
     }

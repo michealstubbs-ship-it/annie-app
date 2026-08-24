@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
+import { listMeetingsWithContacts, createMeeting, updateMeeting, deleteMeeting } from '../lib/data/meetings'
+import { listContactsMinimal } from '../lib/data/contacts'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
+import Spinner from './Spinner'
 
 const TYPE_LABEL = { call: 'Call', video: 'Video', in_person: 'In person' }
 const TYPE_ICON = { call: '📞', video: '💻', in_person: '🤝' }
@@ -38,12 +40,14 @@ export default function Meetings() {
 
   async function load() {
     setLoading(true)
-    const [{ data: m }, { data: c }] = await Promise.all([
-      supabase.from('meetings').select('*, contacts(name, company)').eq('user_id', user.id).order('meeting_date', { ascending: false }),
-      supabase.from('contacts').select('id, name, company').eq('user_id', user.id).order('name'),
+    // 2026-08-24 Task 2: routed through lib/data/* (previously duplicated
+    // inline here) so this table's query shape lives in exactly one place.
+    const [m, c] = await Promise.all([
+      listMeetingsWithContacts(user.id),
+      listContactsMinimal(user.id),
     ])
-    setMeetings(m || [])
-    setContacts(c || [])
+    setMeetings(m)
+    setContacts(c)
     setLoading(false)
   }
 
@@ -84,10 +88,10 @@ export default function Meetings() {
         updated_at: new Date().toISOString(),
       }
       if (editId) {
-        const { error: err } = await supabase.from('meetings').update(row).eq('id', editId)
+        const { error: err } = await updateMeeting(editId, row)
         if (err) throw err
       } else {
-        const { error: err } = await supabase.from('meetings').insert({ ...row, user_id: user.id })
+        const { error: err } = await createMeeting(row, user.id)
         if (err) throw err
       }
       await load()
@@ -101,7 +105,7 @@ export default function Meetings() {
 
   async function del(id) {
     setListError('')
-    const { error: err } = await supabase.from('meetings').delete().eq('id', id)
+    const { error: err } = await deleteMeeting(id)
     if (err) return setListError(err.message)
     setMeetings(prev => prev.filter(m => m.id !== id))
   }
@@ -145,10 +149,10 @@ export default function Meetings() {
         <button onClick={openAdd} className="btn-primary">+ Log Meeting</button>
       </div>
 
-      {listError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-4">{listError}</div>}
+      <ErrorBanner>{listError}</ErrorBanner>
 
       {loading ? (
-        <div className="flex items-center justify-center py-20"><div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" /></div>
+        <div className="flex items-center justify-center py-20"><Spinner /></div>
       ) : meetings.length === 0 ? (
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">📅</div>

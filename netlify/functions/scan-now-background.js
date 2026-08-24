@@ -137,47 +137,19 @@ function introMessageInstruction(onboarding) {
   Special case, leadership_change only: if this entry's signalType is "leadership_change", the opening line instead becomes something like "I hope you are doing well, and congratulations on the new role." (your own natural phrasing of that sentiment, not copied verbatim), and paragraph 2 additionally includes, after the insight, a sentence in your own words to the effect of "I am sure with your new role, you will be looking to add to your team, or perhaps make some key changes" before the regional-experience and value-add close. Every other signal type keeps the plain opening line and paragraph 2 without this addition.`
 }
 
-// 2026-08-24: what actually search-covers hiring/leadership vs. everything
-// else. When a single call has to cover nine signal types plus multiple
-// named UAE job boards plus LinkedIn out of one shared search budget,
-// hiring/leadership — the two Michael actually wants Today's Actions built
-// on — end up thin, not because nothing's told to look for them, but
-// because they're competing for the same budget as funding, M&A,
-// regulatory, and everything else. buildScanPrompt's default (focus
-// undefined) is untouched from before this change. Passing
-// focus:'hiring_leadership' swaps in a narrower brief covering only
-// leadership_change and live_job — no funding/expansion/M&A/regulatory
-// search effort spent this pass at all — with real search-query patterns
-// (LinkedIn appointment posts, trade press, named job boards crossed with
-// this recruiter's actual functions) and explicit seniority guidance
-// (Director/VP/Head, the N-1 tier, over C-suite). Called as a genuinely
-// separate, additional AI call per sector group in scan-now-background.js
-// below, with its own full search budget, rather than folded into the one
-// call that already has eight other things to look for.
-function hiringLeadershipSearchInstructions(functions, sectorsForPrompt, locations) {
-  return `Focus this pass entirely on two things: leadership changes, and genuine, specific open roles. Do not spend any search effort this pass on funding, expansion, M&A, regulatory news, or general commentary — a separate pass already covers those; this one exists purely to dig deeper on the two signal types that turn into real, fast BD action.
-
-LEADERSHIP CHANGES — prioritise appointments one or two levels below C-suite: Director, VP, Head of [function], General Manager, Managing Director of a specific division — over CEO/CFO/COO-level moves, specifically within the functions this recruiter places into (${functions || 'this recruiter\'s functions'}). A newly appointed Head of Engineering or Project Finance Director is far more likely to be actively rebuilding their own team in their first few months than a newly appointed CEO is. Only include a C-suite appointment if your source gives direct evidence of near-term hiring intent (e.g. they're explicitly quoted on building out a team) — otherwise leave C-suite moves out of this pass entirely, they're noise for this purpose. General news search under-indexes this level of appointment badly, so search the way appointments at this level actually get announced, not just general company news: try patterns like site:linkedin.com/posts "[company]" appoints, "[company]" names new [function] director, [function] director appointed ${sectorsForPrompt?.join(' OR ') || 'these sectors'} ${locations || ''}, and check press-release wires and trade publications for these sectors specifically, not only mainstream news search.
-
-GENUINE OPEN ROLES (live_job entries) — never write a headline like "Company X hiring 500 people" or "Company X on a hiring push", that's not a specific, actionable lead and has no place in this pass. Only ever write a live_job entry for one exact, named, currently open role with a real posting you can cite. Search each of this recruiter's markets directly and exhaustively: each company's own careers page, Bayt, GulfTalent, NaukriGulf, Dubizzle Jobs, and LinkedIn Jobs postings, combining a specific function or title from this recruiter's placement functions with each market and sector in turn, e.g. "[function] jobs [market] site:bayt.com", "[sector] [function] vacancy [market]" — not generic sector-only searches. Work through each of these sources for each relevant function/sector combination rather than a handful of generic queries; thin, shallow coverage here is the exact problem this pass exists to fix, so be exhaustive rather than stopping after one or two searches per source.
-
-Return up to 10 entries total across both categories, fewer if you genuinely can't find good ones after searching thoroughly this way, never pad with filler.`
-}
-
 function buildScanPrompt(onboarding, recentCompanies, opts = {}) {
   const functions = onboarding?.functions?.length ? onboarding.functions.join(', ') : null
   const sectorsForPrompt = opts.sectorsOverride?.length ? opts.sectorsOverride : onboarding?.sectors
   const introMessageField = introMessageInstruction(onboarding)
-  const isHiringLeadershipFocus = opts.focus === 'hiring_leadership'
   return `You are Annie, an expert BD researcher for a recruitment firm.
 Sectors: ${sectorsForPrompt?.join(', ') || 'General recruitment'}.
 Functions this recruiter places candidates into: ${functions || 'All functions, no specific focus given'}.
 Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Communication tone: ${onboarding?.tone || 'professional'}.
 ${onboarding?.writing_style ? `The recruiter's real writing style, follow this closely when writing the introMessage, candidateAngle, and benchStrengthAngle text:\n${onboarding.writing_style}\n` : ''}
-${isHiringLeadershipFocus ? hiringLeadershipSearchInstructions(functions, sectorsForPrompt, onboarding?.locations?.join(', ')) : `Use web search to find genuine, timely BD-relevant signals in these sectors and markets from the last ${SIGNAL_LOOKBACK_DAYS} days: funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity. A signal from any point in the last ${SIGNAL_LOOKBACK_DAYS} days counts as timely, it does not need to have happened today or this specific hour.
+Use web search to find genuine, timely BD-relevant signals in these sectors and markets from the last ${SIGNAL_LOOKBACK_DAYS} days: funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity. A signal from any point in the last ${SIGNAL_LOOKBACK_DAYS} days counts as timely, it does not need to have happened today or this specific hour.
 Also actively look for layoffs, redundancies, or restructuring news. This cuts both ways and both are worth surfacing: a company doing layoffs sometimes still needs to quietly backfill specific roles (frame the signal around that need), and separately, a real layoff or redundancy event puts a pool of genuinely available, often strong candidates on the market at once, worth surfacing on its own even with no obvious open role at that company, in which case candidateAngle should describe that available talent pool. Classify these as signalType "regulatory" and make the headline clearly say layoffs or redundancy so it's not confused with an ordinary hiring signal.
-Search thoroughly before concluding there is nothing. Run multiple distinct searches, try each sector and each function by name, try combinations of sector + "funding" / "hiring" / "appoints" / "expansion" / "acquires", try the specified markets by name, and try recent news generally in these sectors before narrowing. Do not stop after one or two searches, a real, live-news industry genuinely has more happening in it than that.`}
+Search thoroughly before concluding there is nothing. Run multiple distinct searches, try each sector and each function by name, try combinations of sector + "funding" / "hiring" / "appoints" / "expansion" / "acquires", try the specified markets by name, and try recent news generally in these sectors before narrowing. Do not stop after one or two searches, a real, live-news industry genuinely has more happening in it than that.
 ${functions ? `This recruiter places into the functions listed above. When you find a strong, genuine signal, connect it to whichever of those functions it most plausibly affects, even if the reasoning takes a small logical step (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring, a new market launch signals Government/Regulatory Affairs hiring, an M&A deal signals Corporate Development or Legal hiring). Make your best reasonable case for the closest function rather than discarding a real, well-sourced signal purely because the function match isn't perfect. Only leave a strong signal out entirely if you genuinely cannot connect it to any of the functions listed, even loosely.` : ''}
 ${opts.broaden ? `\nIMPORTANT: an earlier, narrower search pass came up thin. For this pass, widen your net further: look back up to the last 4 weeks (not just the last ${SIGNAL_LOOKBACK_DAYS} days), consider the parent industry category as well as the exact sub-sector, and count a signal even if the function connection takes a slightly longer logical chain, as long as it is still genuinely defensible. The bar is "real and sourced", not "perfect fit". Still never invent anything, and still cite a real source for every signal.\n` : ''}
 ${opts.apolloLeads?.length ? `\nApollo's own hiring database has independently confirmed these companies are actively posting jobs matching this recruiter's functions, within the last ${SIGNAL_LOOKBACK_DAYS} days, in these sectors and markets: ${opts.apolloLeads.map(l => `${l.name}${l.industry ? ` (${l.industry})` : ''}`).join(', ')}. Treat these as strong, confirmed leads, actively search for the real story behind each one (why they're hiring, any funding or expansion tied to it, the right person to approach, a real citable source) before deciding whether to include it. You are not limited to only these companies, keep searching broadly too, but do not ignore this list, Apollo already did real work to surface it.\n` : ''}
@@ -187,7 +159,7 @@ Adzuna does not cover every one of this recruiter's markets (notably the GCC/UAE
 
 This is a brand new account with no history yet, so there is nothing to avoid repeating: ${recentCompanies.join(', ') || 'None yet'}.
 
-Every signal must have a real, citable source you actually found via search. Do not invent anything.${isHiringLeadershipFocus ? ' Only report leadership_change or hiring-related entries this pass (signalType "leadership_change"/"hiring_activity", or entryType "live_job") — see the focused brief above for exactly what "hiring-related" means here.' : ' Return up to 8 signals, fewer if you can\'t find genuinely good ones after searching thoroughly, never pad with weak filler.'}
+Every signal must have a real, citable source you actually found via search. Do not invent anything. Return up to 8 signals, fewer if you can't find genuinely good ones after searching thoroughly, never pad with weak filler.
 
 For each signal, determine:
 - entryType: "signal"
@@ -227,7 +199,7 @@ Return a single JSON array mixing both kinds of entries, each tagged with its en
 
 const DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP = 2_000_000
 
-async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 4096, supabase = null, timeoutMs = 120000 } = {}) {
+async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 4096, supabase = null } = {}) {
   // Anthropic spend had no cap anywhere in this codebase — mirrors the
   // existing Apollo daily-credit-cap pattern (see reserveApolloCredits in
   // scanShared.js). Checked before the network call fires, same as Apollo's.
@@ -256,10 +228,151 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
       messages: [{ role: 'user', content: 'Scan for signals now.' }],
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxUses }],
     }),
-  }, timeoutMs, 1) // web search runs multiple search round-trips, needs far more than the 12s default
+  }, 120000, 1) // web search runs multiple search round-trips, needs far more than the 12s default
   if (!resp.ok) throw new Error(`Anthropic ${resp.status}`)
   const data = await resp.json()
   return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
+}
+
+// 2026-08-24 Task 2 (refactor, no behavior change): the default handler
+// below used to run its research phase (parallel sector-group calls plus
+// the optional broaden pass) and its enrich-and-write phase inline, as part
+// of one long function mixing guard clauses, orchestration, and the write.
+// Pulled the two heaviest, most self-contained phases out into named
+// functions so each reads on its own; the guard clauses (duplicate-trigger
+// check, onboarding lookup, cooldown) stay inline in the handler since
+// they're a short, linear sequence of early returns that's clearer left
+// where the returns actually happen. No change to what any step does.
+
+// Runs every sector-group research call in parallel, merges the results,
+// then — if that came up thin and there's still wall-clock budget — runs
+// one broader pass and merges that in too. Returns everything the handler
+// needs to log and to decide what to enrich.
+async function runResearchPhase(ob, ctx) {
+  const { userId, anthropicKey, apolloKey, adzunaAppId, adzunaAppKey, supabase, startedAt } = ctx
+
+  const groups = chunkSectors(ob.sectors, MAX_SECTOR_GROUPS)
+  const groupResults = await Promise.all(groups.map(async (sectorGroup) => {
+    const groupSectors = sectorGroup?.length ? sectorGroup : ob.sectors
+    const [apolloLeads, adzunaLeads] = await Promise.all([
+      discoverHotCompanies(apolloKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }, supabase),
+      discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }),
+    ])
+    try {
+      const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { sectorsOverride: sectorGroup, apolloLeads, adzunaLeads }), { supabase })
+      return { sectorGroup, found: extractJson(text), rawText: text }
+    } catch (err) {
+      console.error('[scan-now] group call failed for', userId, sectorGroup?.join('/') || 'general', err.message)
+      // Unlike intelligence-scan.js (the cron, one Anthropic call per user,
+      // whose single catch already reports here), this file runs several
+      // sector-group calls per user in parallel — a failure here used to
+      // vanish into Netlify's own ephemeral function logs with nothing
+      // persisted, so a customer landing on an empty first dashboard because
+      // every group call actually failed (bad key, rate limit, outage) was
+      // indistinguishable from a genuine "nothing found" run. Report it the
+      // same way the cron does, per group, so a real cause leaves a trace.
+      await reportServerError('scan-now-background', err, { userId, stage: 'sector-group', sectors: sectorGroup?.join('/') || 'general' })
+      return { sectorGroup, found: [], rawText: '', error: err.message }
+    }
+  }))
+
+  groupResults.forEach(g => {
+    if (!g.found.length) {
+      const preview = (g.rawText || '').trim().slice(0, 300)
+      console.log('[scan-now] group came back empty for', userId, '| sectors:', g.sectorGroup?.join('/') || 'general', '| preview:', preview || g.error || '(empty response)')
+    }
+  })
+
+  let merged = mergeSignals(groupResults.map(g => g.found))
+  let broadened = false
+  let broadenPreview = null
+
+  // Safety net: a brand new customer should not land on an empty first
+  // dashboard just because the narrower per-sector passes came up thin.
+  // Run one more deliberately broader pass before accepting that — unless
+  // the run is already deep into its wall-clock budget (see
+  // WALL_CLOCK_BUDGET_MS above), in which case skipping this optional pass
+  // and moving straight to enrichment is what actually gets this customer a
+  // working dashboard instead of a hard-killed function.
+  const elapsedBeforeBroaden = Date.now() - startedAt
+  if (merged.length < MIN_SIGNAL_TARGET && elapsedBeforeBroaden > WALL_CLOCK_BUDGET_MS) {
+    console.log('[scan-now] skipping broaden pass for', userId, '- already', Math.round(elapsedBeforeBroaden / 1000) + 's into the run')
+  } else if (merged.length < MIN_SIGNAL_TARGET) {
+    await setStatus(userId, { status: 'running', stage: 'broadening', startedAt })
+    try {
+      const broadenText = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { broaden: true }), { maxUses: 10, supabase })
+      const broadenFound = extractJson(broadenText)
+      broadened = true
+      if (!broadenFound.length) broadenPreview = (broadenText || '').trim().slice(0, 400)
+      merged = mergeSignals([merged, broadenFound])
+    } catch (err) {
+      console.error('[scan-now] broaden pass failed for', userId, err.message)
+      // Same gap as the sector-group catch above — this was the last chance
+      // to explain a zero-signal first scan, and it was being thrown away
+      // just as silently.
+      await reportServerError('scan-now-background', err, { userId, stage: 'broaden-pass' })
+      broadened = true
+      broadenPreview = `broaden pass error: ${err.message}`
+    }
+  }
+
+  // Enforce "replace, not supplement" deterministically in code, once, on
+  // the final merged list — rather than trusting every individual AI call
+  // (several parallel sector-group calls plus a possible broaden pass, none
+  // of which see each other's output) to have each obeyed the prompt's
+  // instruction not to double up.
+  merged = dropGenericHiringWhereLiveJobsExist(merged)
+
+  const capped = merged.slice(0, MAX_TOTAL_SIGNALS)
+  if (merged.length > capped.length) {
+    // No silent caps: if real, already-found signals are ever being dropped
+    // here, that needs to be visible, not just quietly true.
+    console.log(`[scan-now] truncated ${merged.length} genuine signals down to ${capped.length} for`, userId, '(MAX_TOTAL_SIGNALS cap)')
+  }
+
+  return { groups, capped, broadened, broadenPreview }
+}
+
+// Dedupes the research phase's results against this customer's existing
+// signals, enriches what's genuinely new, and writes it. Returns the rows
+// actually written (may be empty) and any write error.
+async function enrichAndWriteSignals(capped, ctx) {
+  const { userId, apolloKey, companiesHouseKey, supabase, groups, broadened } = ctx
+
+  // Dedupe against this customer's existing signals BEFORE spending Apollo
+  // credits, not after. For a brand new account this set is normally empty,
+  // but it's a cheap, free guard against a retried request or a second
+  // concurrent trigger burning enrichment credits on a signal that would
+  // just get discarded as a duplicate on write anyway.
+  const { data: existingRows } = await supabase
+    .from('intelligence_signals')
+    .select('dedup_key')
+    .eq('user_id', userId)
+  const existingKeys = new Set((existingRows || []).map(r => r.dedup_key))
+
+  // Row-building itself (enrichCompany → verifyContact per entry, plus
+  // Companies House/source-URL checks) lives once in scanShared.js, shared
+  // with intelligence-scan.js — see buildEnrichedSignalRows's own comment.
+  const newEntries = capped.filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
+  const rows = await buildEnrichedSignalRows(newEntries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix: '[scan-now]' })
+
+  // The exact bug that made a live customer's first scan report success
+  // with zero signals actually written: the upsert's own `error` was never
+  // checked. Checking it here doesn't prevent a schema drifting out from
+  // under the code again, but it means that failure is now visibly logged
+  // instead of indistinguishable from a genuinely quiet scan.
+  let writeError = null
+  if (rows.length) {
+    const { error } = await supabase.from('intelligence_signals').upsert(rows, { onConflict: 'user_id,dedup_key', ignoreDuplicates: true })
+    if (error) {
+      writeError = error
+      console.error(`[scan-now] upsert FAILED for`, userId, '-', error.message)
+      await reportServerError('scan-now-background', new Error(error.message), { userId, stage: 'signal-upsert', attemptedRows: rows.length })
+    } else {
+      console.log(`[scan-now] wrote ${rows.length} signals for`, userId, '| groups:', groups.length, '| broadened:', broadened)
+    }
+  }
+  return { rows, writeError }
 }
 
 export default async (req) => {
@@ -356,7 +469,20 @@ export default async (req) => {
         return
       }
     }
-    await supabase.from('onboarding').update({ initial_scan_triggered_at: new Date().toISOString() }).eq('user_id', userId)
+    // 2026-08-24 Task 5: this write's own result was never checked — a
+    // silent failure here (RLS hiccup, transient DB error) would mean the
+    // cooldown guard the comment above describes never actually persists,
+    // and the exact replay/re-fire scenario it exists to close stays open
+    // with nothing logging that it happened. Same bug class as the
+    // signal-upsert fix below (line ~370) and the intelligence-scan.js /
+    // stripe-webhook.js fixes earlier in this audit — logged, not thrown,
+    // since a failed cooldown write shouldn't abort an otherwise-successful
+    // scan already in flight.
+    const { error: cooldownError } = await supabase.from('onboarding').update({ initial_scan_triggered_at: new Date().toISOString() }).eq('user_id', userId)
+    if (cooldownError) {
+      console.error('[scan-now] failed to persist scan cooldown for', userId, ':', cooldownError.message)
+      await reportServerError('scan-now-background', new Error(cooldownError.message), { userId, stage: 'cooldown-write' })
+    }
 
     // Phase-tagged status from here on (2026-08-24): if this function ever
     // stalls again, `stage` on the status blob says exactly which phase it
@@ -366,129 +492,13 @@ export default async (req) => {
     // — this is purely visibility, not a second line of defense on its own.
     await setStatus(userId, { status: 'running', stage: 'researching', startedAt })
 
-    // Pass 1: research each sector group in parallel, each with its own
-    // full search budget, instead of one call rationing searches across
-    // everything the customer picked. Each group first asks Apollo and
-    // Adzuna what they can independently confirm is happening right now in
-    // that slice, then hands that list to the AI as a head start.
-    //
-    // 2026-08-24: each sector group now runs TWO calls in parallel, not
-    // one — the existing general-coverage call (unchanged), plus a second,
-    // dedicated call scoped to only leadership_change and live_job (see
-    // hiringLeadershipSearchInstructions above), with its own larger search
-    // budget and its own real time to use it. This is the actual fix for
-    // "thin coverage": before this, hiring and leadership signals — the two
-    // types Today's BD Actions is actually built on — had to share one
-    // call's 8 searches with seven other signal types. Now they get a call
-    // that only exists to look for them, so nothing else competes for that
-    // budget. Both calls still run inside the same Promise.all as every
-    // other group, so total wall-clock stays bounded by the slowest single
-    // call, not the sum of all of them; this roughly doubles Anthropic
-    // token spend for this pass, which Michael confirmed is worth it.
-    const groups = chunkSectors(ob.sectors, MAX_SECTOR_GROUPS)
-    const groupResults = await Promise.all(groups.map(async (sectorGroup) => {
-      const groupSectors = sectorGroup?.length ? sectorGroup : ob.sectors
-      const [apolloLeads, adzunaLeads] = await Promise.all([
-        discoverHotCompanies(apolloKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }, supabase),
-        discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }),
-      ])
-
-      async function runPass(label, focus, maxUses, timeoutMs) {
-        try {
-          const text = await callAnthropic(
-            anthropicKey,
-            buildScanPrompt(ob, [], { sectorsOverride: sectorGroup, apolloLeads, adzunaLeads, focus }),
-            { supabase, maxUses, timeoutMs },
-          )
-          return { found: extractJson(text), rawText: text }
-        } catch (err) {
-          console.error(`[scan-now] ${label} call failed for`, userId, sectorGroup?.join('/') || 'general', err.message)
-          // Unlike intelligence-scan.js (the cron, one Anthropic call per
-          // user, whose single catch already reports here), this file runs
-          // several calls per user in parallel — a failure here used to
-          // vanish into Netlify's own ephemeral function logs with nothing
-          // persisted, so a customer landing on an empty first dashboard
-          // because a call actually failed (bad key, rate limit, outage)
-          // was indistinguishable from a genuine "nothing found" run.
-          // Report it the same way the cron does, per call, so a real
-          // cause leaves a trace.
-          await reportServerError('scan-now-background', err, { userId, stage: `sector-group:${label}`, sectors: sectorGroup?.join('/') || 'general' })
-          return { found: [], rawText: '', error: err.message }
-        }
-      }
-
-      // maxUses/timeoutMs: the general pass keeps its existing defaults
-      // (8 searches, 120s). The focused pass gets a materially larger
-      // search budget (14) since it isn't sharing it with seven other
-      // signal types, and a longer timeout to match — more search rounds
-      // genuinely can take longer to come back, and failing a legitimately
-      // still-working call early just means a wasted retry.
-      const [general, hiringLeadership] = await Promise.all([
-        runPass('general', undefined, 8, 120000),
-        runPass('hiring-leadership', 'hiring_leadership', 14, 150000),
-      ])
-
-      return {
-        sectorGroup,
-        found: [...general.found, ...hiringLeadership.found],
-        rawText: general.rawText,
-        error: general.error || hiringLeadership.error,
-      }
-    }))
-
-    groupResults.forEach(g => {
-      if (!g.found.length) {
-        const preview = (g.rawText || '').trim().slice(0, 300)
-        console.log('[scan-now] group came back empty for', userId, '| sectors:', g.sectorGroup?.join('/') || 'general', '| preview:', preview || g.error || '(empty response)')
-      }
+    // Pass 1 (+ optional broaden pass): research each sector group in
+    // parallel, each with its own full search budget, instead of one call
+    // rationing searches across everything the customer picked. See
+    // runResearchPhase's own comment for the full flow.
+    const { groups, capped, broadened, broadenPreview } = await runResearchPhase(ob, {
+      userId, anthropicKey, apolloKey, adzunaAppId, adzunaAppKey, supabase, startedAt,
     })
-
-    let merged = mergeSignals(groupResults.map(g => g.found))
-    let broadened = false
-    let broadenPreview = null
-
-    // Safety net: a brand new customer should not land on an empty first
-    // dashboard just because the narrower per-sector passes came up thin.
-    // Run one more deliberately broader pass before accepting that — unless
-    // the run is already deep into its wall-clock budget (see
-    // WALL_CLOCK_BUDGET_MS above), in which case skipping this optional
-    // pass and moving straight to enrichment is what actually gets this
-    // customer a working dashboard instead of a hard-killed function.
-    const elapsedBeforeBroaden = Date.now() - startedAt
-    if (merged.length < MIN_SIGNAL_TARGET && elapsedBeforeBroaden > WALL_CLOCK_BUDGET_MS) {
-      console.log('[scan-now] skipping broaden pass for', userId, '- already', Math.round(elapsedBeforeBroaden / 1000) + 's into the run')
-    } else if (merged.length < MIN_SIGNAL_TARGET) {
-      await setStatus(userId, { status: 'running', stage: 'broadening', startedAt })
-      try {
-        const broadenText = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { broaden: true }), { maxUses: 10, supabase })
-        const broadenFound = extractJson(broadenText)
-        broadened = true
-        if (!broadenFound.length) broadenPreview = (broadenText || '').trim().slice(0, 400)
-        merged = mergeSignals([merged, broadenFound])
-      } catch (err) {
-        console.error('[scan-now] broaden pass failed for', userId, err.message)
-        // Same gap as the sector-group catch above — this was the last
-        // chance to explain a zero-signal first scan, and it was being
-        // thrown away just as silently.
-        await reportServerError('scan-now-background', err, { userId, stage: 'broaden-pass' })
-        broadened = true
-        broadenPreview = `broaden pass error: ${err.message}`
-      }
-    }
-
-    // Enforce "replace, not supplement" deterministically in code, once, on
-    // the final merged list — rather than trusting every individual AI call
-    // (several parallel sector-group calls plus a possible broaden pass,
-    // none of which see each other's output) to have each obeyed the
-    // prompt's instruction not to double up.
-    merged = dropGenericHiringWhereLiveJobsExist(merged)
-
-    const capped = merged.slice(0, MAX_TOTAL_SIGNALS)
-    if (merged.length > capped.length) {
-      // No silent caps: if real, already-found signals are ever being
-      // dropped here, that needs to be visible, not just quietly true.
-      console.log(`[scan-now] truncated ${merged.length} genuine signals down to ${capped.length} for`, userId, '(MAX_TOTAL_SIGNALS cap)')
-    }
 
     if (!capped.length) {
       console.log('[scan-now] nothing found for', userId, '| sectors scanned:', groups.map(g => g?.join('/') || 'general').join(' | '), '| broadened:', broadened, '| broaden preview:', broadenPreview || '(n/a)')
@@ -508,48 +518,10 @@ export default async (req) => {
 
     await setStatus(userId, { status: 'running', stage: 'enriching', startedAt })
 
-    // Dedupe against this customer's existing signals BEFORE spending Apollo
-    // credits, not after. For a brand new account this set is normally
-    // empty, but it's a cheap, free guard against a retried request or a
-    // second concurrent trigger burning enrichment credits on a signal
-    // that would just get discarded as a duplicate on write anyway.
-    const { data: existingRows } = await supabase
-      .from('intelligence_signals')
-      .select('dedup_key')
-      .eq('user_id', userId)
-    const existingKeys = new Set((existingRows || []).map(r => r.dedup_key))
+    // Dedupe against existing signals, enrich what's genuinely new, write
+    // it — see enrichAndWriteSignals's own comment.
+    const { rows, writeError } = await enrichAndWriteSignals(capped, { userId, apolloKey, companiesHouseKey, supabase, groups, broadened })
 
-    // Row-building itself (enrichCompany → verifyContact per entry, plus
-    // Companies House/source-URL checks) now lives once in scanShared.js,
-    // shared with intelligence-scan.js, and runs with bounded concurrency
-    // across different companies instead of one entry at a time — see
-    // buildEnrichedSignalRows's own comment for why that's safe even with
-    // Live Jobs' multiple-entries-per-company case.
-    const newEntries = capped.filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
-    const rows = await buildEnrichedSignalRows(newEntries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix: '[scan-now]' })
-
-    // The exact bug that made a live customer's first scan report success
-    // with zero signals actually written: the upsert's own `error` was
-    // never checked. Two intelligence_signals columns this insert writes
-    // (title_keywords, ch_verified/ch_verified_detail) existed only in
-    // migration FILES, never actually applied to the live database — so
-    // every write here was silently rejected by Postgres, every run, for
-    // every customer, while this code cheerfully reported reason: 'ok' and
-    // a signal count nothing backed up. Checking `error` here doesn't
-    // prevent a schema drifting out from under the code again, but it means
-    // that failure is now visibly logged instead of indistinguishable from
-    // a genuinely quiet scan.
-    let writeError = null
-    if (rows.length) {
-      const { error } = await supabase.from('intelligence_signals').upsert(rows, { onConflict: 'user_id,dedup_key', ignoreDuplicates: true })
-      if (error) {
-        writeError = error
-        console.error(`[scan-now] upsert FAILED for`, userId, '-', error.message)
-        await reportServerError('scan-now-background', new Error(error.message), { userId, stage: 'signal-upsert', attemptedRows: rows.length })
-      } else {
-        console.log(`[scan-now] wrote ${rows.length} signals for`, userId, '| groups:', groups.length, '| broadened:', broadened)
-      }
-    }
     await setStatus(userId, {
       status: 'done',
       reason: writeError ? 'error' : rows.length ? 'ok' : 'no_results',

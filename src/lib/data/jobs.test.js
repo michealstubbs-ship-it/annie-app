@@ -31,31 +31,31 @@ beforeEach(() => {
 })
 
 describe('listJobsMinimal', () => {
-  it('scopes to the given user and returns an empty array rather than null', async () => {
+  it('is team-scoped by RLS and returns an empty array rather than null, no client-side user_id filter', async () => {
     const result = await listJobsMinimal('user_1')
     expect(fromMock).toHaveBeenCalledWith('jobs')
-    expect(builder.eq).toHaveBeenCalledWith('user_id', 'user_1')
+    expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
     expect(result).toEqual([])
   })
 })
 
 describe('listActiveJobsForPicker', () => {
-  it('only includes active/onhold jobs, ordered by title', async () => {
+  it('only includes active/onhold jobs, ordered by title, no client-side user_id filter', async () => {
     await listActiveJobsForPicker('user_1')
-    expect(builder.eq).toHaveBeenCalledWith('user_id', 'user_1')
+    expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
     expect(builder.in).toHaveBeenCalledWith('status', ['active', 'onhold'])
     expect(builder.order).toHaveBeenCalledWith('title')
   })
 })
 
 describe('listJobsWithCompanies', () => {
-  it('joins the linked company, scoped to the given user, newest first', async () => {
+  it('joins the linked company, team-scoped by RLS, newest first, no client-side user_id filter', async () => {
     builder = makeBuilder({ data: [{ id: 'job1' }], error: null })
     fromMock.mockReturnValue(builder)
     const result = await listJobsWithCompanies('user_1')
     expect(fromMock).toHaveBeenCalledWith('jobs')
     expect(builder.select).toHaveBeenCalledWith('*, companies(name, industry, location)')
-    expect(builder.eq).toHaveBeenCalledWith('user_id', 'user_1')
+    expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
     expect(builder.order).toHaveBeenCalledWith('created_at', { ascending: false })
     expect(result).toEqual([{ id: 'job1' }])
   })

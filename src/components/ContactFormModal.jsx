@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
+import { createContact, updateContact } from '../lib/data/contacts'
 import CompanySelect from './CompanySelect'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
@@ -54,11 +54,11 @@ export default function ContactFormModal({ open, editContact, lockedCompanyId, l
       }
       let result
       if (editContact) {
-        const { data, error: err } = await supabase.from('contacts').update(row).eq('id', editContact.id).select().single()
+        const { data, error: err } = await updateContact(editContact.id, row)
         if (err) throw err
         result = data
       } else {
-        const { data, error: err } = await supabase.from('contacts').insert({ ...row, user_id: user.id }).select().single()
+        const { data, error: err } = await createContact(row, user.id)
         if (err) throw err
         result = data
       }

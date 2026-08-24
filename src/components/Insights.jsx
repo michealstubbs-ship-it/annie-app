@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
+import ErrorBanner from './ErrorBanner'
+import Spinner from './Spinner'
 
 export default function Insights() {
   const [topics, setTopics] = useState([])
@@ -42,7 +44,7 @@ export default function Insights() {
         <p className="text-gray-500 mt-1">What customers are asking Annie support, across every account</p>
       </div>
 
-      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">{error}</div>}
+      <ErrorBanner>{error}</ErrorBanner>
 
       <div className="flex gap-2 mb-5">
         <button onClick={() => setTab('topics')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'topics' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>Topics</button>
@@ -53,7 +55,7 @@ export default function Insights() {
       </div>
 
       {loading ? (
-        <div className="flex justify-center py-20"><div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" /></div>
+        <div className="flex justify-center py-20"><Spinner /></div>
       ) : tab === 'topics' ? (
         topics.length === 0 ? (
           <div className="card p-12 text-center">

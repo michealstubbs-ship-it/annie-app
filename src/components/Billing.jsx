@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import ErrorBanner from './ErrorBanner'
 
 // Tier copy lives here, not in a shared constants file — the ONLY thing
 // that has to match the backend exactly is the tier key ('starter' /
@@ -73,7 +74,13 @@ export default function Billing() {
   async function loadSubscription() {
     if (!user) return
     setLoading(true)
-    const { data } = await supabase.from('subscriptions').select('*').eq('user_id', user.id).maybeSingle()
+    // 2026-08-24: subscriptions.user_id is the checkout initiator, not
+    // "this viewer" — a non-owner teammate has no row of their own there at
+    // all. RLS now scopes this table by team membership (see "Own
+    // subscription read-only" in the 2026-08-24 migration), so dropping the
+    // user_id filter is what actually lets every team member see their
+    // team's plan, not just whoever ran checkout.
+    const { data } = await supabase.from('subscriptions').select('*').maybeSingle()
     setSubscription(data)
     setLoading(false)
   }
@@ -191,9 +198,7 @@ export default function Billing() {
           Checkout was cancelled — no charge was made.
         </div>
       )}
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-6">{error}</div>
-      )}
+      <ErrorBanner>{error}</ErrorBanner>
 
       {loading ? (
         <div className="text-gray-400 text-sm">Loading...</div>
@@ -227,7 +232,7 @@ export default function Billing() {
             {subscription.seats > 0 && <> Your plan includes {subscription.seats} seats.</>}
           </p>
 
-          {teamError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2 text-sm mb-4">{teamError}</div>}
+          <ErrorBanner>{teamError}</ErrorBanner>
           {teamNotice && <div className="bg-green-50 border border-green-200 text-green-700 rounded-lg px-4 py-2 text-sm mb-4">{teamNotice}</div>}
 
           <ul className="divide-y divide-gray-100 mb-4">

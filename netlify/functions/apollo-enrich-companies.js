@@ -3,7 +3,7 @@
 // company name text. Results are cached in Supabase, shared across every customer,
 // so the same company is never enriched twice, only cache misses spend a credit.
 import { createClient } from '@supabase/supabase-js'
-import { reserveApolloCredits } from './lib/scanShared.js'
+import { reserveApolloCredits, createTimeoutFetch } from './lib/scanShared.js'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { jsonError } from './lib/httpError.js'
@@ -45,7 +45,9 @@ export default async (req, context) => {
     })
   }
 
-  const supabase = createClient(supabaseUrl, serviceKey)
+  // 2026-08-24 Task 3: createTimeoutFetch applied — see its own header in
+  // scanShared.js.
+  const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
 
   try {
     const { companies } = await req.json()
@@ -134,10 +136,18 @@ export default async (req, context) => {
     // was already hit.
     const cacheable = freshResults.filter(r => !r.skipCache)
     if (cacheable.length) {
-      await supabase.from('company_enrichment').upsert(
+      // 2026-08-24 Task 5: result wasn't captured at all — a thrown
+      // exception here would reach the outer catch, but a query-level
+      // `{ error }` (RLS denial, constraint violation) resolved silently.
+      // Same cache-write bug class fixed in scanShared.js in this same
+      // pass; logged rather than thrown since a cache-write failure
+      // shouldn't turn an otherwise-successful enrichment response into an
+      // error for the caller.
+      const { error: cacheError } = await supabase.from('company_enrichment').upsert(
         cacheable.map(({ skipCache, ...r }) => ({ ...r, enriched_at: new Date().toISOString() })),
         { onConflict: 'company_name_key' }
       )
+      if (cacheError) console.error('[apollo-enrich-companies] cache write failed:', cacheError.message)
     }
 
     const results = names.map(n => {

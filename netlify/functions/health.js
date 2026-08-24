@@ -6,6 +6,7 @@
 // nothing sensitive — a boolean per dependency, never a value, a key, or
 // an error message body.
 import { createClient } from '@supabase/supabase-js'
+import { createTimeoutFetch } from './lib/scanShared.js'
 
 export default async () => {
   const checks = { database: 'unknown' }
@@ -19,8 +20,13 @@ export default async () => {
     healthy = false
   } else {
     try {
+      // 2026-08-24 Task 3: createTimeoutFetch applied here too — a health
+      // check that can itself hang forever on a stuck Supabase call is
+      // worse than useless to an uptime monitor. See its own header in
+      // scanShared.js for the root-cause fix this closes across the app.
       const supabase = createClient(supabaseUrl, serviceKey, {
         auth: { persistSession: false, autoRefreshToken: false },
+        global: { fetch: createTimeoutFetch() },
       })
       // Cheapest possible real round-trip to Postgres: a head-only count
       // against a tiny, always-present table. Not RLS-relevant (service

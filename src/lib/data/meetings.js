@@ -3,11 +3,12 @@ import { supabase } from '../supabase'
 // Every raw `meetings` Supabase call, in one place — same reasoning as
 // contacts.js/candidates.js/companies.js/jobs.js.
 
+// 2026-08-24: meetings is team-scoped — RLS already restricts every row to
+// the caller's active team, so no client-side user_id filter on top of it.
 export async function listMeetingsWithContacts(userId) {
   const { data } = await supabase
     .from('meetings')
     .select('*, contacts(name, company)')
-    .eq('user_id', userId)
     .order('meeting_date', { ascending: false })
   return data || []
 }

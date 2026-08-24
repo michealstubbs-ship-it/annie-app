@@ -8,11 +8,13 @@ import { supabase } from '../supabase'
 // roles behind a hiring push, shown only in Today's Actions (see the
 // comment this carries over from IntelligenceFeed.jsx itself), not
 // duplicated here.
+// 2026-08-24: intelligence_signals is team-scoped — RLS already restricts
+// every row to the caller's active team, so no client-side user_id filter
+// on top of it.
 export async function listActiveSignals(userId) {
   const { data } = await supabase
     .from('intelligence_signals')
     .select('*')
-    .eq('user_id', userId)
     .neq('status', 'actioned')
     .neq('signal_type', 'live_job')
     .order('found_at', { ascending: false })

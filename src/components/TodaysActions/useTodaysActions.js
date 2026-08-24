@@ -60,10 +60,13 @@ export function useTodaysActions({ user, profile }) {
     setError('')
     try {
       const [{ data: contacts }, { data: deals }, { data: intelSignals }, { data: freshOnboarding }, candidates] = await Promise.all([
-        supabase.from('contacts').select('*').eq('user_id', user.id).limit(500),
-        supabase.from('deals').select('*').eq('user_id', user.id).limit(200),
+        // 2026-08-24: contacts/deals/intelligence_signals are team-scoped by
+        // RLS — no client-side user_id filter on top of it, so Today's
+        // Actions surfaces the whole team's pipeline, not just this user's.
+        supabase.from('contacts').select('*').limit(500),
+        supabase.from('deals').select('*').limit(200),
         // Reads what the background scan already found, no search happens here.
-        supabase.from('intelligence_signals').select('*').eq('user_id', user.id).neq('status', 'actioned').order('found_at', { ascending: false }).limit(300),
+        supabase.from('intelligence_signals').select('*').neq('status', 'actioned').order('found_at', { ascending: false }).limit(300),
         supabase.from('onboarding').select('*').eq('user_id', user.id).single(),
         // Same lightweight pipeline-match check IntelligenceFeed.jsx already
         // does, computed once here, baked into each resolved action below

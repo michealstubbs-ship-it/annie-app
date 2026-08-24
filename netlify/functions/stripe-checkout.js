@@ -14,6 +14,7 @@ import Stripe from 'stripe'
 import { reportServerError } from './lib/reportError.js'
 import { priceIdFor } from './lib/stripeShared.js'
 import { getAuthedUser } from './lib/auth.js'
+import { createTimeoutFetch } from './lib/scanShared.js'
 
 // Team is sold with a 3-seat minimum (mirrors how Apollo structures its own
 // Organization tier) — Checkout starts at that quantity and lets the buyer
@@ -55,7 +56,9 @@ export default async (req) => {
   }
 
   const stripe = new Stripe(stripeKey)
-  const supabase = createClient(supabaseUrl, serviceKey)
+  // 2026-08-24 Task 3: createTimeoutFetch applied — see its own header in
+  // scanShared.js.
+  const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
 
   try {
     // Reuse an existing Stripe customer if this user already has one on

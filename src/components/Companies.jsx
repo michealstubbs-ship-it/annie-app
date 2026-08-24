@@ -1,14 +1,17 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
 import { normalizeCompanyName } from '../lib/companyMatch'
+import { listCompanies, createCompany, updateCompany, deleteCompany } from '../lib/data/companies'
+import { listContactsWithCompany } from '../lib/data/contacts'
+import { listJobsMinimal } from '../lib/data/jobs'
 import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
 import JobFormModal from './JobFormModal'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
+import Spinner from './Spinner'
 
 const EMPTY_CO = { name: '', industry: '', location: '', website: '', notes: '' }
 const STATUS_COLOR = { hot: 'bg-red-100 text-red-700', warm: 'bg-amber-100 text-amber-700', cold: 'bg-blue-100 text-blue-700', client: 'bg-green-100 text-green-700', inactive: 'bg-gray-100 text-gray-500' }
@@ -50,14 +53,16 @@ export default function Companies() {
 
   async function load() {
     setLoading(true)
-    const [{ data: co }, { data: ct }, { data: jb }] = await Promise.all([
-      supabase.from('companies').select('*').eq('user_id', user.id).order('name'),
-      supabase.from('contacts').select('id, name, title, email, status, company_id').eq('user_id', user.id).not('company_id', 'is', null),
-      supabase.from('jobs').select('id, title, status, company_id').eq('user_id', user.id),
+    // 2026-08-24 Task 2: routed through lib/data/* (previously duplicated
+    // inline here) so this table's query shape lives in exactly one place.
+    const [co, ct, jb] = await Promise.all([
+      listCompanies(user.id),
+      listContactsWithCompany(user.id),
+      listJobsMinimal(user.id),
     ])
-    setCompanies(co || [])
-    setContacts(ct || [])
-    setJobs(jb || [])
+    setCompanies(co)
+    setContacts(ct)
+    setJobs(jb)
     setLoading(false)
   }
 
@@ -99,10 +104,10 @@ export default function Companies() {
         website: coForm.website.trim() || null, notes: coForm.notes.trim() || null, updated_at: new Date().toISOString(),
       }
       if (editCo) {
-        const { error: err } = await supabase.from('companies').update(row).eq('id', editCo.id)
+        const { error: err } = await updateCompany(editCo.id, row)
         if (err) throw err
       } else {
-        const { error: err } = await supabase.from('companies').insert({ ...row, user_id: user.id })
+        const { error: err } = await createCompany(row, user.id)
         if (err) throw err
       }
       await load()
@@ -116,7 +121,7 @@ export default function Companies() {
 
   async function delCo(id) {
     setDelError('')
-    const { error: err } = await supabase.from('companies').delete().eq('id', id)
+    const { error: err } = await deleteCompany(id)
     if (err) { setDelError(err.message); return }
     setSelected(null)
     await load()
@@ -138,7 +143,7 @@ export default function Companies() {
       <input className="input max-w-sm mb-6" placeholder="Search companies..." value={search} onChange={e => setSearch(e.target.value)} />
 
       {loading ? (
-        <div className="flex items-center justify-center py-20"><div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" /></div>
+        <div className="flex items-center justify-center py-20"><Spinner /></div>
       ) : filtered.length === 0 ? (
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">🏢</div>

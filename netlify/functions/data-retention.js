@@ -11,15 +11,25 @@
 // Netlify's 30-second cap for a non-background scheduled function — the
 // exact bug intelligence-scan.js had before this same fix was applied there.
 import { createClient } from '@supabase/supabase-js'
-import { alertIfConfigured } from './lib/scanShared.js'
+import { alertIfConfigured, createTimeoutFetch } from './lib/scanShared.js'
 
 const RETENTION_MS = 18 * 30 * 24 * 60 * 60 * 1000 // ~18 months
 
+// chat_rate_limit rows are per-minute rate-limit buckets (see
+// chat_reserve_call in the 2026-08-22 migration), not historical records —
+// nothing reads one after its own request finishes with it, so it gets a
+// much shorter retention than the four tables above rather than sharing
+// their 18-month cutoff. 2 days comfortably outlives any in-flight request.
+const RATE_LIMIT_RETENTION_MS = 2 * 24 * 60 * 60 * 1000
+
 const TABLES = [
-  { label: 'intelligence_signals', rpc: 'retention_cleanup_intelligence_signals' },
-  { label: 'chat_messages', rpc: 'retention_cleanup_chat_messages' },
-  { label: 'support_messages', rpc: 'retention_cleanup_support_messages' },
-  { label: 'error_logs', rpc: 'retention_cleanup_error_logs' },
+  { label: 'intelligence_signals', rpc: 'retention_cleanup_intelligence_signals', retentionMs: RETENTION_MS },
+  { label: 'chat_messages', rpc: 'retention_cleanup_chat_messages', retentionMs: RETENTION_MS },
+  { label: 'support_messages', rpc: 'retention_cleanup_support_messages', retentionMs: RETENTION_MS },
+  { label: 'error_logs', rpc: 'retention_cleanup_error_logs', retentionMs: RETENTION_MS },
+  // Task 3 (2026-08-24): closes the gap where chat_rate_limit was the only
+  // unbounded-growth table this job didn't cover.
+  { label: 'chat_rate_limit', rpc: 'retention_cleanup_chat_rate_limit', retentionMs: RATE_LIMIT_RETENTION_MS },
 ]
 
 export default async () => {
@@ -27,15 +37,18 @@ export default async () => {
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!supabaseUrl || !serviceKey) return new Response('Not configured', { status: 200 })
 
+  // 2026-08-24 Task 3: createTimeoutFetch applied — see its own header in
+  // scanShared.js.
   const supabase = createClient(supabaseUrl, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: createTimeoutFetch() },
   })
 
-  const cutoff = new Date(Date.now() - RETENTION_MS).toISOString()
   const results = {}
   let hadError = false
 
-  for (const { label, rpc } of TABLES) {
+  for (const { label, rpc, retentionMs } of TABLES) {
+    const cutoff = new Date(Date.now() - retentionMs).toISOString()
     try {
       const { data, error } = await supabase.rpc(rpc, { p_cutoff: cutoff })
       if (error) {
@@ -58,7 +71,7 @@ export default async () => {
     await alertIfConfigured(`⚠️ Annie data-retention run had at least one failure: ${JSON.stringify(results)}`)
   }
 
-  return new Response(JSON.stringify({ cutoff, results }), {
+  return new Response(JSON.stringify({ results }), {
     status: hadError ? 500 : 200,
     headers: { 'Content-Type': 'application/json' },
   })

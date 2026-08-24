@@ -3,8 +3,10 @@ import { supabase } from '../supabase'
 // Every raw `deals` Supabase call (Pipeline.jsx), in one place — same
 // reasoning as contacts.js/candidates.js/companies.js/jobs.js.
 
+// 2026-08-24: deals is team-scoped — RLS already restricts every row to the
+// caller's active team, so no client-side user_id filter on top of it.
 export async function listDeals(userId) {
-  const { data } = await supabase.from('deals').select('*').eq('user_id', userId).order('created_at', { ascending: false })
+  const { data } = await supabase.from('deals').select('*').order('created_at', { ascending: false })
   return data || []
 }
 

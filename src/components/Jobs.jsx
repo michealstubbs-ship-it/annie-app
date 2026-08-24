@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
+import { listJobsWithCompanies, deleteJob } from '../lib/data/jobs'
+import { listCandidateJobLinks } from '../lib/data/candidates'
 import InfoTip from './InfoTip'
 import JobFormModal from './JobFormModal'
 import ConfirmDialog from './ConfirmDialog'
+import ErrorBanner from './ErrorBanner'
+import Spinner from './Spinner'
 
 const STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled', lost: 'Lost' }
 const STATUS_COLOR = {
@@ -34,13 +37,15 @@ export default function Jobs() {
 
   async function load() {
     setLoading(true)
-    const [{ data: j }, { data: c }] = await Promise.all([
-      supabase.from('jobs').select('*, companies(name, industry, location)').eq('user_id', user.id).order('created_at', { ascending: false }),
-      supabase.from('candidates').select('job_id').eq('user_id', user.id).not('job_id', 'is', null),
+    // 2026-08-24 Task 2: routed through lib/data/* (previously duplicated
+    // inline here) so this table's query shape lives in exactly one place.
+    const [j, c] = await Promise.all([
+      listJobsWithCompanies(user.id),
+      listCandidateJobLinks(user.id),
     ])
-    setJobs(j || [])
+    setJobs(j)
     const counts = {}
-    ;(c || []).forEach(row => { counts[row.job_id] = (counts[row.job_id] || 0) + 1 })
+    c.forEach(row => { counts[row.job_id] = (counts[row.job_id] || 0) + 1 })
     setCandCounts(counts)
     setLoading(false)
   }
@@ -56,7 +61,7 @@ export default function Jobs() {
 
   async function del(id) {
     setListError('')
-    const { error: err } = await supabase.from('jobs').delete().eq('id', id)
+    const { error: err } = await deleteJob(id)
     if (err) return setListError('Could not delete job: ' + err.message)
     setJobs(prev => prev.filter(j => j.id !== id))
   }
@@ -105,10 +110,10 @@ export default function Jobs() {
         <button onClick={openAdd} className="btn-primary">+ Add Job</button>
       </div>
 
-      {listError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-4">{listError}</div>}
+      <ErrorBanner>{listError}</ErrorBanner>
 
       {loading ? (
-        <div className="flex items-center justify-center py-20"><div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" /></div>
+        <div className="flex items-center justify-center py-20"><Spinner /></div>
       ) : jobs.length === 0 ? (
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">💼</div>

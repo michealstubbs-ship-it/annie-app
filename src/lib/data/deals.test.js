@@ -29,12 +29,12 @@ beforeEach(() => {
 })
 
 describe('listDeals', () => {
-  it('scopes to the given user, newest first', async () => {
+  it('is team-scoped by RLS, newest first, no client-side user_id filter', async () => {
     builder = makeBuilder({ data: [{ id: 'd1' }], error: null })
     fromMock.mockReturnValue(builder)
     const result = await listDeals('user_1')
     expect(fromMock).toHaveBeenCalledWith('deals')
-    expect(builder.eq).toHaveBeenCalledWith('user_id', 'user_1')
+    expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
     expect(builder.order).toHaveBeenCalledWith('created_at', { ascending: false })
     expect(result).toEqual([{ id: 'd1' }])
   })

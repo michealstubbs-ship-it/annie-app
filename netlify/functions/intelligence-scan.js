@@ -179,6 +179,87 @@ async function callAnthropic(apiKey, systemPrompt, supabase) {
 // that this was happening.
 const RUN_BUDGET_MS = 12 * 60 * 1000
 
+// 2026-08-24 Task 2 (refactor, no behavior change): the per-customer scan
+// body used to live inline in the default handler's for-loop — one ~85-line
+// block doing budget bookkeeping, dedup lookups, the AI call, enrichment,
+// and the write, all at once. Pulled out into named steps below so each
+// piece reads on its own; the calling loop is now just
+// "for each customer, call scanOneCustomer, catch, continue". No change to
+// what any of these steps actually does.
+
+// Recent company names for this customer, used both to tell the AI what NOT
+// to re-report and, separately from dedup_key matching, to keep the prompt
+// itself aware of recent history.
+async function fetchRecentCompanies(supabase, userId) {
+  const { data: recentSignals } = await supabase
+    .from('intelligence_signals')
+    .select('company_name')
+    .eq('user_id', userId)
+    .order('found_at', { ascending: false })
+    .limit(30)
+  return [...new Set((recentSignals || []).map(r => r.company_name))]
+}
+
+// Every dedup_key this customer already has on file, so newly-found signals
+// can be filtered down to genuinely new ones before any Apollo credit gets
+// spent enriching them.
+async function fetchExistingDedupKeys(supabase, userId) {
+  const { data: existingRows } = await supabase
+    .from('intelligence_signals')
+    .select('dedup_key')
+    .eq('user_id', userId)
+  return new Set((existingRows || []).map(r => r.dedup_key))
+}
+
+// Runs the full scan for one customer: recent-history lookups, the AI call,
+// dedup filtering, enrichment, and the write. Returns the number of new
+// signal rows written. Throws on any failure — the caller's per-customer
+// try/catch is what reports and moves on, same as before this was pulled
+// out into its own function.
+async function scanOneCustomer(ob, ctx) {
+  const { anthropicKey, apolloKey, companiesHouseKey, adzunaAppId, adzunaAppKey, supabase } = ctx
+
+  const recentCompanies = await fetchRecentCompanies(supabase, ob.user_id)
+  const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
+
+  const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads }), supabase)
+  // Enforce "replace, not supplement" here in code — see the function's own
+  // comment in scanShared.js for why this can't just be a prompt instruction
+  // alone.
+  const found = dropGenericHiringWhereLiveJobsExist(extractJson(text))
+  if (!found.length) {
+    // Log a preview so a zero-result customer is diagnosable from the log,
+    // not guessed at.
+    const preview = (text || '').trim().slice(0, 400)
+    console.log('[intelligence-scan] nothing found for', ob.user_id, '| raw response preview:', preview || '(empty response)')
+    return 0
+  }
+
+  // Dedupe against this customer's full signal history BEFORE spending any
+  // Apollo credit, not after — see fetchExistingDedupKeys's own comment.
+  const existingKeys = await fetchExistingDedupKeys(supabase, ob.user_id)
+  const newSignals = found
+    .filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
+    .slice(0, MAX_SIGNALS_PER_RUN)
+
+  if (!newSignals.length) {
+    console.log('[intelligence-scan] only duplicates found for', ob.user_id, ', skipping enrichment')
+    return 0
+  }
+
+  // Row-building itself lives once in scanShared.js, shared with
+  // scan-now-background.js — see buildEnrichedSignalRows's own comment.
+  const rows = await buildEnrichedSignalRows(newSignals, { userId: ob.user_id, apolloKey, companiesHouseKey, supabase, logPrefix: '[intelligence-scan]' })
+  if (!rows.length) return 0
+
+  // Throwing here (rather than swallowing) is deliberate: this function's
+  // caller already reports to error_logs and moves on to the next customer,
+  // which is exactly the right handling for a write failure too.
+  const { error } = await supabase.from('intelligence_signals').upsert(rows, { onConflict: 'user_id,dedup_key', ignoreDuplicates: true })
+  if (error) throw new Error(`signal upsert failed: ${error.message}`)
+  return rows.length
+}
+
 export default async (req, context) => {
   if (req.method !== 'POST') {
     return new Response('Method not allowed', { status: 405 })
@@ -213,6 +294,7 @@ export default async (req, context) => {
 
   let totalNewSignals = 0
   let processedCount = 0
+  const scanCtx = { anthropicKey, apolloKey, companiesHouseKey, adzunaAppId, adzunaAppKey, supabase }
 
   for (const ob of onboardingRows) {
     if (Date.now() - runStartedAt > RUN_BUDGET_MS) {
@@ -231,69 +313,7 @@ export default async (req, context) => {
     }
     processedCount++
     try {
-      const { data: recentSignals } = await supabase
-        .from('intelligence_signals')
-        .select('company_name')
-        .eq('user_id', ob.user_id)
-        .order('found_at', { ascending: false })
-        .limit(30)
-      const recentCompanies = [...new Set((recentSignals || []).map(r => r.company_name))]
-
-      const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
-
-      const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads }), supabase)
-      // Enforce "replace, not supplement" here in code — see the function's
-      // own comment in scanShared.js for why this can't just be a prompt
-      // instruction alone.
-      const found = dropGenericHiringWhereLiveJobsExist(extractJson(text))
-      if (!found.length) {
-        // Same reasoning as scan-now-background.js: log a preview so a
-        // zero-result customer is diagnosable from the log, not guessed at.
-        const preview = (text || '').trim().slice(0, 400)
-        console.log('[intelligence-scan] nothing found for', ob.user_id, '| raw response preview:', preview || '(empty response)')
-        continue
-      }
-
-      // Dedupe against this customer's full signal history BEFORE spending
-      // any Apollo credit, not after. Previously this ran enrichment on
-      // every signal the AI returned, including ones that turned out to be
-      // duplicates only discarded later at the DB write, quietly burning 2
-      // Apollo credits per re-surfaced story on every run it came up again.
-      const { data: existingRows } = await supabase
-        .from('intelligence_signals')
-        .select('dedup_key')
-        .eq('user_id', ob.user_id)
-      const existingKeys = new Set((existingRows || []).map(r => r.dedup_key))
-
-      const newSignals = found
-        .filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
-        .slice(0, MAX_SIGNALS_PER_RUN)
-
-      if (!newSignals.length) {
-        console.log('[intelligence-scan] only duplicates found for', ob.user_id, ', skipping enrichment')
-        continue
-      }
-
-      // Row-building itself now lives once in scanShared.js, shared with
-      // scan-now-background.js, and runs with bounded concurrency across
-      // different companies instead of one entry at a time — see
-      // buildEnrichedSignalRows's own comment for why that's safe even with
-      // Live Jobs' multiple-entries-per-company case.
-      const rows = await buildEnrichedSignalRows(newSignals, { userId: ob.user_id, apolloKey, companiesHouseKey, supabase, logPrefix: '[intelligence-scan]' })
-
-      if (rows.length) {
-        // See the matching comment in scan-now-background.js — the same
-        // unchecked-upsert bug lived here too, meaning the recurring cron
-        // has been silently failing to write signals for every customer
-        // for exactly the same reason (columns missing on the live table,
-        // now fixed). Throwing here (rather than swallowing) is deliberate:
-        // this function's own per-customer try/catch already reports to
-        // error_logs and moves on to the next customer, which is exactly
-        // the right handling for a write failure too.
-        const { error } = await supabase.from('intelligence_signals').upsert(rows, { onConflict: 'user_id,dedup_key', ignoreDuplicates: true })
-        if (error) throw new Error(`signal upsert failed: ${error.message}`)
-        totalNewSignals += rows.length
-      }
+      totalNewSignals += await scanOneCustomer(ob, scanCtx)
     } catch (err) {
       // One customer failing shouldn't stop the rest of the scan
       console.error('intelligence-scan failed for user', ob.user_id, err.message)

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import ErrorBanner from '../components/ErrorBanner'
 import { supabase } from '../lib/supabase'
 import { SECTOR_TAXONOMY } from '../lib/sectorTaxonomy'
 import { FUNCTION_TAXONOMY } from '../lib/functionTaxonomy'
@@ -267,7 +268,7 @@ export default function Onboarding() {
           </div>
         )}
 
-        {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">{error}</div>}
+        <ErrorBanner>{error}</ErrorBanner>
 
         {step === 1 && (
           <div>

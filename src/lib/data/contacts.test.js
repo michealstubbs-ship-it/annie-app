@@ -1,9 +1,11 @@
 // contacts.js/candidates.js/companies.js/jobs.js are the shared data layer
 // pulled out of Contacts.jsx, Candidates.jsx, and Companies.jsx during the
 // 2026-08-22 scale-readiness pass (see each component's own history) — thin
-// as they are, they're now the one place a scoping mistake (missing
-// eq('user_id', ...), wrong table/column) would live, so it's worth
-// asserting the actual query shape each one builds.
+// as they are, they're now the one place a scoping mistake (a stray
+// eq('user_id', ...) reintroduced on a team-scoped table, wrong table/
+// column) would live, so it's worth asserting the actual query shape each
+// one builds. 2026-08-24: contacts became team-scoped by RLS, so these
+// assertions now confirm the OPPOSITE — no client-side user_id filter.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
@@ -40,12 +42,12 @@ beforeEach(() => {
 })
 
 describe('listContacts', () => {
-  it('scopes to the given user and orders newest-first', async () => {
+  it('is team-scoped by RLS, orders newest-first, no client-side user_id filter', async () => {
     builder = makeBuilder({ data: [{ id: 'c1' }], error: null })
     fromMock.mockReturnValue(builder)
     const result = await listContacts('user_1')
     expect(fromMock).toHaveBeenCalledWith('contacts')
-    expect(builder.eq).toHaveBeenCalledWith('user_id', 'user_1')
+    expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
     expect(builder.order).toHaveBeenCalledWith('created_at', { ascending: false })
     expect(result).toEqual([{ id: 'c1' }])
   })
@@ -58,9 +60,9 @@ describe('listContacts', () => {
 })
 
 describe('listContactsWithCompany', () => {
-  it('excludes contacts with no company_id', async () => {
+  it('excludes contacts with no company_id, no client-side user_id filter', async () => {
     await listContactsWithCompany('user_1')
-    expect(builder.eq).toHaveBeenCalledWith('user_id', 'user_1')
+    expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
     expect(builder.not).toHaveBeenCalledWith('company_id', 'is', null)
   })
 })
@@ -89,21 +91,21 @@ describe('deleteContact', () => {
 })
 
 describe('listContactsMinimal', () => {
-  it('scopes to the given user and orders by name', async () => {
+  it('is team-scoped by RLS, orders by name, no client-side user_id filter', async () => {
     builder = makeBuilder({ data: [{ id: 'c1' }], error: null })
     fromMock.mockReturnValue(builder)
     const result = await listContactsMinimal('user_1')
     expect(builder.select).toHaveBeenCalledWith('id, name, company')
-    expect(builder.eq).toHaveBeenCalledWith('user_id', 'user_1')
+    expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
     expect(builder.order).toHaveBeenCalledWith('name')
     expect(result).toEqual([{ id: 'c1' }])
   })
 })
 
 describe('listContactsForMatching', () => {
-  it('scopes to the given user with the matching-relevant fields', async () => {
+  it('is team-scoped by RLS with the matching-relevant fields, no client-side user_id filter', async () => {
     await listContactsForMatching('user_1')
     expect(builder.select).toHaveBeenCalledWith('id, name, title, company, linkedin_url')
-    expect(builder.eq).toHaveBeenCalledWith('user_id', 'user_1')
+    expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
   })
 })

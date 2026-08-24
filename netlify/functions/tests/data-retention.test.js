@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { mockCreateClient } = vi.hoisted(() => ({ mockCreateClient: vi.fn() }))
 const { mockAlertIfConfigured } = vi.hoisted(() => ({ mockAlertIfConfigured: vi.fn().mockResolvedValue() }))
 vi.mock('@supabase/supabase-js', () => ({ createClient: mockCreateClient }))
-vi.mock('../lib/scanShared.js', () => ({ alertIfConfigured: mockAlertIfConfigured }))
+vi.mock('../lib/scanShared.js', () => ({ alertIfConfigured: mockAlertIfConfigured, createTimeoutFetch: () => fetch }))
 
 let handler
 
@@ -20,7 +20,7 @@ function mockRpc(impl) {
 }
 
 describe('data retention', () => {
-  it('calls all four cleanup RPCs with a shared cutoff and reports counts', async () => {
+  it('calls all five cleanup RPCs, sharing one cutoff except chat_rate_limit, and reports counts', async () => {
     const calls = []
     mockRpc((name, args) => {
       calls.push([name, args])
@@ -30,16 +30,22 @@ describe('data retention', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.results).toEqual({
-      intelligence_signals: 3, chat_messages: 3, support_messages: 3, error_logs: 3,
+      intelligence_signals: 3, chat_messages: 3, support_messages: 3, error_logs: 3, chat_rate_limit: 3,
     })
-    expect(calls).toHaveLength(4)
+    expect(calls).toHaveLength(5)
     expect(calls.map(c => c[0])).toEqual([
       'retention_cleanup_intelligence_signals', 'retention_cleanup_chat_messages',
       'retention_cleanup_support_messages', 'retention_cleanup_error_logs',
+      'retention_cleanup_chat_rate_limit',
     ])
-    // Every call shares the exact same cutoff — not recomputed per table.
-    const cutoffs = new Set(calls.map(c => c[1].p_cutoff))
-    expect(cutoffs.size).toBe(1)
+    // The four historical-data tables share the exact same (18-month)
+    // cutoff — not recomputed per table — while chat_rate_limit gets its
+    // own, much shorter cutoff since it's a rate-limit bucket, not history.
+    const historicalCutoffs = new Set(calls.slice(0, 4).map(c => c[1].p_cutoff))
+    expect(historicalCutoffs.size).toBe(1)
+    const rateLimitCutoff = calls[4][1].p_cutoff
+    expect(rateLimitCutoff).not.toBe(calls[0][1].p_cutoff)
+    expect(new Date(rateLimitCutoff).getTime()).toBeGreaterThan(new Date(calls[0][1].p_cutoff).getTime())
     expect(mockAlertIfConfigured).not.toHaveBeenCalled()
   })
 

@@ -29,13 +29,13 @@ beforeEach(() => {
 })
 
 describe('listMeetingsWithContacts', () => {
-  it('joins the linked contact, scoped to the given user, newest first', async () => {
+  it('joins the linked contact, team-scoped by RLS, newest first, no client-side user_id filter', async () => {
     builder = makeBuilder({ data: [{ id: 'm1' }], error: null })
     fromMock.mockReturnValue(builder)
     const result = await listMeetingsWithContacts('user_1')
     expect(fromMock).toHaveBeenCalledWith('meetings')
     expect(builder.select).toHaveBeenCalledWith('*, contacts(name, company)')
-    expect(builder.eq).toHaveBeenCalledWith('user_id', 'user_1')
+    expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
     expect(builder.order).toHaveBeenCalledWith('meeting_date', { ascending: false })
     expect(result).toEqual([{ id: 'm1' }])
   })

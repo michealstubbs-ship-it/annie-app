@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { listDeals, createDeal, updateDeal, deleteDeal } from '../lib/data/deals'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
+import Spinner from './Spinner'
 
 const STAGES = ['prospect', 'approached', 'meeting_booked', 'pitch_sent', 'negotiating', 'won', 'lost']
 const STAGE_LABELS = { prospect: 'Prospect', approached: 'Approached', meeting_booked: 'Meeting Booked', pitch_sent: 'Pitch Sent', negotiating: 'Negotiating', won: 'Won', lost: 'Lost' }
@@ -50,8 +52,11 @@ export default function Pipeline() {
 
   async function load() {
     setLoading(true)
-    const { data } = await supabase.from('deals').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
-    setDeals(data || [])
+    // 2026-08-24 Task 2: routed through lib/data/deals.js (previously
+    // duplicated inline here) so this table's query shape lives in exactly
+    // one place.
+    const data = await listDeals(user.id)
+    setDeals(data)
     await loadCurrency()
     setLoading(false)
   }
@@ -78,8 +83,8 @@ export default function Pipeline() {
     setError('')
     const payload = { ...form, value: parseFloat(form.value) || 0, probability: parseInt(form.probability) || 0 }
     const { error: err } = editId
-      ? await supabase.from('deals').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', editId)
-      : await supabase.from('deals').insert({ ...payload, user_id: user.id })
+      ? await updateDeal(editId, { ...payload, updated_at: new Date().toISOString() })
+      : await createDeal(payload, user.id)
     if (err) {
       setError(err.message || 'Could not save this deal. Please try again.')
       setSaving(false)
@@ -91,7 +96,7 @@ export default function Pipeline() {
   }
 
   async function del(id) {
-    const { error: err } = await supabase.from('deals').delete().eq('id', id)
+    const { error: err } = await deleteDeal(id)
     if (err) {
       setError(err.message || 'Could not delete this deal. Please try again.')
       return
@@ -132,7 +137,7 @@ export default function Pipeline() {
       </div>
 
       {loading ? (
-        <div className="flex justify-center py-20"><div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" /></div>
+        <div className="flex justify-center py-20"><Spinner /></div>
       ) : deals.length === 0 ? (
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">📈</div>

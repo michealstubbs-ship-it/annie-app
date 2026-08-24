@@ -15,7 +15,7 @@
 // signal predating this cache), the RPC just updates zero rows — a safe,
 // silent no-op, not an error.
 import { createClient } from '@supabase/supabase-js'
-import { normalizeCompanyKey, titleBucketKey } from './lib/scanShared.js'
+import { normalizeCompanyKey, titleBucketKey, createTimeoutFetch } from './lib/scanShared.js'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { jsonError } from './lib/httpError.js'
@@ -53,7 +53,9 @@ export default async (req) => {
     return jsonError(401, 'Your session has expired. Please log in again.')
   }
 
-  const supabase = createClient(supabaseUrl, serviceKey)
+  // 2026-08-24 Task 3: createTimeoutFetch applied — see its own header in
+  // scanShared.js.
+  const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
   const companyKey = normalizeCompanyKey(company)
   const titleKey = titleBucketKey(titleKeywords)
 

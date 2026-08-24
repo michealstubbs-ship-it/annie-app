@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { normalizeCompanyName } from '../lib/companyMatch'
+import ErrorBanner from './ErrorBanner'
+import Modal from './Modal'
 
 // Reusable "pick an existing company, or add one" dropdown. Used anywhere a
 // company needs to be attached to something (contacts, jobs) so the same
@@ -23,7 +25,8 @@ export default function CompanySelect({ value, onChange, required = false, label
   async function load() {
     if (!user) return
     setLoading(true)
-    const { data } = await supabase.from('companies').select('id, name, industry').eq('user_id', user.id).order('name')
+    // 2026-08-24: companies is team-scoped by RLS — no client-side user_id filter on top of it.
+    const { data } = await supabase.from('companies').select('id, name, industry').order('name')
     setCompanies(data || [])
     setLoading(false)
   }
@@ -82,25 +85,23 @@ export default function CompanySelect({ value, onChange, required = false, label
       </select>
       {note && <p className="text-xs text-gray-500 mt-1">{note}</p>}
 
-      {showAdd && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] px-4" onClick={e => e.stopPropagation()}>
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <h3 className="text-lg font-bold text-navy mb-3">Add company</h3>
-            <p className="text-xs text-gray-500 mb-3">This creates a real company record. Everything you attach to it later (contacts, jobs) links back here, instead of typing the name fresh each time.</p>
-            {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{error}</div>}
-            <div className="space-y-3">
-              <div><label className="label">Company name *</label><input className="input" value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} autoFocus /></div>
-              <div><label className="label">Industry</label><input className="input" value={form.industry} onChange={e => setForm(p => ({ ...p, industry: e.target.value }))} /></div>
-              <div><label className="label">Location</label><input className="input" value={form.location} onChange={e => setForm(p => ({ ...p, location: e.target.value }))} /></div>
-              <div><label className="label">Website</label><input className="input" value={form.website} onChange={e => setForm(p => ({ ...p, website: e.target.value }))} /></div>
-            </div>
-            <div className="flex gap-3 justify-end mt-5">
-              <button onClick={() => setShowAdd(false)} className="btn-ghost">Cancel</button>
-              <button onClick={saveNewCompany} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Add company'}</button>
-            </div>
-          </div>
+      {/* 2026-08-24 Task 4: moved off a hand-rolled `fixed inset-0` overlay
+          (no role="dialog", no Escape-to-close, no focus trap) onto the
+          shared Modal component every other form dialog already uses. */}
+      <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Add company">
+        <p className="text-xs text-gray-500 mb-3">This creates a real company record. Everything you attach to it later (contacts, jobs) links back here, instead of typing the name fresh each time.</p>
+        <ErrorBanner>{error}</ErrorBanner>
+        <div className="space-y-3">
+          <div><label className="label">Company name *</label><input className="input" value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} autoFocus /></div>
+          <div><label className="label">Industry</label><input className="input" value={form.industry} onChange={e => setForm(p => ({ ...p, industry: e.target.value }))} /></div>
+          <div><label className="label">Location</label><input className="input" value={form.location} onChange={e => setForm(p => ({ ...p, location: e.target.value }))} /></div>
+          <div><label className="label">Website</label><input className="input" value={form.website} onChange={e => setForm(p => ({ ...p, website: e.target.value }))} /></div>
         </div>
-      )}
+        <div className="flex gap-3 justify-end mt-5">
+          <button onClick={() => setShowAdd(false)} className="btn-ghost">Cancel</button>
+          <button onClick={saveNewCompany} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Add company'}</button>
+        </div>
+      </Modal>
     </div>
   )
 }

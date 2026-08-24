@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
+import { listTasksWithLinks, createTask, updateTask, deleteTask } from '../lib/data/tasks'
+import { listContactsMinimal } from '../lib/data/contacts'
+import { listCandidatesMinimal } from '../lib/data/candidates'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
+import Spinner from './Spinner'
 
 const PRIORITY_COLOR = {
   high: 'bg-red-100 text-red-700',
@@ -33,14 +36,16 @@ export default function Tasks() {
 
   async function load() {
     setLoading(true)
-    const [{ data: t }, { data: c }, { data: cd }] = await Promise.all([
-      supabase.from('bd_tasks').select('*, contacts(name, company), candidates(name)').eq('user_id', user.id).order('due_date', { ascending: true, nullsFirst: false }),
-      supabase.from('contacts').select('id, name, company').eq('user_id', user.id).order('name'),
-      supabase.from('candidates').select('id, name').eq('user_id', user.id).order('name'),
+    // 2026-08-24 Task 2: routed through lib/data/* (previously duplicated
+    // inline here) so this table's query shape lives in exactly one place.
+    const [t, c, cd] = await Promise.all([
+      listTasksWithLinks(user.id),
+      listContactsMinimal(user.id),
+      listCandidatesMinimal(user.id),
     ])
-    setTasks(t || [])
-    setContacts(c || [])
-    setCandidates(cd || [])
+    setTasks(t)
+    setContacts(c)
+    setCandidates(cd)
     setLoading(false)
   }
 
@@ -82,10 +87,10 @@ export default function Tasks() {
         updated_at: new Date().toISOString(),
       }
       if (editId) {
-        const { error: err } = await supabase.from('bd_tasks').update(row).eq('id', editId)
+        const { error: err } = await updateTask(editId, row)
         if (err) throw err
       } else {
-        const { error: err } = await supabase.from('bd_tasks').insert({ ...row, user_id: user.id })
+        const { error: err } = await createTask(row, user.id)
         if (err) throw err
       }
       await load()
@@ -101,7 +106,7 @@ export default function Tasks() {
     setListError('')
     const status = t.status === 'done' ? 'open' : 'done'
     setTasks(prev => prev.map(x => x.id === t.id ? { ...x, status } : x))
-    const { error: err } = await supabase.from('bd_tasks').update({ status, updated_at: new Date().toISOString() }).eq('id', t.id)
+    const { error: err } = await updateTask(t.id, { status, updated_at: new Date().toISOString() })
     if (err) {
       setTasks(prev => prev.map(x => x.id === t.id ? { ...x, status: t.status } : x))
       setListError(err.message)
@@ -110,7 +115,7 @@ export default function Tasks() {
 
   async function del(id) {
     setListError('')
-    const { error: err } = await supabase.from('bd_tasks').delete().eq('id', id)
+    const { error: err } = await deleteTask(id)
     if (err) return setListError(err.message)
     setTasks(prev => prev.filter(t => t.id !== id))
   }
@@ -164,10 +169,10 @@ export default function Tasks() {
         <button onClick={openAdd} className="btn-primary">+ Add Task</button>
       </div>
 
-      {listError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-4">{listError}</div>}
+      <ErrorBanner>{listError}</ErrorBanner>
 
       {loading ? (
-        <div className="flex items-center justify-center py-20"><div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" /></div>
+        <div className="flex items-center justify-center py-20"><Spinner /></div>
       ) : tasks.length === 0 ? (
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">✅</div>

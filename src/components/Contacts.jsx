@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
+import { listContacts, deleteContact } from '../lib/data/contacts'
 import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
 import ConfirmDialog from './ConfirmDialog'
+import ErrorBanner from './ErrorBanner'
+import Spinner from './Spinner'
 
 const STATUS_COLORS = {
   hot: 'bg-red-100 text-red-700',
@@ -31,8 +33,11 @@ export default function Contacts() {
 
   async function loadContacts() {
     setLoading(true)
-    const { data } = await supabase.from('contacts').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
-    setContacts(data || [])
+    // 2026-08-24 Task 2: routed through lib/data/contacts.js (previously
+    // duplicated inline here) so this table's query shape lives in exactly
+    // one place.
+    const data = await listContacts(user.id)
+    setContacts(data)
     setLoading(false)
   }
 
@@ -41,7 +46,7 @@ export default function Contacts() {
 
   async function del(id) {
     setListError('')
-    const { error: err } = await supabase.from('contacts').delete().eq('id', id)
+    const { error: err } = await deleteContact(id)
     if (err) return setListError('Could not delete contact: ' + err.message)
     setContacts(prev => prev.filter(c => c.id !== id))
   }
@@ -68,11 +73,11 @@ export default function Contacts() {
 
       <input className="input max-w-sm mb-6" placeholder="Search contacts..." value={search} onChange={e => setSearch(e.target.value)} />
 
-      {listError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{listError}</div>}
+      <ErrorBanner>{listError}</ErrorBanner>
 
       {loading ? (
         <div className="flex items-center justify-center py-20">
-          <div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" />
+          <Spinner />
         </div>
       ) : filtered.length === 0 ? (
         <div className="card p-12 text-center">

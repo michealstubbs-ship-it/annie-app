@@ -7,6 +7,7 @@ import { FUNCTION_TAXONOMY, FLAT_FUNCTION_OPTIONS } from '../lib/functionTaxonom
 import SectorPicker from '../components/SectorPicker'
 import { withTimeout, TIMEOUT_MESSAGE } from '../lib/withTimeout'
 import { trackEvent } from '../lib/analytics'
+import ErrorBanner from '../components/ErrorBanner'
 
 // Sector and market keywords serve two purposes: (1) matched against a company's real
 // Apollo industry/country data when we have it, confidently excluding a confirmed
@@ -343,7 +344,8 @@ export default function LinkedInImport({ embedded = false }) {
       let newCompanyCount = 0
 
       if (uniqueNames.length) {
-        const { data: existing } = await supabase.from('companies').select('id, name').eq('user_id', user.id)
+        // 2026-08-24: companies is team-scoped by RLS — no client-side user_id filter on top of it.
+        const { data: existing } = await supabase.from('companies').select('id, name')
         for (const co of existing || []) companyMap[normalizeCompany(co.name)] = co.id
 
         const toCreate = uniqueNames
@@ -464,7 +466,7 @@ export default function LinkedInImport({ embedded = false }) {
             First, tell Annie who to look for. She'll only import and monitor contacts that match these filters.
           </p>
 
-          {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">{error}</div>}
+          <ErrorBanner>{error}</ErrorBanner>
 
           <div className="bg-yellow-50 border-2 border-gold rounded-xl p-5 mb-6">
             <div className="text-sm font-bold text-navy mb-1">Who should Annie import and watch?</div>
@@ -556,7 +558,7 @@ export default function LinkedInImport({ embedded = false }) {
             {apolloConfigured && enrichedCount > 0 ? `, including verified company data for ${enrichedCount.toLocaleString()} companies.` : '.'}
           </p>
 
-          {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">{error}</div>}
+          <ErrorBanner>{error}</ErrorBanner>
 
           <div className="bg-page-bg rounded-lg px-4 py-3 mb-4">
             <div className="flex justify-between text-sm mb-1">

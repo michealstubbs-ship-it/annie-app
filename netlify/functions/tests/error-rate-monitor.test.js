@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { mockCreateClient } = vi.hoisted(() => ({ mockCreateClient: vi.fn() }))
 const { mockAlertIfConfigured } = vi.hoisted(() => ({ mockAlertIfConfigured: vi.fn().mockResolvedValue() }))
 vi.mock('@supabase/supabase-js', () => ({ createClient: mockCreateClient }))
-vi.mock('../lib/scanShared.js', () => ({ alertIfConfigured: mockAlertIfConfigured }))
+vi.mock('../lib/scanShared.js', () => ({ alertIfConfigured: mockAlertIfConfigured, createTimeoutFetch: () => fetch }))
 
 let handler
 

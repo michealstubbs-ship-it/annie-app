@@ -15,6 +15,7 @@ import Stripe from 'stripe'
 import { reportServerError } from './lib/reportError.js'
 import { resolveTierFromPriceId } from './lib/stripeShared.js'
 import { sendPaymentFailedEmail } from './lib/email.js'
+import { createTimeoutFetch } from './lib/scanShared.js'
 
 // Pulls the fields subscriptions actually needs off a Stripe Subscription
 // object, resolving tier/interval from the live price ID rather than any
@@ -63,7 +64,9 @@ export default async (req) => {
     return new Response('Invalid signature', { status: 400 })
   }
 
-  const supabase = createClient(supabaseUrl, serviceKey)
+  // 2026-08-24 Task 3: createTimeoutFetch applied — see its own header in
+  // scanShared.js.
+  const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
 
   // Stripe can and does redeliver the same event (network retries, a manual
   // resend from the dashboard). The subscriptions writes below are already

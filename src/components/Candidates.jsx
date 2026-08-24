@@ -2,12 +2,15 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate } from '../lib/data/candidates'
+import { listActiveJobsForPicker } from '../lib/data/jobs'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import { logSignalOutcome } from '../lib/signalOutcomes'
 import { companiesMatch } from '../lib/companyMatch'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
+import Spinner from './Spinner'
 
 const STAGES = ['sourced', 'screening', 'shortlisted', 'presented', 'interviewing', 'offer', 'placed', 'rejected', 'withdrawn']
 const STAGE_LABEL = { sourced: 'Sourced', screening: 'Screening', shortlisted: 'Shortlisted', presented: 'Presented', interviewing: 'Interviewing', offer: 'Offer', placed: 'Placed', rejected: 'Rejected', withdrawn: 'Withdrawn' }
@@ -54,12 +57,14 @@ export default function Candidates() {
 
   async function load() {
     setLoading(true)
-    const [{ data }, { data: j }] = await Promise.all([
-      supabase.from('candidates').select('*, jobs(title, companies(name))').eq('user_id', user.id).order('created_at', { ascending: false }),
-      supabase.from('jobs').select('id, title, companies(name)').eq('user_id', user.id).in('status', ['active', 'onhold']).order('title'),
+    // 2026-08-24 Task 2: routed through lib/data/* (previously duplicated
+    // inline here) so this table's query shape lives in exactly one place.
+    const [data, j] = await Promise.all([
+      listCandidatesWithJobs(user.id),
+      listActiveJobsForPicker(user.id),
     ])
-    setCandidates(data || [])
-    setJobs(j || [])
+    setCandidates(data)
+    setJobs(j)
     setLoading(false)
   }
 
@@ -97,10 +102,10 @@ export default function Candidates() {
   async function maybeLogPlacement(row, previousStatus) {
     if (row.status !== 'placed' || previousStatus === 'placed' || !row.company) return
     try {
+      // 2026-08-24: intelligence_signals is team-scoped by RLS — no client-side user_id filter on top of it.
       const { data: recentSignals } = await supabase
         .from('intelligence_signals')
         .select('id, company_name, signal_type')
-        .eq('user_id', user.id)
         .order('found_at', { ascending: false })
         .limit(300)
       const match = (recentSignals || []).find(s => companiesMatch(s.company_name, row.company))
@@ -137,10 +142,10 @@ export default function Candidates() {
       const previousStatus = editId ? candidates.find(c => c.id === editId)?.status : null
 
       if (editId) {
-        const { error: err } = await supabase.from('candidates').update(row).eq('id', editId)
+        const { error: err } = await updateCandidate(editId, row)
         if (err) throw err
       } else {
-        const { error: err } = await supabase.from('candidates').insert({ ...row, user_id: user.id })
+        const { error: err } = await createCandidate(row, user.id)
         if (err) throw err
       }
       maybeLogPlacement(row, previousStatus)
@@ -155,7 +160,7 @@ export default function Candidates() {
 
   async function del(id) {
     setListError('')
-    const { error: err } = await supabase.from('candidates').delete().eq('id', id)
+    const { error: err } = await deleteCandidate(id)
     if (err) return setListError('Could not delete candidate: ' + err.message)
     setCandidates(prev => prev.filter(c => c.id !== id))
   }
@@ -212,11 +217,11 @@ export default function Candidates() {
         ))}
       </div>
 
-      {listError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-3">{listError}</div>}
+      <ErrorBanner>{listError}</ErrorBanner>
 
       {loading ? (
         <div className="flex items-center justify-center py-20">
-          <div className="w-8 h-8 border-4 border-gold border-t-transparent rounded-full animate-spin" />
+          <Spinner />
         </div>
       ) : filtered.length === 0 ? (
         <div className="card p-12 text-center">

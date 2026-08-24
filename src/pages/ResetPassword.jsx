@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import ErrorBanner from '../components/ErrorBanner'
 
 export default function ResetPassword() {
   const { updatePassword } = useAuth()
@@ -64,7 +65,7 @@ export default function ResetPassword() {
               <h1 className="text-2xl font-bold text-navy mb-1">Set a new password</h1>
               <p className="text-gray-500 text-sm mb-6">Choose something you haven't used before.</p>
 
-              {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm mb-4">{error}</div>}
+              <ErrorBanner>{error}</ErrorBanner>
 
               {ready && (
                 <form onSubmit={handleSubmit} className="space-y-4">

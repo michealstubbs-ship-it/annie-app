@@ -147,8 +147,17 @@ export default async (req) => {
     if (inviteError) {
       // Don't leave a phantom reserved seat behind if the invite email
       // itself never went out.
-      await supabase.from('team_members').delete().eq('team_id', teamId).eq('invited_email', email).eq('status', 'invited')
-      throw new Error(`invite email failed: ${inviteError.message}`)
+      //
+      // 2026-08-24 Task 5: this rollback delete's own result went
+      // unchecked — if IT also failed, the phantom 'invited' row survives
+      // and the duplicate-check above (pendingRow/activeRow) then wrongly
+      // blocks the inviter from ever retrying that email, with nothing in
+      // the logs to explain why. Folding its error into the thrown message
+      // (rather than a second silent catch) means reportServerError below
+      // captures both failures in the one report instead of losing the
+      // rollback failure entirely.
+      const { error: rollbackError } = await supabase.from('team_members').delete().eq('team_id', teamId).eq('invited_email', email).eq('status', 'invited')
+      throw new Error(`invite email failed: ${inviteError.message}${rollbackError ? `; also failed to roll back the pending seat: ${rollbackError.message}` : ''}`)
     }
 
     return new Response(JSON.stringify({ status: 'invited' }), { status: 200, headers: { 'Content-Type': 'application/json' } })

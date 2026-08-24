@@ -12,7 +12,7 @@
 // Michael, since it needs a third-party account this environment can't
 // create on his behalf.
 import { createClient } from '@supabase/supabase-js'
-import { alertIfConfigured } from './lib/scanShared.js'
+import { alertIfConfigured, createTimeoutFetch } from './lib/scanShared.js'
 
 // No hard science behind this number — it's a first, conservative
 // threshold meant to catch "something is clearly broken" (a bad deploy, an
@@ -26,8 +26,11 @@ export default async () => {
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!supabaseUrl || !serviceKey) return new Response('Not configured', { status: 200 })
 
+  // 2026-08-24 Task 3: createTimeoutFetch applied — see its own header in
+  // scanShared.js.
   const supabase = createClient(supabaseUrl, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: createTimeoutFetch() },
   })
 
   try {
