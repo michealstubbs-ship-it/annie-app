@@ -19,6 +19,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'))
 const ResetPassword = lazy(() => import('./pages/ResetPassword'))
 const Terms = lazy(() => import('./pages/Terms'))
 const Privacy = lazy(() => import('./pages/Privacy'))
+const Welcome = lazy(() => import('./pages/Welcome'))
 const SupportWidget = lazy(() => import('./components/SupportWidget'))
 
 function ProtectedRoute({ children }) {
@@ -72,6 +73,7 @@ function AppRoutes() {
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/privacy" element={<Privacy />} />
+        <Route path="/welcome" element={<Welcome />} />
         <Route path="/onboarding" element={<OnboardingRoute><Onboarding /></OnboardingRoute>} />
         <Route path="/import" element={<ImportRoute><LinkedInImport /></ImportRoute>} />
         <Route path="/dashboard/*" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />

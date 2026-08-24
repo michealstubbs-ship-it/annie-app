@@ -98,6 +98,7 @@ export default function Onboarding() {
     const draft = loadDraft(user?.id)
     return {
       firmName: draft?.form?.firmName ?? (profile?.firm_name || ''),
+      linkedinUrl: draft?.form?.linkedinUrl ?? '',
       sectors: draft?.form?.sectors ?? [],
       functions: draft?.form?.functions ?? [],
       locations: draft?.form?.locations ?? [],
@@ -169,6 +170,7 @@ export default function Onboarding() {
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
           body: JSON.stringify({
             firmName: form.firmName,
+            linkedinUrl: form.linkedinUrl,
             sectors: form.sectors,
             functions: form.functions,
             locations: form.locations,
@@ -277,6 +279,10 @@ export default function Onboarding() {
             <div>
               <label className="label" htmlFor="onboarding-firm-name">Firm name</label>
               <input id="onboarding-firm-name" className="input" placeholder="e.g. Vantage Search Group" value={form.firmName} onChange={e => update('firmName', e.target.value)} />
+            </div>
+            <div className="mt-4">
+              <label className="label" htmlFor="onboarding-linkedin-url">Your LinkedIn profile URL <span className="text-gray-400 font-normal">(optional)</span></label>
+              <input id="onboarding-linkedin-url" type="url" className="input" placeholder="e.g. linkedin.com/in/yourname" value={form.linkedinUrl} onChange={e => update('linkedinUrl', e.target.value)} />
             </div>
           </div>
         )}

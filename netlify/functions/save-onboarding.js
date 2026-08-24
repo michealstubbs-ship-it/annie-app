@@ -27,9 +27,12 @@ export default async (req) => {
     return jsonError(400, 'Invalid request body')
   }
 
-  const { firmName, sectors, functions: onboardingFunctions, locations, tone } = body || {}
+  const { firmName, linkedinUrl, sectors, functions: onboardingFunctions, locations, tone } = body || {}
   if (!Array.isArray(sectors) || !Array.isArray(onboardingFunctions) || !Array.isArray(locations)) {
     return jsonError(400, 'Invalid onboarding data')
+  }
+  if (linkedinUrl && (typeof linkedinUrl !== 'string' || linkedinUrl.length > 300)) {
+    return jsonError(400, 'Invalid LinkedIn URL')
   }
   // These three arrays flow directly into every future scan's AI prompt for
   // this account (see buildScanPrompt) — an unbounded array or an oversized
@@ -60,6 +63,7 @@ export default async (req) => {
   const { error: onboardErr } = await supabase.from('onboarding').upsert({
     user_id: userId,
     firm_name: firmName || '',
+    linkedin_url: linkedinUrl || null,
     sectors,
     functions: onboardingFunctions,
     locations,

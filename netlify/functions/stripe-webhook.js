@@ -87,10 +87,37 @@ export default async (req) => {
       // tied to a real Annie account. Every later event (plan changes,
       // renewals, cancellations) updates that same row keyed by
       // stripe_customer_id / stripe_subscription_id instead.
+      // 2026-08-24: start-trial-checkout.js (the marketing site's
+      // "Start free trial" buttons) has no logged-in user to set
+      // client_reference_id from — checkout itself collects the buyer's
+      // email. When that's the case, resolve or CREATE the Annie account
+      // right here: look up an existing profile by email first (covers an
+      // existing customer buying a second time from the marketing site),
+      // else invite a brand-new one. inviteUserByEmail creates the
+      // auth.users row, which fires handle_new_user() synchronously —
+      // that's what bootstraps the profiles row and the personal
+      // team/team_members row this handler needs below, exactly the same
+      // as a normal in-app signup.
       case 'checkout.session.completed': {
         const session = event.data.object
-        const userId = session.client_reference_id
-        if (!userId || !session.subscription) break
+        if (!session.subscription) break
+        let userId = session.client_reference_id
+        if (!userId) {
+          const email = session.customer_details?.email || session.customer_email
+          if (!email) throw new Error('checkout.session.completed has no client_reference_id and no email to resolve a user from')
+
+          const { data: existingProfile } = await supabase.from('profiles').select('id').ilike('email', email).maybeSingle()
+          if (existingProfile) {
+            userId = existingProfile.id
+          } else {
+            const appUrl = process.env.APP_URL || 'https://app.meetannie.ai'
+            const { data: invited, error: inviteErr } = await supabase.auth.admin.inviteUserByEmail(email, {
+              redirectTo: `${appUrl}/reset-password`,
+            })
+            if (inviteErr) throw new Error(`could not create account for ${email}: ${inviteErr.message}`)
+            userId = invited.user.id
+          }
+        }
         const sub = await stripe.subscriptions.retrieve(session.subscription)
         // Every account has an active team from the moment it signs up
         // (see handle_new_user() in the 2026-08-24 migration) — this looks
