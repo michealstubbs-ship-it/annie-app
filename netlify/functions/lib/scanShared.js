@@ -562,23 +562,31 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
     const data = await resp.json()
     const p = (data.people || [])[0]
     if (!p) return null
-    // Both a first and a last name are required, not just "something in
-    // first_name" — a bare first name (Apollo occasionally has thin records)
-    // isn't a trustworthy, presentable "verified contact". Showing "Naif" or
-    // "Martin" alone as if it were a confirmed identity reads as broken, not
-    // verified — this treats a partial name the same as no contact found,
-    // so the card correctly falls back to "no verified contact found yet,
-    // approach by role" instead.
-    if (!p.first_name || !p.last_name) return null
-    const name = `${p.first_name} ${p.last_name}`.trim()
+    // 2026-08-24: mixed_people/api_search masks last names on this account's
+    // Apollo plan tier — the raw response carries `last_name_obfuscated`
+    // (e.g. "Re***n"), never a usable `last_name`, confirmed directly
+    // against the live API, not assumed. Requiring p.last_name straight off
+    // this search result — the previous behavior — meant every single
+    // result from this endpoint, for every company, every signal type, was
+    // silently discarded here. That's the actual root cause of Today's BD
+    // Actions going completely empty: the "always require a real contact"
+    // rule was correctly enforcing itself against a pipeline that could
+    // never produce one. A first name is still enough to know there's a
+    // real person worth revealing — the full identity comes from the same
+    // reveal call already made below for the email, which returns an
+    // unmasked name (confirmed live: search gave "Re***n", the reveal call
+    // for that same person id gave "Rehman").
+    if (!p.first_name) return null
 
-    // Apollo's search endpoint never returns a usable email, it comes back
-    // masked (e.g. "email_not_unlocked@domain.com"). Getting a real one
-    // requires a separate reveal call against the match/enrich endpoint,
-    // which spends its own Apollo credit — worth it here specifically,
-    // since "here's the CFO's name but no way to actually reach them" isn't
-    // a usable lead, that's the whole point of the contact being verified.
+    // Reveal is no longer "just for email" — for this endpoint it's now the
+    // only source of the real, unmasked last name too, so it's always
+    // attempted once there's a person id, not conditioned on already having
+    // a full name from search (which this endpoint never actually gives).
     let email = null
+    let revealedFirstName = null
+    let revealedLastName = null
+    let revealedTitle = null
+    let revealedLinkedin = null
     if (p.id && (await reserveApolloCredits(supabase))) {
       try {
         const matchResp = await fetchWithRetry('https://api.apollo.io/v1/people/match', {
@@ -588,19 +596,34 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
         }, 12000, 1)
         if (matchResp.ok) {
           const matchData = await matchResp.json()
-          const revealed = matchData?.person?.email
+          const revealedPerson = matchData?.person
+          revealedFirstName = revealedPerson?.first_name || null
+          revealedLastName = revealedPerson?.last_name || null
+          revealedTitle = revealedPerson?.title || null
+          revealedLinkedin = revealedPerson?.linkedin_url || null
+          const revealed = revealedPerson?.email
           if (revealed && !revealed.includes('email_not_unlocked') && !revealed.includes('locked')) email = revealed
         } else {
-          console.error(`[scanShared] email reveal non-ok response for "${company}"/"${name}": ${matchResp.status}`)
+          console.error(`[scanShared] email reveal non-ok response for "${company}"/"${p.first_name}": ${matchResp.status}`)
         }
       } catch (err) {
-        // Never let a failed email reveal cost the contact itself, a real
-        // verified name+title+LinkedIn is still valuable without an email.
-        console.error(`[scanShared] email reveal failed for "${company}"/"${name}":`, err.message)
+        // Never let a failed reveal cost visibility into why — this is now
+        // also the only source of the last name, so a failure here means
+        // no contact at all, not just no email, and that's worth knowing.
+        console.error(`[scanShared] email reveal failed for "${company}"/"${p.first_name}":`, err.message)
       }
     }
 
-    return { name, title: p.title || '', linkedin_url: p.linkedin_url || '', email }
+    // Same bar as before — a confirmed first AND last name, not a thin
+    // partial record — just checked against the reveal response, the only
+    // place a real (unmasked) last name actually exists, instead of the
+    // search response, which never has one on this plan.
+    const firstName = revealedFirstName || p.first_name
+    const lastName = revealedLastName
+    if (!firstName || !lastName) return null
+    const name = `${firstName} ${lastName}`.trim()
+
+    return { name, title: revealedTitle || p.title || '', linkedin_url: revealedLinkedin || p.linkedin_url || '', email }
   } catch (err) {
     console.error(`[scanShared] verifyContact failed for "${company}":`, err.message)
     await reportServerError('scanShared:verifyContact', err, { company, titleKeywords })

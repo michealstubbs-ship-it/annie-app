@@ -434,6 +434,67 @@ describe('buildEnrichedSignalRow', () => {
     vi.unstubAllGlobals()
   })
 
+  // 2026-08-24 — the actual root cause of Today's BD Actions going
+  // completely empty for every customer, industry-wide: confirmed live
+  // against the real Apollo API that mixed_people/api_search masks last
+  // names on this account's plan (a `last_name_obfuscated` field like
+  // "Re***n", never a usable `last_name`), while the reveal endpoint
+  // (people/match, already called for email) returns the real, unmasked
+  // name for the same person. The old code required `p.last_name` straight
+  // off the search result, which is never present on this plan — so this
+  // discarded EVERY Apollo result, for every company, every signal type,
+  // even ones Apollo could actually identify. This is the regression test:
+  // a masked search result must still resolve to a real verified contact,
+  // using the name the reveal call actually gives back.
+  it('resolves a real contact from a masked search result, taking the real name from the reveal call — the 2026-08-24 fix', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      if (url.includes('mixed_companies/search')) {
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'dpworld.com' }] }) }
+      }
+      if (url.includes('mixed_people/api_search')) {
+        // This is what Apollo's search endpoint actually returns on this
+        // plan — no last_name at all, only its obfuscated form.
+        return {
+          ok: true,
+          json: async () => ({ people: [{ first_name: 'Risalat', last_name_obfuscated: 'Re***n', title: 'Chief Financial Officer', id: 'p1' }] }),
+        }
+      }
+      if (url.includes('people/match')) {
+        const body = JSON.parse(opts.body)
+        expect(body.id).toBe('p1') // reveal is keyed by the exact person id from search
+        return { ok: true, json: async () => ({ person: { first_name: 'Risalat', last_name: 'Rehman', email: 'risalat.rehman@dpworld.com' } }) }
+      }
+      return { ok: true, text: async () => '' }
+    }))
+    const row = await buildEnrichedSignalRow(
+      { entryType: 'signal', signalType: 'funding', company: 'DP World', headline: 'Raises new fund', titleKeywords: ['Chief Financial Officer'] },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+    )
+    expect(row.contact_candidates?.length || row.contact_verified).toBeTruthy()
+    // funding signals go through verifyContactsAcrossFunctions, so this
+    // shows up as a candidate rather than the single contact_verified field
+    // — either way, the masked name must not have blocked a real match.
+    const resolved = row.contact_verified ? row.contact_name : row.contact_candidates?.[0]?.name
+    expect(resolved).toBe('Risalat Rehman')
+    vi.unstubAllGlobals()
+  })
+
+  it('still returns null when the reveal call itself cannot confirm a real last name (a genuinely thin record, not just a masked one)', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+      if (url.includes('mixed_people/api_search')) {
+        return { ok: true, json: async () => ({ people: [{ first_name: 'Naif', last_name_obfuscated: '', title: 'Project Development Manager', id: 'p1' }] }) }
+      }
+      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { first_name: 'Naif', email: null } }) } // no last_name even on reveal
+      return { ok: true, text: async () => '' }
+    }))
+    const result = await verifyContact('apollo-key', 'Rabigh 1', ['Project Development Manager'], supabase, 'org_1')
+    expect(result).toBeNull()
+    vi.unstubAllGlobals()
+  })
+
   // A real, observed bug: the model itself sometimes writes citation-style
   // markup into its own JSON answer (imitating a format it's seen
   // elsewhere), and it was leaking straight into what a customer reads on
@@ -519,10 +580,14 @@ describe('buildEnrichedSignalRows — same-company sequencing (the actual Live J
       }
       if (url.includes('mixed_people/api_search')) {
         peopleSearchCalls++
+        // Search results carry a masked last name on this account's Apollo
+        // plan — 'Doe' here stands in for what would really be a masked
+        // form (e.g. "D**"); the code under test now ignores it and takes
+        // the real name from the people/match reveal below instead.
         return { ok: true, json: async () => ({ people: [{ first_name: 'Jane', last_name: 'Doe', title: 'CFO', id: 'p1' }] }) }
       }
       if (url.includes('people/match')) {
-        return { ok: true, json: async () => ({ person: { email: 'jane@acme.com' } }) }
+        return { ok: true, json: async () => ({ person: { first_name: 'Jane', last_name: 'Doe', email: 'jane@acme.com' } }) }
       }
       return { ok: true, text: async () => '' } // verifySourceUrl's HEAD check
     }))
@@ -559,7 +624,15 @@ describe('buildEnrichedSignalRows — same-company sequencing (the actual Live J
         const isFinance = body.person_titles?.includes('CFO')
         return { ok: true, json: async () => ({ people: [isFinance ? { first_name: 'Jane', last_name: 'Doe', title: 'CFO', id: 'p1' } : { first_name: 'Sam', last_name: 'Lee', title: 'Head of Engineering', id: 'p2' }] }) }
       }
-      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { email: 'x@acme.com' } }) }
+      if (url.includes('people/match')) {
+        // Reveal is per-person (keyed by id) — must return the matching
+        // real identity for whichever person id was actually revealed, not
+        // one fixed name for every call, or this test couldn't tell the
+        // two roles' contacts apart any more than the masked-name bug did.
+        const body = JSON.parse(opts.body)
+        const revealed = body.id === 'p1' ? { first_name: 'Jane', last_name: 'Doe' } : { first_name: 'Sam', last_name: 'Lee' }
+        return { ok: true, json: async () => ({ person: { ...revealed, email: 'x@acme.com' } }) }
+      }
       return { ok: true, text: async () => '' }
     }))
 
@@ -843,7 +916,11 @@ describe('verifyContactsAcrossFunctions — the multi-contact fallback for fundi
         if (titles.includes('Head of Engineering')) return { ok: true, json: async () => ({ people: [{ first_name: 'Sam', last_name: 'Lee', title: 'Head of Engineering', id: 'p2' }] }) }
         return { ok: true, json: async () => ({ people: [] }) } // commercial: nobody found
       }
-      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { email: 'x@acme.com' } }) }
+      if (url.includes('people/match')) {
+        const body = JSON.parse(opts.body)
+        const revealed = body.id === 'p1' ? { first_name: 'Priya', last_name: 'Nair' } : { first_name: 'Sam', last_name: 'Lee' }
+        return { ok: true, json: async () => ({ person: { ...revealed, email: 'x@acme.com' } }) }
+      }
       return { ok: true, text: async () => '' }
     }))
     const results = await verifyContactsAcrossFunctions('apollo-key', 'Acme Ltd', supabase, 'org_1')
@@ -859,7 +936,7 @@ describe('verifyContactsAcrossFunctions — the multi-contact fallback for fundi
     let peopleSearchCalls = 0
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (url.includes('mixed_people/api_search')) { peopleSearchCalls++; return { ok: true, json: async () => ({ people: [{ first_name: 'Priya', last_name: 'Nair', title: 'Head of Product', id: 'p1' }] }) } }
-      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { email: 'x@acme.com' } }) }
+      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { first_name: 'Priya', last_name: 'Nair', email: 'x@acme.com' } }) }
       return { ok: true, text: async () => '' }
     }))
     await verifyContactsAcrossFunctions('apollo-key', 'Acme Ltd', supabase, 'org_1', ['product'])
@@ -879,7 +956,7 @@ describe('buildEnrichedSignalRow — always a contact recommendation on the 4 wh
         if (body.person_titles?.includes('Head of Product')) return { ok: true, json: async () => ({ people: [{ first_name: 'Priya', last_name: 'Nair', title: 'Head of Product', id: 'p1' }] }) }
         return { ok: true, json: async () => ({ people: [] }) }
       }
-      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { email: 'x@acme.com' } }) }
+      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { first_name: 'Priya', last_name: 'Nair', email: 'x@acme.com' } }) }
       return { ok: true, text: async () => '' }
     }))
     const row = await buildEnrichedSignalRow(
@@ -905,7 +982,7 @@ describe('buildEnrichedSignalRow — always a contact recommendation on the 4 wh
         if (body.person_titles?.includes('Commercial Director')) return { ok: true, json: async () => ({ people: [{ first_name: 'Omar', last_name: 'Khalil', title: 'Commercial Director', id: 'p2' }] }) }
         return { ok: true, json: async () => ({ people: [] }) }
       }
-      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { email: 'x@acme.com' } }) }
+      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { first_name: 'Omar', last_name: 'Khalil', email: 'x@acme.com' } }) }
       return { ok: true, text: async () => '' }
     }))
     const row = await buildEnrichedSignalRow(
