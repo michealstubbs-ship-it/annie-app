@@ -320,6 +320,42 @@ describe('mergeActions', () => {
   })
 })
 
+describe('mergeActions — a carried-forward sourced item is re-checked against the contact requirement, not just "does the record still exist" (2026-08-24)', () => {
+  // The exact bug this guards: a DP World card with no verified contact and
+  // no contact candidates survived every single cache clear during this
+  // fix, because clearing actions_cache never touched the underlying
+  // intelligence_signals row — so the very next merge, from any tab, saw
+  // "signal still exists" and kept the item exactly as before, undoing the
+  // clear. buildSourcedPool being correct was never enough on its own; a
+  // rule change there only affects what's freshly proposed, never what's
+  // already sitting in someone's cache, unless the merge itself also
+  // enforces it.
+  const sourcedNoContact = { source: 'sourced', category: 'sourced', signalId: 's1', headline: 'x', urgency: 2, score: 40, verifiedContact: null, contactCandidates: [] }
+  const sourcedVerified = { source: 'sourced', category: 'sourced', signalId: 's1', headline: 'x', urgency: 2, score: 40, verifiedContact: { name: 'Jane Doe' }, contactCandidates: [] }
+  const sourcedWithCandidates = { source: 'sourced', category: 'sourced', signalId: 's1', headline: 'x', urgency: 2, score: 40, verifiedContact: null, contactCandidates: [{ name: 'Jane Doe' }] }
+
+  it('drops a cached sourced item with no verified contact and no candidates, even though its signal still exists', () => {
+    const merged = mergeActions([sourcedNoContact], [], { signalIds: new Set(['s1']) }, [])
+    expect(merged).toEqual([])
+  })
+
+  it('keeps a cached sourced item with a verified contact', () => {
+    const merged = mergeActions([sourcedVerified], [], { signalIds: new Set(['s1']) }, [])
+    expect(merged).toEqual([sourcedVerified])
+  })
+
+  it('keeps a cached sourced item with at least one contact candidate, even without a single verified contact', () => {
+    const merged = mergeActions([sourcedWithCandidates], [], { signalIds: new Set(['s1']) }, [])
+    expect(merged).toEqual([sourcedWithCandidates])
+  })
+
+  it('never applies this check to a non-sourced (CRM) cached item, which has no verifiedContact/contactCandidates concept at all', () => {
+    const dormant = { source: 'crm', category: 'dormant', contactId: 'c1', urgency: 0, score: 20 }
+    const merged = mergeActions([dormant], [], { contactIds: new Set(['c1']) }, [])
+    expect(merged).toEqual([dormant])
+  })
+})
+
 describe('actionKey', () => {
   it('returns null for an action with no stable identity', () => {
     expect(actionKey({ category: 'sourced' })).toBeNull()

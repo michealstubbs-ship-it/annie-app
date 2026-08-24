@@ -338,6 +338,20 @@ export function mergeActions(cachedActions, freshActions, activeIds, dismissedKe
   function stillActive(action) {
     const key = actionKey(action)
     if (key && dismissed.has(key)) return false
+    // 2026-08-24: this used to only check whether the underlying record
+    // still exists, never whether the item would still qualify under
+    // today's rules — which meant a rule change (like buildSourcedPool's
+    // contact-requirement filter) could never actually take effect for
+    // anyone who already had a disqualifying item cached: every merge just
+    // carried it forward again, since its signal was never deleted, only
+    // no longer contact-verified. A card someone already saw could survive
+    // indefinitely across cache clears and fresh deploys alike. A sourced
+    // BD action must still show a real person to approach to stay kept,
+    // checked against its own stored fields (verifiedContact/
+    // contactCandidates), the exact same shape the card itself renders —
+    // not re-derived from anywhere else, so this can never disagree with
+    // what's on screen.
+    if (action.source === 'sourced' && !action.verifiedContact && !(action.contactCandidates?.length > 0)) return false
     if (action.signalId) return signalIds.has(action.signalId)
     if (action.dealId) return dealIds.has(action.dealId)
     if (action.contactId) return contactIds.has(action.contactId)
