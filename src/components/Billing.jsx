@@ -3,43 +3,15 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { getTeamActivitySummary } from '../lib/data/teamActivity'
+import { TIERS } from '../lib/pricing'
 import ErrorBanner from './ErrorBanner'
 
-// Tier copy lives here, not in a shared constants file — the ONLY thing
-// that has to match the backend exactly is the tier key ('starter' /
-// 'growth' / 'team'), which stripe-checkout.js maps to a real Stripe Price
-// ID via env vars. Everything else here (price shown, description, feature
-// list) is display copy and safe to tune without touching billing logic.
-// See Annie-Pricing-Strategy.md for how these numbers were arrived at —
-// treat them as the working proposal, not a locked-in final price.
-const TIERS = [
-  {
-    key: 'starter',
-    name: 'Starter',
-    blurb: 'For a solo recruiter or a single desk.',
-    monthly: 79,
-    yearly: 69,
-    features: ['Full CRM, pipeline & contacts', 'Recurring BD signal scan', "Today's Actions", 'Ask Annie (up to 100 messages/mo)', 'LinkedIn import'],
-  },
-  {
-    key: 'growth',
-    name: 'Growth',
-    blurb: 'For a biller who wants more from Annie.',
-    monthly: 129,
-    yearly: 109,
-    features: ['Everything in Starter', 'Unlimited Ask Annie messages', 'Deeper onboarding research pass', 'LinkedIn re-import on demand', 'Priority support'],
-    featured: true,
-  },
-  {
-    key: 'team',
-    name: 'Team',
-    blurb: 'For an agency, 3 seats minimum.',
-    monthly: 99,
-    yearly: 84,
-    perSeat: true,
-    features: ['Everything in Growth, per seat', 'Shared target-company list', 'Team admin & insights view', 'Volume pricing on extra seats'],
-  },
-]
+// TIERS moved to lib/pricing.js 2026-08-24 — the admin operator dashboard
+// needs these same dollar amounts to compute MRR, and duplicating them
+// there would be exactly the drift this session has spent this pass
+// closing elsewhere. See that file's header for the full reasoning; the
+// tier key ('starter' / 'growth' / 'team') is still the only thing that
+// has to match the backend exactly.
 
 function formatDate(iso) {
   if (!iso) return null

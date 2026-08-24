@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
+import AdminOverview from './AdminOverview'
 
 export default function Insights() {
   const [topics, setTopics] = useState([])
@@ -9,7 +10,13 @@ export default function Insights() {
   const [errors, setErrors] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [tab, setTab] = useState('topics')
+  // 2026-08-24: "Overview" (AdminOverview.jsx — MRR, accounts, signup
+  // funnel, at-risk accounts, OpEx, platform health) is now the default
+  // tab. Topics/conversations/errors are unchanged below it, still their
+  // own tab each, still loaded eagerly the same way they always were —
+  // Overview loads its own data independently inside AdminOverview so
+  // switching to it never waits on the support-insights RPCs below.
+  const [tab, setTab] = useState('overview')
 
   useEffect(() => { load() }, [])
 
@@ -40,13 +47,16 @@ export default function Insights() {
   return (
     <div className="p-8">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold text-navy">Customer insights</h1>
-        <p className="text-gray-500 mt-1">What customers are asking Annie support, across every account</p>
+        <h1 className="text-3xl font-bold text-navy">{tab === 'overview' ? 'Operator dashboard' : 'Customer insights'}</h1>
+        <p className="text-gray-500 mt-1">
+          {tab === 'overview' ? 'Annie, across every customer' : 'What customers are asking Annie support, across every account'}
+        </p>
       </div>
 
       <ErrorBanner>{error}</ErrorBanner>
 
       <div className="flex gap-2 mb-5">
+        <button onClick={() => setTab('overview')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'overview' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>Overview</button>
         <button onClick={() => setTab('topics')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'topics' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>Topics</button>
         <button onClick={() => setTab('conversations')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'conversations' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>Recent conversations</button>
         <button onClick={() => setTab('errors')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'errors' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>
@@ -54,7 +64,9 @@ export default function Insights() {
         </button>
       </div>
 
-      {loading ? (
+      {tab === 'overview' ? (
+        <AdminOverview onOpenErrors={() => setTab('errors')} />
+      ) : loading ? (
         <div className="flex justify-center py-20"><Spinner /></div>
       ) : tab === 'topics' ? (
         topics.length === 0 ? (

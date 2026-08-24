@@ -47,8 +47,22 @@ export default async () => {
   const results = {}
   let hadError = false
 
+  // Snapshot "now" once and derive each table's cutoff from it, cached per
+  // distinct retentionMs, rather than calling Date.now() fresh inside the
+  // loop — the four 18-month tables share RETENTION_MS and should get an
+  // identical cutoff, not one that drifts by a few ms depending on how long
+  // each RPC call took to await.
+  const now = Date.now()
+  const cutoffCache = new Map()
+  const cutoffFor = (retentionMs) => {
+    if (!cutoffCache.has(retentionMs)) {
+      cutoffCache.set(retentionMs, new Date(now - retentionMs).toISOString())
+    }
+    return cutoffCache.get(retentionMs)
+  }
+
   for (const { label, rpc, retentionMs } of TABLES) {
-    const cutoff = new Date(Date.now() - retentionMs).toISOString()
+    const cutoff = cutoffFor(retentionMs)
     try {
       const { data, error } = await supabase.rpc(rpc, { p_cutoff: cutoff })
       if (error) {
