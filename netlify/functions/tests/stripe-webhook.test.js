@@ -43,6 +43,7 @@ function makeBuilder(result) {
   Object.assign(builder, {
     select: vi.fn(chain),
     eq: vi.fn(chain),
+    ilike: vi.fn(chain),
     not: vi.fn(chain),
     in: vi.fn(chain),
     order: vi.fn(chain),
@@ -70,6 +71,12 @@ function makeSupabaseMock(overrides = {}) {
   const results = { ...DEFAULT_TABLE_RESULTS, ...overrides }
   return {
     from: vi.fn((table) => makeBuilder(results[table] ?? { data: null, error: null })),
+    // 2026-08-24: only exercised by the marketing-site checkout path below
+    // (no client_reference_id — the webhook resolves/creates the account by
+    // email instead). Every test that doesn't touch that path never calls
+    // this, so a harmless default is fine; tests that do care override the
+    // resolved value directly on the returned mock.
+    auth: { admin: { inviteUserByEmail: vi.fn().mockResolvedValue({ data: { user: { id: 'user_invited' } }, error: null }) } },
   }
 }
 
@@ -214,14 +221,84 @@ describe('checkout.session.completed', () => {
     )
   })
 
-  it('does nothing when the session has no client_reference_id (never silently mis-attributes a subscription)', async () => {
+  // 2026-08-24: a session with no client_reference_id used to always mean
+  // "never happens, do nothing" — now it's the NORMAL case for a
+  // marketing-site checkout (start-trial-checkout.js has no logged-in user
+  // to set it from), so the handler resolves/creates the account by email
+  // instead. Only a session with neither a client_reference_id nor any
+  // email genuinely can't be attributed to anyone — that's the one case
+  // left that must fail loudly rather than silently mis-attribute or
+  // silently drop a paying customer.
+  it('returns 500 when the session has neither a client_reference_id nor an email (can never attribute the subscription to anyone)', async () => {
     const event = { ...CHECKOUT_EVENT, data: { object: { subscription: 'sub_123' } } }
     mockConstructEvent.mockReturnValue(event)
     const supabase = makeSupabaseMock()
     mockCreateClient.mockReturnValue(supabase)
     const res = await handler(makeRequest(event))
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(500)
     expect(mockSubscriptionsRetrieve).not.toHaveBeenCalled()
+    expect(mockReportServerError).toHaveBeenCalledWith(
+      'stripe-webhook', expect.any(Error), expect.objectContaining({ eventType: 'checkout.session.completed' })
+    )
+  })
+
+  it('resolves an existing Annie account by email when client_reference_id is missing (marketing-site checkout, returning customer)', async () => {
+    const event = {
+      ...CHECKOUT_EVENT,
+      data: { object: { subscription: 'sub_123', customer_details: { email: 'buyer@example.com' } } },
+    }
+    mockConstructEvent.mockReturnValue(event)
+    const supabase = makeSupabaseMock({ profiles: { data: { id: 'user_existing' }, error: null } })
+    mockCreateClient.mockReturnValue(supabase)
+    const res = await handler(makeRequest(event))
+    expect(res.status).toBe(200)
+    expect(supabase.auth.admin.inviteUserByEmail).not.toHaveBeenCalled()
+    const subscriptionsBuilder = supabase.from.mock.results.find(
+      (_, i) => supabase.from.mock.calls[i][0] === 'subscriptions'
+    ).value
+    expect(subscriptionsBuilder.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ user_id: 'user_existing', team_id: 'team_abc' }),
+      { onConflict: 'user_id' }
+    )
+  })
+
+  it('invites a brand-new account by email when client_reference_id is missing and no existing profile matches (marketing-site checkout, new customer)', async () => {
+    const event = {
+      ...CHECKOUT_EVENT,
+      data: { object: { subscription: 'sub_123', customer_details: { email: 'newbuyer@example.com' } } },
+    }
+    mockConstructEvent.mockReturnValue(event)
+    const supabase = makeSupabaseMock({ profiles: { data: null, error: null } })
+    mockCreateClient.mockReturnValue(supabase)
+    const res = await handler(makeRequest(event))
+    expect(res.status).toBe(200)
+    expect(supabase.auth.admin.inviteUserByEmail).toHaveBeenCalledWith(
+      'newbuyer@example.com',
+      expect.objectContaining({ redirectTo: expect.stringContaining('/reset-password') })
+    )
+    const subscriptionsBuilder = supabase.from.mock.results.find(
+      (_, i) => supabase.from.mock.calls[i][0] === 'subscriptions'
+    ).value
+    expect(subscriptionsBuilder.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ user_id: 'user_invited', team_id: 'team_abc' }),
+      { onConflict: 'user_id' }
+    )
+  })
+
+  it('returns 500 and reports the error when inviting the new customer fails', async () => {
+    const event = {
+      ...CHECKOUT_EVENT,
+      data: { object: { subscription: 'sub_123', customer_details: { email: 'newbuyer@example.com' } } },
+    }
+    mockConstructEvent.mockReturnValue(event)
+    const supabase = makeSupabaseMock({ profiles: { data: null, error: null } })
+    supabase.auth.admin.inviteUserByEmail.mockResolvedValue({ data: null, error: { message: 'invite failed' } })
+    mockCreateClient.mockReturnValue(supabase)
+    const res = await handler(makeRequest(event))
+    expect(res.status).toBe(500)
+    expect(mockReportServerError).toHaveBeenCalledWith(
+      'stripe-webhook', expect.any(Error), expect.objectContaining({ eventType: 'checkout.session.completed' })
+    )
   })
 
   it('returns 500 and reports the error when the upsert fails, so Stripe retries instead of losing the write silently', async () => {
