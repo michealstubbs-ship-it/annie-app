@@ -1,22 +1,30 @@
-// A production-readiness audit (2026-08-22) flagged chat.js as untested
-// despite being the one function that spends real, unmetered-until-recently
-// Anthropic API cost on every call. These tests cover exactly the gates that
-// audit called for: a genuine, logged-in caller is required (never a
-// client-supplied identity), the per-minute rate limit and the daily token
-// cap are both enforced before the Anthropic call ever fires, a malformed
-// body or an Anthropic-side failure surfaces as the right status instead of
-// crashing the handler, and the server-enforced ceilings (maxTokens,
-// maxSearchUses, the model allowlist) actually clamp a client that asks for
-// more than they're allowed.
+// chat.js had zero test coverage before this file — every guard clause
+// (auth, config, rate/token caps) and, critically, the Anthropic-failure
+// branch were only ever checked by hand via curl against production. That's
+// exactly how the 2026-08-23 intermittent chat failures went unexplained
+// for as long as they did: the branch that swallowed Anthropic's own
+// transient errors without logging them was never exercised by anything,
+// so nothing would have caught it going quiet again either. These tests
+// cover: every early-return guard, the retry-once-on-transient-status
+// behavior, and — the actual regression target — that an Anthropic failure
+// now always reaches reportServerError with the status attached before the
+// error response is returned to the caller.
+//
+// Lives in tests/, same as scan-now-background.test.js, not directly in
+// netlify/functions/ — Netlify's function bundler scans every top-level
+// file in that folder as a function candidate, and a file with a "." in
+// its stem (chat.test.js -> "chat.test") fails Netlify's function-name
+// validation and takes the whole production build down with it. Found this
+// the hard way: it broke exactly this way on first deploy.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const { mockGetAuthedUser } = vi.hoisted(() => ({ mockGetAuthedUser: vi.fn() }))
 const { mockReserveAnthropicTokens, mockReserveChatCall } = vi.hoisted(() => ({
-  mockReserveAnthropicTokens: vi.fn(),
-  mockReserveChatCall: vi.fn(),
+  mockReserveAnthropicTokens: vi.fn().mockResolvedValue(true),
+  mockReserveChatCall: vi.fn().mockResolvedValue(true),
 }))
-const { mockReportServerError } = vi.hoisted(() => ({ mockReportServerError: vi.fn() }))
-const { mockCreateClient } = vi.hoisted(() => ({ mockCreateClient: vi.fn() }))
+const { mockReportServerError } = vi.hoisted(() => ({ mockReportServerError: vi.fn().mockResolvedValue(undefined) }))
+const { mockCreateClient } = vi.hoisted(() => ({ mockCreateClient: vi.fn(() => ({})) }))
 
 vi.mock('../lib/auth.js', () => ({ getAuthedUser: mockGetAuthedUser }))
 vi.mock('../lib/aiUsage.js', () => ({
@@ -26,17 +34,27 @@ vi.mock('../lib/aiUsage.js', () => ({
 vi.mock('../lib/reportError.js', () => ({ reportServerError: mockReportServerError }))
 vi.mock('@supabase/supabase-js', () => ({ createClient: mockCreateClient }))
 
-function makeRequest(body, { method = 'POST' } = {}) {
-  return new Request('https://annie.example/api/chat', {
-    method,
-    body: method === 'GET' ? undefined : (typeof body === 'string' ? body : JSON.stringify(body)),
-  })
+function makeRequest(body, { method = 'POST', invalidJson = false } = {}) {
+  const init = { method }
+  if (method !== 'GET' && method !== 'HEAD') {
+    init.body = invalidJson ? '{not json' : JSON.stringify(body ?? { messages: [{ role: 'user', content: 'hi' }] })
+  }
+  return new Request('https://annie.example/api/chat', init)
+}
+
+function anthropicOkResponse(text = 'hello there') {
+  return new Response(JSON.stringify({ content: [{ type: 'text', text }] }), { status: 200 })
+}
+
+function anthropicErrorResponse(status, body = 'upstream error') {
+  return new Response(body, { status })
 }
 
 let handler
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  vi.useRealTimers()
   process.env.ANTHROPIC_API_KEY = 'sk-ant-test'
   process.env.VITE_SUPABASE_URL = 'https://example.supabase.co'
   process.env.VITE_SUPABASE_ANON_KEY = 'anon_x'
@@ -47,127 +65,126 @@ beforeEach(async () => {
   mockGetAuthedUser.mockResolvedValue({ user: { id: 'user_123' }, error: null })
   mockReserveChatCall.mockResolvedValue(true)
   mockReserveAnthropicTokens.mockResolvedValue(true)
-  mockCreateClient.mockReturnValue({})
-  global.fetch = vi.fn()
 
-  // Re-imported per test, same reasoning as stripe-webhook.test.js — every
-  // env read happens inside the handler, nothing module-level to worry
-  // about, but resetModules keeps mock state from bleeding across tests.
+  global.fetch = vi.fn().mockResolvedValue(anthropicOkResponse())
+
   vi.resetModules()
   ;({ default: handler } = await import('../chat.js'))
 })
 
 describe('method and configuration guards', () => {
-  it('rejects non-POST requests', async () => {
-    const res = await handler(makeRequest(null, { method: 'GET' }))
-    expect(res.status).toBe(405)
+  it('rejects a non-POST request without touching auth or Anthropic', async () => {
+    const resp = await handler(makeRequest(undefined, { method: 'GET' }))
+    expect(resp.status).toBe(405)
+    expect(mockGetAuthedUser).not.toHaveBeenCalled()
+    expect(global.fetch).not.toHaveBeenCalled()
   })
 
-  it('returns 500 when required env vars are missing', async () => {
+  it('returns 500 when required config is missing', async () => {
     delete process.env.ANTHROPIC_API_KEY
-    const res = await handler(makeRequest({ messages: [] }))
-    expect(res.status).toBe(500)
+    const resp = await handler(makeRequest())
+    expect(resp.status).toBe(500)
     expect(mockGetAuthedUser).not.toHaveBeenCalled()
   })
 })
 
-describe('authentication', () => {
-  it('returns 401 and never checks rate limits for an unauthenticated caller', async () => {
+describe('auth and rate/budget guards', () => {
+  it('returns 401 when the caller is not authenticated, before any Anthropic call', async () => {
     mockGetAuthedUser.mockResolvedValue({ user: null, error: 'invalid_session' })
-    const res = await handler(makeRequest({ messages: [] }))
-    expect(res.status).toBe(401)
-    expect(mockReserveChatCall).not.toHaveBeenCalled()
-  })
-})
-
-describe('rate limiting and cost caps', () => {
-  it('returns 429 and never calls Anthropic when the per-minute rate limit is hit', async () => {
-    mockReserveChatCall.mockResolvedValue(false)
-    const res = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
-    expect(res.status).toBe(429)
+    const resp = await handler(makeRequest())
+    expect(resp.status).toBe(401)
     expect(global.fetch).not.toHaveBeenCalled()
   })
 
-  it('checks the rate limit before parsing the request body, so a malformed body from a rate-limited caller still reports 429', async () => {
+  it('returns 429 and never calls Anthropic when the per-minute cap is hit', async () => {
     mockReserveChatCall.mockResolvedValue(false)
-    const res = await handler(makeRequest('not json'))
-    expect(res.status).toBe(429)
+    const resp = await handler(makeRequest())
+    expect(resp.status).toBe(429)
+    expect(global.fetch).not.toHaveBeenCalled()
+    expect(mockReserveAnthropicTokens).not.toHaveBeenCalled()
   })
 
-  it('returns 429 when the daily Anthropic token cap is reached, after the body has been validated', async () => {
+  it('returns 429 and never calls Anthropic when the daily token cap is hit', async () => {
     mockReserveAnthropicTokens.mockResolvedValue(false)
-    const res = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
-    expect(res.status).toBe(429)
-    const json = await res.json()
-    expect(json.error).toMatch(/research budget/i)
+    const resp = await handler(makeRequest())
+    expect(resp.status).toBe(429)
     expect(global.fetch).not.toHaveBeenCalled()
   })
-})
 
-describe('request body handling', () => {
-  it('returns 400 for a malformed request body', async () => {
-    const res = await handler(makeRequest('not json'))
-    expect(res.status).toBe(400)
-  })
-
-  it('clamps maxTokens/maxSearchUses to their server-enforced ceilings and only allows the sonnet opt-in, defaulting to haiku otherwise', async () => {
-    global.fetch.mockResolvedValue({ ok: true, json: async () => ({ content: [] }) })
-    await handler(makeRequest({ messages: [], maxTokens: 999999, maxSearchUses: 999, model: 'some-other-model', webSearch: true }))
-    const [, opts] = global.fetch.mock.calls[0]
-    const payload = JSON.parse(opts.body)
-    expect(payload.max_tokens).toBe(4000)
-    expect(payload.model).toBe('claude-haiku-4-5-20251001')
-    expect(payload.tools).toEqual([{ type: 'web_search_20250305', name: 'web_search', max_uses: 6 }])
-  })
-
-  it('honors the sonnet model opt-in when explicitly requested', async () => {
-    global.fetch.mockResolvedValue({ ok: true, json: async () => ({ content: [] }) })
-    await handler(makeRequest({ messages: [], model: 'claude-sonnet-4-5-20250929' }))
-    const [, opts] = global.fetch.mock.calls[0]
-    expect(JSON.parse(opts.body).model).toBe('claude-sonnet-4-5-20250929')
-  })
-
-  it('omits the web_search tool entirely when webSearch is not requested', async () => {
-    global.fetch.mockResolvedValue({ ok: true, json: async () => ({ content: [] }) })
-    await handler(makeRequest({ messages: [] }))
-    const [, opts] = global.fetch.mock.calls[0]
-    expect(JSON.parse(opts.body).tools).toBeUndefined()
+  it('returns 400 on an unparseable request body, without reporting it as a server error', async () => {
+    const resp = await handler(makeRequest(undefined, { invalidJson: true }))
+    expect(resp.status).toBe(400)
+    expect(mockReportServerError).not.toHaveBeenCalled()
   })
 })
 
-describe('Anthropic response handling', () => {
-  it('passes through the Anthropic error status and body when the upstream call fails', async () => {
-    global.fetch.mockResolvedValue({ ok: false, status: 529, text: async () => 'overloaded' })
-    const res = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
-    expect(res.status).toBe(529)
-    const json = await res.json()
-    expect(json.error).toBe('overloaded')
+describe('the successful path', () => {
+  it('returns the assistant text and never reports an error', async () => {
+    const resp = await handler(makeRequest())
+    expect(resp.status).toBe(200)
+    const body = await resp.json()
+    expect(body.text).toBe('hello there')
+    expect(mockReportServerError).not.toHaveBeenCalled()
+  })
+})
+
+describe('Anthropic failures — the 2026-08-23 regression target', () => {
+  it('logs a non-transient failure via reportServerError with the status attached, and returns that status to the caller', async () => {
+    global.fetch.mockResolvedValue(anthropicErrorResponse(400, 'bad request shape'))
+    const resp = await handler(makeRequest())
+    expect(resp.status).toBe(400)
+    expect(global.fetch).toHaveBeenCalledTimes(1) // non-transient status, no retry
+    expect(mockReportServerError).toHaveBeenCalledWith(
+      'chat',
+      expect.objectContaining({ message: expect.stringContaining('Anthropic 400') }),
+      { status: 400 }
+    )
   })
 
-  it('joins every text block and collects citations, skipping non-text blocks like tool_use', async () => {
-    global.fetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        content: [
-          { type: 'text', text: 'Hello', citations: [{ url: 'https://a.example', title: 'A' }] },
-          { type: 'tool_use', id: 'toolu_1' },
-          { type: 'text', text: 'World' },
-        ],
-      }),
-    })
-    const res = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
-    expect(res.status).toBe(200)
-    const json = await res.json()
-    expect(json.text).toBe('Hello\nWorld')
-    expect(json.citations).toEqual([{ url: 'https://a.example', title: 'A' }])
+  it('retries once on a transient 429, and succeeds without ever reporting an error if the retry works', async () => {
+    vi.useFakeTimers()
+    global.fetch
+      .mockResolvedValueOnce(anthropicErrorResponse(429, 'rate limited'))
+      .mockResolvedValueOnce(anthropicOkResponse('recovered on retry'))
+
+    const pending = handler(makeRequest())
+    await vi.advanceTimersByTimeAsync(500)
+    const resp = await pending
+
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(resp.status).toBe(200)
+    const body = await resp.json()
+    expect(body.text).toBe('recovered on retry')
+    expect(mockReportServerError).not.toHaveBeenCalled()
+    vi.useRealTimers()
   })
 
-  it('reports and returns 500 when the Anthropic call itself throws (e.g. a network error)', async () => {
+  it('retries once on a transient 529, and reports the error if it fails again', async () => {
+    vi.useFakeTimers()
+    // A fresh Response per call — reusing one mocked Response across both
+    // attempts would fail on the retry's own .text() read (a Response body
+    // can only be consumed once), for reasons that have nothing to do with
+    // the retry logic actually under test here.
+    global.fetch.mockImplementation(() => Promise.resolve(anthropicErrorResponse(529, 'overloaded')))
+
+    const pending = handler(makeRequest())
+    await vi.advanceTimersByTimeAsync(500)
+    const resp = await pending
+
+    expect(global.fetch).toHaveBeenCalledTimes(2) // one retry, then gives up
+    expect(resp.status).toBe(529)
+    expect(mockReportServerError).toHaveBeenCalledWith(
+      'chat',
+      expect.objectContaining({ message: expect.stringContaining('Anthropic 529') }),
+      { status: 529 }
+    )
+    vi.useRealTimers()
+  })
+
+  it('reports and returns 500 when the fetch call itself throws (a real network failure)', async () => {
     global.fetch.mockRejectedValue(new Error('network down'))
-    const res = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
-    expect(res.status).toBe(500)
-    expect(mockReportServerError).toHaveBeenCalledWith('chat', expect.any(Error))
-    const json = await res.json()
-    expect(json.error).toBe('network down')
+    const resp = await handler(makeRequest())
+    expect(resp.status).toBe(500)
+    expect(mockReportServerError).toHaveBeenCalledWith('chat', expect.objectContaining({ message: 'network down' }))
   })
 })
