@@ -7,7 +7,7 @@
 // the prompt's allowed-types list or the urgency logic.
 import { describe, it, expect } from 'vitest'
 import { SIGNAL_TYPE_META, SIGNAL_TYPES, RACY_SIGNAL_TYPES, NEWS_SIGNAL_TYPES } from './signalTypes.js'
-import { BD_ACTION_SIGNAL_TYPES } from './actionsEngine.js'
+import { BD_ACTION_SIGNAL_TYPES } from './todaysActions/index.js'
 
 describe('SIGNAL_TYPES (the AI prompt\'s allowed signalType values)', () => {
   it('excludes live_job — that type is forced in code from entryType, never left to the AI', () => {

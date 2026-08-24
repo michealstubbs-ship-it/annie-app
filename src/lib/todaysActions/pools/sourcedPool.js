@@ -1,0 +1,86 @@
+import { RACY_SIGNAL_TYPES } from '../../signalTypes.js'
+import { daysSince, decayFall, norm } from '../shared.js'
+import { BD_ACTION_SIGNAL_TYPES } from '../eligibility.js'
+
+const SOURCED_MAX_AGE_DAYS = 21
+
+// Pure predicate — a signal belongs in this pool if, and only if, this
+// returns true. This is the exact function whose absence caused the
+// 2026-08 bugs: the old code checked "does this qualify" once inline
+// inside the pool builder, and a second time, separately, inside the
+// merge-cache's stillActive re-check, and the two could disagree. Now
+// there's exactly one function that answers this question, called from
+// exactly one place (resolve.js, via the pool this produces) — nothing
+// downstream re-derives its own opinion of eligibility ever again.
+export function isEligibleSourced(s, knownCompanies) {
+  if (s.status === 'actioned') return false
+  if (knownCompanies.has(norm(s.company_name))) return false
+  // Today's BD Actions only ever surfaces the whitelisted signal types —
+  // on principle, not just by default scoring. Checked before the
+  // manually-added bypass even gets a chance to run, so choosing "Add to
+  // Today's BD Actions" on one from the Feed can't override this either.
+  if (!BD_ACTION_SIGNAL_TYPES.includes(s.signal_type)) return false
+  // A real BD action always comes with someone to actually approach — a
+  // card whose "who to approach" is just a generic role with nobody's name
+  // behind it isn't a lead yet, it's a headline. No bypass for a manually
+  // added signal here either: adding a signal to the list doesn't conjure
+  // a contact for it.
+  if (!s.contact_verified && !(Array.isArray(s.contact_candidates) && s.contact_candidates.length > 0)) return false
+  // A signal the user explicitly chose from the Feed always clears the age
+  // cutoff below, still scored/ranked normally, just never dropped for age.
+  if (s.manually_added_at) return true
+  const daysFound = daysSince(s.found_at) ?? 999
+  // Leadership-change gets a wider cutoff than the ordinary
+  // SOURCED_MAX_AGE_DAYS (21 days) — see the urgency comment in
+  // scoreSourced below for why a new leader stays a live opportunity for
+  // months, not weeks.
+  const maxAgeDays = s.signal_type === 'leadership_change' ? 60 : SOURCED_MAX_AGE_DAYS
+  return daysFound <= maxAgeDays
+}
+
+export function scoreSourced(s) {
+  const daysFound = daysSince(s.found_at) ?? 999
+  // live_job: a real, specific open role Annie found and verified, not a
+  // narrative "this company is hiring" mention — the most actionable lead
+  // this pool can surface, so it gets both a score bump and a wider "still
+  // counts as urgent" window than an ordinary racy signal type.
+  const isLiveJob = s.signal_type === 'live_job'
+  // A newly appointed leader is one of the highest-value signals this pool
+  // surfaces — someone new in a role is, almost by definition, about to
+  // evaluate their team and often bring in their own people. Bumped here
+  // on its own terms rather than folded into RACY_SIGNAL_TYPES, since "the
+  // news might get scooped" and "a decision-maker is actively deciding who's
+  // on their team" are different reasons that happen to both deserve
+  // urgency=2.
+  const isLeadershipChange = s.signal_type === 'leadership_change'
+  const score = Math.min(100, decayFall(daysFound, 3, 55) + 25 + (s.contact_verified ? 15 : 0) + (isLiveJob ? 10 : 0) + (isLeadershipChange ? 15 : 0))
+  const isRacy = RACY_SIGNAL_TYPES.includes(s.signal_type)
+  // A new leader typically spends their first couple of months, not just
+  // days, assessing and rebuilding their team, so this window is
+  // deliberately wider than the 3-7 day windows below.
+  const urgency = isLiveJob && daysFound <= 7 ? 2
+    : isRacy && daysFound <= 3 ? 2
+    : isLeadershipChange && daysFound <= 60 ? 2
+    : daysFound <= 7 ? 1 : 0
+  return { score, urgency }
+}
+
+// Brand-new companies, not yet in the CRM, found by the background scan.
+// This just reads what the scan already found, no duplicate research, no
+// duplicate cost.
+export function buildSourcedPool(intelligenceSignals, contacts) {
+  const knownCompanies = new Set(contacts.map(c => norm(c.company)).filter(Boolean))
+
+  return (intelligenceSignals || [])
+    .filter(s => isEligibleSourced(s, knownCompanies))
+    .map(s => {
+      const { score, urgency } = scoreSourced(s)
+      return {
+        category: 'sourced',
+        score,
+        urgency,
+        signal: s,
+        signals: {},
+      }
+    })
+}

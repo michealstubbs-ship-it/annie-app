@@ -1,0 +1,71 @@
+import { describe, it, expect } from 'vitest'
+import { buildRelationshipPool } from './relationshipPool.js'
+import { BD_ACTION_SIGNAL_TYPES } from '../eligibility.js'
+
+function daysAgoIso(days) {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+}
+
+describe('buildRelationshipPool', () => {
+  const contacts = [{ id: 1, company: 'Acme Ltd', status: 'warm' }]
+
+  it('only includes signals about companies already in the contact list', () => {
+    const signals = [{ id: 's1', company_name: 'Unknown Co', status: 'new', signal_type: 'live_job', found_at: daysAgoIso(1) }]
+    expect(buildRelationshipPool(signals, contacts)).toEqual([])
+  })
+
+  it('excludes signals older than the freshness window even for a known company', () => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'live_job', found_at: daysAgoIso(30) }]
+    expect(buildRelationshipPool(signals, contacts)).toEqual([])
+  })
+
+  it('includes a fresh, whitelisted signal about a known company', () => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'live_job', found_at: daysAgoIso(1) }]
+    const pool = buildRelationshipPool(signals, contacts)
+    expect(pool).toHaveLength(1)
+    expect(pool[0].contact).toEqual(contacts[0])
+  })
+
+  it('excludes signals already marked actioned', () => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'actioned', signal_type: 'live_job', found_at: daysAgoIso(1) }]
+    expect(buildRelationshipPool(signals, contacts)).toEqual([])
+  })
+
+  it('gives a leadership_change signal a wider freshness window (60 days) than the ordinary 14-day one', () => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'leadership_change', found_at: daysAgoIso(30) }]
+    const pool = buildRelationshipPool(signals, contacts)
+    expect(pool).toHaveLength(1)
+    expect(pool[0].urgency).toBe(2)
+  })
+
+  it('still excludes a leadership_change signal well past even its own wider window', () => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'leadership_change', found_at: daysAgoIso(90) }]
+    expect(buildRelationshipPool(signals, contacts)).toEqual([])
+  })
+
+  it('a manually-added signal clears the freshness window even when otherwise too old', () => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'live_job', found_at: daysAgoIso(90), manually_added_at: daysAgoIso(0) }]
+    expect(buildRelationshipPool(signals, contacts)).toHaveLength(1)
+  })
+
+  it.each(['funding', 'expansion', 'm_and_a', 'hiring_activity', 'public_commentary', 'team_building', 'job_posting_unclaimed', 'regulatory'])(
+    'excludes a fresh %s signal about a known company — only the whitelisted BD types belong here',
+    (signal_type) => {
+      const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type, found_at: daysAgoIso(1) }]
+      expect(buildRelationshipPool(signals, contacts)).toEqual([])
+    }
+  )
+
+  it.each(['funding', 'm_and_a', 'hiring_activity', 'public_commentary', 'regulatory'])(
+    'excludes a %s signal even when manually added — the whitelist cannot be overridden from the Feed',
+    (signal_type) => {
+      const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type, found_at: daysAgoIso(1), manually_added_at: daysAgoIso(0) }]
+      expect(buildRelationshipPool(signals, contacts)).toEqual([])
+    }
+  )
+
+  it.each(BD_ACTION_SIGNAL_TYPES)('includes a fresh %s signal about a known company — the whitelisted types all surface here', (signal_type) => {
+    const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type, found_at: daysAgoIso(1) }]
+    expect(buildRelationshipPool(signals, contacts)).toHaveLength(1)
+  })
+})
