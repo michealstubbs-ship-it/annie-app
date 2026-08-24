@@ -2,6 +2,8 @@ import { createClient } from '@supabase/supabase-js'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { reserveAnthropicTokens, reserveChatCall } from './lib/aiUsage.js'
+import { getEntitlements } from './lib/entitlements.js'
+import { createTimeoutFetch } from './lib/scanShared.js'
 
 const DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP = 2_000_000
 const DEFAULT_CHAT_PER_MINUTE_CAP = 20
@@ -29,10 +31,10 @@ export default async (req, context) => {
     return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401, headers: { 'Content-Type': 'application/json' } })
   }
 
-  // Service-role client only for the usage/rate-limit RPCs below — not for
-  // anything customer-data-related, chat.js never reads or writes any
-  // customer's own tables.
-  const usageClient = serviceKey ? createClient(supabaseUrl, serviceKey) : null
+  // Service-role client only for the usage/rate-limit RPCs below and the
+  // tier lookup — not for anything customer-data-related, chat.js never
+  // reads or writes any customer's own CRM tables.
+  const usageClient = serviceKey ? createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } }) : null
 
   // A scale-readiness audit (2026-08-22) found this endpoint had no cap on
   // call frequency, and Anthropic spend had no cap anywhere in the
@@ -42,6 +44,33 @@ export default async (req, context) => {
   const perMinuteCap = parseInt(process.env.CHAT_PER_MINUTE_CAP, 10) || DEFAULT_CHAT_PER_MINUTE_CAP
   if (!(await reserveChatCall(usageClient, user.id, perMinuteCap))) {
     return new Response(JSON.stringify({ error: 'Too many requests — please slow down and try again in a minute.' }), { status: 429, headers: { 'Content-Type': 'application/json' } })
+  }
+
+  // Plan-tier soft gate (2026-08-24): Starter caps Ask Annie at 100
+  // messages/month, Growth and Team are unlimited. Counting real,
+  // already-stored user messages in chat_messages rather than adding a new
+  // usage-counter table — this endpoint doesn't write chat_messages itself
+  // (the frontend does, right after a successful reply — see Chat.jsx), so
+  // this counts what's actually been sent, not a separate guess at it.
+  // Soft gate means this only ever narrows a perk, never blocks the rest of
+  // the product — see entitlements.js's header comment.
+  const entitlements = usageClient ? await getEntitlements(usageClient, user.id) : { limits: { chatMessagesPerMonth: Infinity } }
+  if (Number.isFinite(entitlements.limits.chatMessagesPerMonth)) {
+    const startOfMonth = new Date()
+    startOfMonth.setUTCDate(1)
+    startOfMonth.setUTCHours(0, 0, 0, 0)
+    const { count } = await usageClient
+      .from('chat_messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('role', 'user')
+      .gte('created_at', startOfMonth.toISOString())
+    if ((count || 0) >= entitlements.limits.chatMessagesPerMonth) {
+      return new Response(
+        JSON.stringify({ error: `You've used all ${entitlements.limits.chatMessagesPerMonth} Ask Annie messages included this month. Upgrade to Growth for unlimited messages.` }),
+        { status: 402, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
   }
 
   // Parsing the request body is a separate try/catch from the Anthropic

@@ -4,15 +4,17 @@ The code is built and deployed; nothing charges anyone until these steps are don
 
 ## 1. Create the products and prices
 
-In the Stripe Dashboard (or via the Stripe MCP connector, if you connect it), create 3 products, each with a monthly and an annual price — 6 prices total. These are a proposal from `Annie-Pricing-Strategy.md`, not locked in; change the numbers before creating them if you want different figures.
+In the Stripe Dashboard (or via the Stripe MCP connector, if you connect it), create 3 products, each with a monthly and an annual price — 6 prices total. These are the numbers from the pricing page (2026-08-24) — `Billing.jsx`'s `TIERS` array already displays them, this step just needs the real Stripe objects to exist behind them.
 
 | Product | Monthly price | Annual price (billed yearly) |
 |---|---|---|
 | Annie Starter | $79.00 | $69.00 × 12 = $828.00/year |
-| Annie Growth | $149.00 | $129.00 × 12 = $1,548.00/year |
-| Annie Team (per seat) | $129.00 | $109.00 × 12 = $1,308.00/year |
+| Annie Growth | $129.00 | $109.00 × 12 = $1,308.00/year |
+| Annie Team (per seat) | $99.00 | $84.00 × 12 = $1,008.00/year |
 
-For Team, the code sets a 3-seat minimum at checkout — the price itself is just a normal per-unit recurring price, no special Stripe configuration needed for the minimum, that's enforced in `stripe-checkout.js`.
+For Team, the code sets a 3-seat minimum at checkout — the price itself is just a normal per-unit recurring price ($99/seat, or $297/mo for the 3-seat minimum — same number, Stripe just multiplies it), no special "bundle" pricing object needed. No special Stripe configuration for the minimum either, that's enforced in `stripe-checkout.js`.
+
+Stripe prices are immutable once created — if you're changing the numbers above from whatever's currently live (e.g. Growth was previously $149/$129), create new Price objects rather than trying to edit the old ones, and repoint the env vars below at the new IDs. `subscriptions` had zero live rows when this repricing was written (2026-08-24), so there was nothing to grandfather — if that's no longer true by the time you do this, decide first whether existing subscribers move to the new price or keep their old one (Stripe's Customer Portal and `stripe.subscriptions.update` both support either).
 
 ## 2. Set Netlify environment variables
 
@@ -36,7 +38,7 @@ Strongly recommend setting the `sk_test_...` key and testing the full flow (real
 
 In Stripe Dashboard → Developers → Webhooks → Add endpoint:
 
-- URL: `https://app.meetannie.ai/.netlify/functions/stripe-webhook`
+- URL: `https://app.meetannie.ai/api/stripe-webhook` — **not** `/.netlify/functions/stripe-webhook`. `stripe-webhook.js` declares a custom Netlify Functions path (`config.path = '/api/stripe-webhook'`), which means the old default alias no longer resolves at all once a custom path is set (same class of bug already found and fixed in `callChat.js`, `Billing.jsx`, and `LinkedInImport.jsx` — see `callChat.js`'s comment). **If your live Stripe webhook is currently registered at the old `.netlify/functions/` URL, it's been silently 404ing on every event** — checkout completions would never write a `subscriptions` row. Worth checking your Dashboard's webhook endpoint list before relying on this.
 - Events to send: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.payment_failed`
 
 Stripe shows the signing secret (`whsec_...`) once the endpoint is created — that's `STRIPE_WEBHOOK_SECRET` above.
@@ -65,7 +67,17 @@ This needs no code change — Checkout already has `allow_promotion_codes: true`
 
 Because the free trial (step 5) and a 100%-off code both result in $0 due today, they stack without conflict — someone using a comp code just never reaches a real charge at the end of the trial either.
 
+## 7. Teams and the soft-gate paywall (2026-08-24)
+
+Confirmed with Michael: every account is a "team" from day one, even a solo Starter/Growth signup (a team of one) — see `supabase-migrations/2026-08-24-teams-and-shared-crm.sql`. Team-tier's "shared target-company list" is real: every active member of a team sees and edits the same contacts, deals, candidates, meetings, and signals — RLS is scoped by `team_id`, not `user_id`, across every operational table.
+
+The paywall itself is a **soft gate**, not a lockout: nobody loses access to core product (CRM, Today's Actions, Intelligence Feed) for lacking an active subscription. Only tier-specific perks are gated — today that's Ask Annie's message cap (Starter: 100/month, Growth/Team: unlimited), enforced server-side in `chat.js` via `netlify/functions/lib/entitlements.js`. Onboarding's deeper research pass and LinkedIn re-import-on-demand are advertised as Growth+ perks on the pricing page but aren't wired to `entitlements.js` yet — flagging that gap explicitly rather than letting the pricing page overclaim silently.
+
+**Team invites** go through `team-invite.js` (owner-only, seat-capped). A new person gets a real account-creation email via Supabase's `admin.inviteUserByEmail` — which means **this only works in production if Supabase Auth has a real SMTP provider configured** (Supabase's own default mailer is rate-limited and meant for testing, not real customer invites). Check Supabase Dashboard → Authentication → Emails → SMTP Settings before relying on this for real teammates.
+
 ## What's deliberately NOT built yet
 
-- **No paywall.** The Billing page exists, but nothing in the app currently checks `subscriptions.status` to gate access. Every onboarded account has full access regardless of billing state. Whether/how to enforce that (hard paywall vs. relying on the trial alone vs. something else) is a product decision, not something to bake into a billing-infrastructure pass — flag it explicitly when you're ready to decide.
+- **Onboarding research depth and LinkedIn re-import-on-demand aren't tier-gated yet**, despite being advertised as Growth+ perks (see section 7 above) — `entitlements.js` supports it (`deepOnboardingResearch`, `linkedinReimportOnDemand` are already on the returned object), the call sites just don't check it yet.
 - **No proration UI beyond what Stripe's own portal shows.** Plan switches go through Stripe's hosted portal, which handles proration on its own.
+- **No "leave team" self-service** — a teammate can be removed by the owner (`team-remove-member.js`), but there's no button for a member to remove themselves. Same owner-only removal endpoint would need a self-targeting allowance to add this.
+- **A removed teammate doesn't get a fresh personal team automatically** — they keep their login but have no team at all until re-invited or given a new account. Flagged as a real product decision in `team-remove-member.js`'s header comment, not resolved here.

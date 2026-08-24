@@ -89,6 +89,16 @@ export default async (req) => {
         const userId = session.client_reference_id
         if (!userId || !session.subscription) break
         const sub = await stripe.subscriptions.retrieve(session.subscription)
+        // Every account has an active team from the moment it signs up
+        // (see handle_new_user() in the 2026-08-24 migration) — this looks
+        // that team up rather than trusting anything Stripe echoed back, so
+        // a subscription always lands against whichever team the buyer is
+        // actually on right now, not a stale guess captured at checkout
+        // time. A subscription belongs to a team, not to one member, so
+        // every teammate's tier/seat lookup (entitlements.js) resolves off
+        // this same team_id.
+        const { data: membership } = await supabase.from('team_members').select('team_id').eq('user_id', userId).eq('status', 'active').maybeSingle()
+        if (!membership) throw new Error(`no active team found for user ${userId} at checkout completion`)
         // Same unchecked-write bug that caused the intelligence_signals
         // incident, found here during the follow-up sweep: this upsert's
         // `error` was never checked. The columns happen to match live right
@@ -100,6 +110,7 @@ export default async (req) => {
         // Stripe to retry.
         const { error } = await supabase.from('subscriptions').upsert({
           user_id: userId,
+          team_id: membership.team_id,
           ...fieldsFromSubscription(sub),
         }, { onConflict: 'user_id' })
         if (error) throw new Error(`subscription upsert failed: ${error.message}`)

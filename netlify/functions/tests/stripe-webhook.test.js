@@ -57,9 +57,19 @@ function makeBuilder(result) {
   return builder
 }
 
+// checkout.session.completed (2026-08-24) looks up the buyer's active team
+// before writing the subscription row. Every existing test just needs that
+// lookup to succeed, so it defaults to "found a team" here rather than
+// every one of them having to know this lookup exists — see the
+// "resolves the buyer's team" tests below for the cases that actually care.
+const DEFAULT_TABLE_RESULTS = {
+  team_members: { data: { team_id: 'team_abc' }, error: null },
+}
+
 function makeSupabaseMock(overrides = {}) {
+  const results = { ...DEFAULT_TABLE_RESULTS, ...overrides }
   return {
-    from: vi.fn((table) => makeBuilder(overrides[table] ?? { data: null, error: null })),
+    from: vi.fn((table) => makeBuilder(results[table] ?? { data: null, error: null })),
   }
 }
 
@@ -189,8 +199,18 @@ describe('checkout.session.completed', () => {
       (_, i) => supabase.from.mock.calls[i][0] === 'subscriptions'
     ).value
     expect(subscriptionsBuilder.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ user_id: 'user_123', stripe_subscription_id: 'sub_123' }),
+      expect.objectContaining({ user_id: 'user_123', stripe_subscription_id: 'sub_123', team_id: 'team_abc' }),
       { onConflict: 'user_id' }
+    )
+  })
+
+  it('reports and returns 500 when the buyer has no active team (should never happen post-signup, but must never silently write an unscoped subscription)', async () => {
+    mockConstructEvent.mockReturnValue(CHECKOUT_EVENT)
+    mockCreateClient.mockReturnValue(makeSupabaseMock({ team_members: { data: null, error: null } }))
+    const res = await handler(makeRequest(CHECKOUT_EVENT))
+    expect(res.status).toBe(500)
+    expect(mockReportServerError).toHaveBeenCalledWith(
+      'stripe-webhook', expect.any(Error), expect.objectContaining({ eventType: 'checkout.session.completed' })
     )
   })
 

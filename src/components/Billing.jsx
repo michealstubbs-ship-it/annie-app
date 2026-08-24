@@ -23,17 +23,17 @@ const TIERS = [
     key: 'growth',
     name: 'Growth',
     blurb: 'For a biller who wants more from Annie.',
-    monthly: 149,
-    yearly: 129,
-    features: ['Everything in Starter', 'Higher Ask Annie usage', 'Deeper onboarding research pass', 'LinkedIn re-import on demand', 'Priority support'],
+    monthly: 129,
+    yearly: 109,
+    features: ['Everything in Starter', 'Unlimited Ask Annie messages', 'Deeper onboarding research pass', 'LinkedIn re-import on demand', 'Priority support'],
     featured: true,
   },
   {
     key: 'team',
     name: 'Team',
     blurb: 'For an agency, 3 seats minimum.',
-    monthly: 129,
-    yearly: 109,
+    monthly: 99,
+    yearly: 84,
     perSeat: true,
     features: ['Everything in Growth, per seat', 'Shared target-company list', 'Team admin & insights view', 'Volume pricing on extra seats'],
   },
@@ -54,7 +54,21 @@ export default function Billing() {
   const [openingPortal, setOpeningPortal] = useState(false)
   const [error, setError] = useState('')
 
+  // Team roster — only ever populated/shown for a Team-tier account. Read
+  // directly via the client (RLS's "Members can view their team roster"
+  // policy already scopes this to the caller's own team), no dedicated
+  // list endpoint needed. Every write (invite/remove) still goes through
+  // the two service-role functions below, which enforce owner-only + seat
+  // caps that RLS alone doesn't express.
+  const [teamMembers, setTeamMembers] = useState([])
+  const [myRole, setMyRole] = useState(null)
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviting, setInviting] = useState(false)
+  const [teamError, setTeamError] = useState('')
+  const [teamNotice, setTeamNotice] = useState('')
+
   useEffect(() => { loadSubscription() }, [user])
+  useEffect(() => { if (subscription?.tier === 'team') loadTeam() }, [subscription?.tier])
 
   async function loadSubscription() {
     if (!user) return
@@ -62,6 +76,55 @@ export default function Billing() {
     const { data } = await supabase.from('subscriptions').select('*').eq('user_id', user.id).maybeSingle()
     setSubscription(data)
     setLoading(false)
+  }
+
+  async function loadTeam() {
+    const { data: members } = await supabase
+      .from('team_members')
+      .select('id, user_id, invited_email, role, status, created_at')
+      .order('created_at', { ascending: true })
+
+    // team_members.user_id references auth.users, not profiles directly, so
+    // there's no PostgREST embed to lean on here — a second lookup by id is
+    // simpler and clearer than forcing a foreign-table embed that doesn't
+    // exist. Names/emails are just display copy for the roster.
+    const userIds = (members || []).map(m => m.user_id).filter(Boolean)
+    const { data: profileRows } = userIds.length
+      ? await supabase.from('profiles').select('id, email, full_name').in('id', userIds)
+      : { data: [] }
+    const profileById = new Map((profileRows || []).map(p => [p.id, p]))
+
+    const enriched = (members || []).map(m => ({ ...m, profile: m.user_id ? profileById.get(m.user_id) : null }))
+    setTeamMembers(enriched)
+    setMyRole(enriched.find(m => m.user_id === user.id)?.role || null)
+  }
+
+  async function sendInvite(e) {
+    e.preventDefault()
+    setTeamError('')
+    setTeamNotice('')
+    setInviting(true)
+    try {
+      const result = await authedPost('/api/team-invite', { email: inviteEmail.trim() })
+      setInviteEmail('')
+      setTeamNotice(result.status === 'added' ? 'Added to your team — they have access now.' : 'Invite sent — they\'ll get an email to set up their account.')
+      await loadTeam()
+    } catch (err) {
+      setTeamError(err.message || 'Could not send that invite.')
+    } finally {
+      setInviting(false)
+    }
+  }
+
+  async function removeMember(memberId) {
+    setTeamError('')
+    setTeamNotice('')
+    try {
+      await authedPost('/api/team-remove-member', { memberId })
+      await loadTeam()
+    } catch (err) {
+      setTeamError(err.message || 'Could not remove that member.')
+    }
   }
 
   async function authedPost(path, body) {
@@ -154,7 +217,59 @@ export default function Billing() {
           </button>
           <p className="text-xs text-gray-400 mt-3">Update your card, change plans, view invoices, or cancel — all handled securely by Stripe.</p>
         </div>
-      ) : (
+      ) : null}
+
+      {isActive && subscription.tier === 'team' && (
+        <div className="card p-6 mt-5">
+          <h2 className="text-lg font-bold text-navy mb-1">Team members</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Everyone on your team shares one CRM — the same contacts, deals, and signals, kept in sync for the whole desk.
+            {subscription.seats > 0 && <> Your plan includes {subscription.seats} seats.</>}
+          </p>
+
+          {teamError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2 text-sm mb-4">{teamError}</div>}
+          {teamNotice && <div className="bg-green-50 border border-green-200 text-green-700 rounded-lg px-4 py-2 text-sm mb-4">{teamNotice}</div>}
+
+          <ul className="divide-y divide-gray-100 mb-4">
+            {teamMembers.map(m => (
+              <li key={m.id} className="flex items-center justify-between py-2.5">
+                <div>
+                  <div className="text-sm font-medium text-navy">
+                    {m.status === 'active' ? (m.profile?.full_name || m.profile?.email || 'Team member') : m.invited_email}
+                  </div>
+                  <div className="text-xs text-gray-400">
+                    {m.role === 'owner' ? 'Owner' : 'Member'}
+                    {m.status === 'invited' && ' · Invite pending'}
+                  </div>
+                </div>
+                {myRole === 'owner' && m.role !== 'owner' && (
+                  <button onClick={() => removeMember(m.id)} className="text-xs text-red-500 hover:text-red-700 font-medium">
+                    Remove
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+
+          {myRole === 'owner' && (
+            <form onSubmit={sendInvite} className="flex gap-2">
+              <input
+                type="email"
+                required
+                value={inviteEmail}
+                onChange={e => setInviteEmail(e.target.value)}
+                placeholder="teammate@yourfirm.com"
+                className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm"
+              />
+              <button type="submit" disabled={inviting} className="btn-primary whitespace-nowrap">
+                {inviting ? 'Sending...' : 'Invite'}
+              </button>
+            </form>
+          )}
+        </div>
+      )}
+
+      {!isActive && (
         <>
           {/* Matches the trial-eligibility rule in stripe-checkout.js: a
               customer with no subscriptions row at all gets 7 days free on

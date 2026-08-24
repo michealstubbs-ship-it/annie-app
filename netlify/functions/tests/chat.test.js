@@ -24,7 +24,29 @@ const { mockReserveAnthropicTokens, mockReserveChatCall } = vi.hoisted(() => ({
   mockReserveChatCall: vi.fn().mockResolvedValue(true),
 }))
 const { mockReportServerError } = vi.hoisted(() => ({ mockReportServerError: vi.fn().mockResolvedValue(undefined) }))
-const { mockCreateClient } = vi.hoisted(() => ({ mockCreateClient: vi.fn(() => ({})) }))
+// A generic chainable query-builder stub for the client chat.js constructs
+// itself. chat.js's own usage-cap RPCs go through aiUsage.js (mocked
+// above), but the 2026-08-24 plan-tier soft gate (entitlements.js + the
+// chat_messages count check) calls supabase.from(...).select(...).eq(...)
+// directly on this client, so it needs to resolve to something sane rather
+// than throwing "not a function". Defaults to "no team membership found" /
+// "0 messages this month", which resolves to Starter-level defaults and
+// never trips the cap in tests that don't care about it.
+const { mockCreateClient } = vi.hoisted(() => {
+  function makeChainableResult(result = { data: null, count: 0, error: null }) {
+    const builder = {
+      select: () => builder,
+      eq: () => builder,
+      gte: () => builder,
+      in: () => builder,
+      order: () => builder,
+      maybeSingle: () => Promise.resolve(result),
+      then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
+    }
+    return builder
+  }
+  return { mockCreateClient: vi.fn(() => ({ from: () => makeChainableResult() })) }
+})
 
 vi.mock('../lib/auth.js', () => ({ getAuthedUser: mockGetAuthedUser }))
 vi.mock('../lib/aiUsage.js', () => ({
