@@ -150,6 +150,38 @@ export default function Onboarding() {
 
   const canContinue = isStepValid(step, form)
 
+  // A raw fetch()/timeout failure here has no HTTP response behind it at all
+  // — distinct from a real server error (which already has its own specific
+  // message and won't change on a retry). That shape of failure is usually
+  // something transient on the visitor's own connection (a VPN, antivirus
+  // web-protection extension, or a dropped packet), not our servers being
+  // down — see the note below on why this call is same-origin in the first
+  // place. Worth retrying quietly before bothering the customer with it.
+  function isRetryableNetworkError(err) {
+    return err instanceof TypeError || err.message?.startsWith('TIMEOUT:')
+  }
+
+  async function saveOnboarding(session) {
+    const resp = await withTimeout(
+      fetch('/.netlify/functions/save-onboarding', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({
+          firmName: form.firmName,
+          linkedinUrl: form.linkedinUrl,
+          sectors: form.sectors,
+          functions: form.functions,
+          locations: form.locations,
+          tone: form.tone,
+        }),
+      }),
+      15000,
+      'onboarding-save',
+    )
+    const result = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(result.error || 'Could not save your answers. Please try again.')
+  }
+
   async function handleFinish() {
     setLoading(true)
     setError('')
@@ -164,24 +196,29 @@ export default function Onboarding() {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) throw new Error('Your session has expired. Please log in again.')
 
-      const resp = await withTimeout(
-        fetch('/.netlify/functions/save-onboarding', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-          body: JSON.stringify({
-            firmName: form.firmName,
-            linkedinUrl: form.linkedinUrl,
-            sectors: form.sectors,
-            functions: form.functions,
-            locations: form.locations,
-            tone: form.tone,
-          }),
-        }),
-        15000,
-        'onboarding-save',
-      )
-      const result = await resp.json().catch(() => ({}))
-      if (!resp.ok) throw new Error(result.error || 'Could not save your answers. Please try again.')
+      // Up to 3 attempts, silently, before the customer ever sees anything —
+      // most VPN/antivirus-blocked requests go through fine on a retry. Only
+      // network-shaped failures are retried; a real server error (e.g. bad
+      // data) won't change on a second try, so it surfaces immediately.
+      const MAX_ATTEMPTS = 3
+      let lastErr = null
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          await saveOnboarding(session)
+          lastErr = null
+          break
+        } catch (err) {
+          lastErr = err
+          if (!isRetryableNetworkError(err) || attempt === MAX_ATTEMPTS) break
+          await new Promise(r => setTimeout(r, 1000 * attempt))
+        }
+      }
+      if (lastErr) {
+        if (isRetryableNetworkError(lastErr)) {
+          throw new Error("Couldn't reach our servers after a few tries. This can happen if a VPN or antivirus web-protection extension is blocking the request — try pausing it and clicking Launch Annie again.")
+        }
+        throw lastErr
+      }
 
       trackEvent('onboarding_completed', { sectors: form.sectors, functions: form.functions })
 

@@ -32,8 +32,10 @@ import { getAuthedUser } from './lib/auth.js'
 import { reserveAnthropicTokens } from './lib/aiUsage.js'
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, splitToKeywords, extractJson,
-  discoverHotCompanies, discoverAdzunaJobs, fetchWithRetry,
+  discoverHotCompanies, discoverAdzunaJobs, fetchWithRetry, mapLocationsToAdzunaCountries,
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
+  buildRegionalSourceHint,
+  buildTargetFirmHint,
 } from './lib/scanShared.js'
 
 // How many sector groups to research in parallel, and the minimum number of
@@ -151,12 +153,15 @@ Use web search to find genuine, timely BD-relevant signals in these sectors and 
 Also actively look for layoffs, redundancies, or restructuring news. This cuts both ways and both are worth surfacing: a company doing layoffs sometimes still needs to quietly backfill specific roles (frame the signal around that need), and separately, a real layoff or redundancy event puts a pool of genuinely available, often strong candidates on the market at once, worth surfacing on its own even with no obvious open role at that company, in which case candidateAngle should describe that available talent pool. Classify these as signalType "regulatory" and make the headline clearly say layoffs or redundancy so it's not confused with an ordinary hiring signal.
 Search thoroughly before concluding there is nothing. Run multiple distinct searches, try each sector and each function by name, try combinations of sector + "funding" / "hiring" / "appoints" / "expansion" / "acquires", try the specified markets by name, and try recent news generally in these sectors before narrowing. Do not stop after one or two searches, a real, live-news industry genuinely has more happening in it than that.
 ${functions ? `This recruiter places into the functions listed above. When you find a strong, genuine signal, connect it to whichever of those functions it most plausibly affects, even if the reasoning takes a small logical step (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring, a new market launch signals Government/Regulatory Affairs hiring, an M&A deal signals Corporate Development or Legal hiring). Make your best reasonable case for the closest function rather than discarding a real, well-sourced signal purely because the function match isn't perfect. Only leave a strong signal out entirely if you genuinely cannot connect it to any of the functions listed, even loosely.` : ''}
-${opts.broaden ? `\nIMPORTANT: an earlier, narrower search pass came up thin. For this pass, widen your net further: look back up to the last 4 weeks (not just the last ${SIGNAL_LOOKBACK_DAYS} days), consider the parent industry category as well as the exact sub-sector, and count a signal even if the function connection takes a slightly longer logical chain, as long as it is still genuinely defensible. The bar is "real and sourced", not "perfect fit". Still never invent anything, and still cite a real source for every signal.\n` : ''}
+${opts.broaden ? `\nIMPORTANT: ${opts.broadenReason || 'an earlier, narrower search pass came up thin'}. For this pass, widen your net further: look back up to the last 4 weeks (not just the last ${SIGNAL_LOOKBACK_DAYS} days), consider the parent industry category as well as the exact sub-sector, and count a signal even if the function connection takes a slightly longer logical chain, as long as it is still genuinely defensible. The bar is "real and sourced", not "perfect fit". Still never invent anything, and still cite a real source for every signal.\n` : ''}
 ${opts.apolloLeads?.length ? `\nApollo's own hiring database has independently confirmed these companies are actively posting jobs matching this recruiter's functions, within the last ${SIGNAL_LOOKBACK_DAYS} days, in these sectors and markets: ${opts.apolloLeads.map(l => `${l.name}${l.industry ? ` (${l.industry})` : ''}`).join(', ')}. Treat these as strong, confirmed leads, actively search for the real story behind each one (why they're hiring, any funding or expansion tied to it, the right person to approach, a real citable source) before deciding whether to include it. You are not limited to only these companies, keep searching broadly too, but do not ignore this list, Apollo already did real work to surface it.\n` : ''}
 ${opts.adzunaLeads?.length ? `\nAdzuna's live jobs board shows these real, recent job postings that may match this recruiter's sectors and functions: ${opts.adzunaLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. For any of these that reads as posted directly by the company itself (no recruitment agency name, no "on behalf of our client" language, no agency branding) rather than through a recruiter or agency, this is a genuine open role with no recruiter attached — do NOT write this up as a generic "signal" entry. Instead, write it as its own "live_job" entry (see the separate live_job field list below), one per specific role, with the real posting URL as sourceUrl. Skip any that clearly look agency-posted. If a company has one or more of these live_job entries, do not also write a separate hiring_activity or job_posting_unclaimed signal entry about that same company being on a hiring push in general — the specific role entries replace that, they don't sit alongside it.\n` : ''}
 
-Adzuna does not cover every one of this recruiter's markets (notably the GCC/UAE) — for those, also use web search directly to find genuine, specific open roles: search a company's own careers page, recognised regional job boards (Bayt, GulfTalent, NaukriGulf, Dubizzle Jobs), and LinkedIn Jobs postings. Write anything you find this way as its own "live_job" entry the same way as an Adzuna-sourced one — real specific title, sourceUrl pointing at the actual job posting page itself (not a news article merely mentioning that the company is hiring), no agency-posted roles. If you can only find a general "this company is hiring" mention with no specific posting page to cite, write that as an ordinary hiring_activity signal instead, never as a live_job entry — a live_job entry always needs its own real posting URL.
+Adzuna does not cover every one of this recruiter's markets (notably the GCC/UAE) — for those, also use web search directly to find genuine, specific open roles: search a company's own careers page, recognised regional job boards (Bayt, GulfTalent, NaukriGulf, Dubizzle Jobs), and LinkedIn Jobs postings. Where it's relevant to this recruiter's sectors, also check the dedicated boards that carry roles the general ones often miss entirely: eFinancialCareers for Financial Services, MOHRE Careers / Dubai Careers / Tamm for Government & Public Sector (official UAE government job portals — many public-sector openings never appear on a general board at all), and Hosco / Caterer Middle East for hospitality roles. Write anything you find this way as its own "live_job" entry the same way as an Adzuna-sourced one — real specific title, sourceUrl pointing at the actual job posting page itself (not a news article merely mentioning that the company is hiring), no agency-posted roles. If you can only find a general "this company is hiring" mention with no specific posting page to cite, write that as an ordinary hiring_activity signal instead, never as a live_job entry — a live_job entry always needs its own real posting URL.
 
+For every company you write up as a signal above (funding, expansion, leadership change, M&A, anything), before moving to the next one, do one direct follow-up check of that specific company's own website: search for its careers or jobs page (e.g. "[company] careers", "[company] jobs", or "site:[company's domain] careers") to see whether it has a real, specific opening posted right now that matches this recruiter's target functions. If you find one, write it as an ADDITIONAL, separate "live_job" entry for that same company, same rules as above — a real title, sourceUrl pointing straight at that company's own posting. This is deliberately different from the general job-board sweep above: it's a targeted check on a company you've already flagged as newsworthy, not a blind search, and it's what turns "this company just raised funding" into a complete BD story with a live opening to point to in the same outreach. Skip it if the company genuinely has no findable careers page.
+${buildRegionalSourceHint(onboarding?.locations, sectorsForPrompt)}
+${buildTargetFirmHint(sectorsForPrompt)}
 This is a brand new account with no history yet, so there is nothing to avoid repeating: ${recentCompanies.join(', ') || 'None yet'}.
 
 Every signal must have a real, citable source you actually found via search. Do not invent anything. Return up to 8 signals, fewer if you can't find genuinely good ones after searching thoroughly, never pad with weak filler.
@@ -251,6 +256,21 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
 async function runResearchPhase(ob, ctx) {
   const { userId, anthropicKey, apolloKey, adzunaAppId, adzunaAppKey, supabase, startedAt } = ctx
 
+  // Adzuna has no coverage at all for some markets this recruiter can
+  // select (notably UAE/GCC — see ADZUNA_COUNTRY_MAP) — for those accounts
+  // every sector-group call below starts with zero Adzuna leads to work
+  // from, no matter how the sectors are sliced. Previously the only
+  // response to a thin result was the broaden pass further down, AFTER the
+  // narrow first pass already came back weak — for an Adzuna-blind market
+  // that first pass is thin by construction, not by bad luck, so an
+  // account like this was starting its very first scan already behind
+  // before a single search even ran, and a market this thin often didn't
+  // recover even after the broaden pass, landing the customer on a
+  // genuinely empty first dashboard. Detected once here and fed into the
+  // first-pass prompt itself (wider lookback, bigger search budget) instead
+  // of only reacting after the fact.
+  const noAdzunaCoverage = mapLocationsToAdzunaCountries(ob.locations).length === 0
+
   const groups = chunkSectors(ob.sectors, MAX_SECTOR_GROUPS)
   const groupResults = await Promise.all(groups.map(async (sectorGroup) => {
     const groupSectors = sectorGroup?.length ? sectorGroup : ob.sectors
@@ -259,7 +279,12 @@ async function runResearchPhase(ob, ctx) {
       discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }),
     ])
     try {
-      const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { sectorsOverride: sectorGroup, apolloLeads, adzunaLeads }), { supabase })
+      const promptOpts = { sectorsOverride: sectorGroup, apolloLeads, adzunaLeads }
+      if (noAdzunaCoverage) {
+        promptOpts.broaden = true
+        promptOpts.broadenReason = "this recruiter's market has no live-jobs-board coverage to seed leads from (e.g. UAE/GCC), so cast a wide net from this very first pass rather than waiting to come back thin first"
+      }
+      const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], promptOpts), { supabase, maxUses: noAdzunaCoverage ? 10 : 8 })
       return { sectorGroup, found: extractJson(text), rawText: text }
     } catch (err) {
       console.error('[scan-now] group call failed for', userId, sectorGroup?.join('/') || 'general', err.message)
@@ -330,7 +355,7 @@ async function runResearchPhase(ob, ctx) {
     console.log(`[scan-now] truncated ${merged.length} genuine signals down to ${capped.length} for`, userId, '(MAX_TOTAL_SIGNALS cap)')
   }
 
-  return { groups, capped, broadened, broadenPreview }
+  return { groups, capped, broadened, broadenPreview, noAdzunaCoverage }
 }
 
 // Dedupes the research phase's results against this customer's existing
@@ -496,12 +521,12 @@ export default async (req) => {
     // parallel, each with its own full search budget, instead of one call
     // rationing searches across everything the customer picked. See
     // runResearchPhase's own comment for the full flow.
-    const { groups, capped, broadened, broadenPreview } = await runResearchPhase(ob, {
+    const { groups, capped, broadened, broadenPreview, noAdzunaCoverage } = await runResearchPhase(ob, {
       userId, anthropicKey, apolloKey, adzunaAppId, adzunaAppKey, supabase, startedAt,
     })
 
     if (!capped.length) {
-      console.log('[scan-now] nothing found for', userId, '| sectors scanned:', groups.map(g => g?.join('/') || 'general').join(' | '), '| broadened:', broadened, '| broaden preview:', broadenPreview || '(n/a)')
+      console.log('[scan-now] nothing found for', userId, '| sectors scanned:', groups.map(g => g?.join('/') || 'general').join(' | '), '| broadened:', broadened, '| noAdzunaCoverage:', noAdzunaCoverage, '| broaden preview:', broadenPreview || '(n/a)')
       await setStatus(userId, {
         status: 'done',
         reason: 'no_results',

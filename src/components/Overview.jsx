@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
@@ -19,6 +19,47 @@ const SCAN_FLAG_PREFIX = 'annie_scan_started_'
 // minutes, which raced against a scan the backend itself documents as
 // taking up to 15.
 const SCAN_WINDOW_MS = 16 * 60 * 1000
+
+// 2026-08-25: what a first scan's outcome actually means, and whether the
+// customer can do anything about it right now. Centralised here instead of
+// three separate copies of the same ternary chain (the hero banner, the
+// "Needs your attention" card, and the "Latest intelligence" card all used
+// to each guess independently, and only one of the three ever actually said
+// anything honest — see the header comment on scanOutcome below for why
+// that was the real bug behind "it loaded and came back with nothing, why?"
+// even after the backend itself was already working correctly).
+function scanOutcomeCopy(scanOutcome) {
+  switch (scanOutcome?.reason) {
+    case 'no_results':
+      return {
+        headline: "Annie's first pass through your market didn't turn up anything strong enough to flag yet.",
+        detail: 'She checks again automatically every few hours — you can also ask her to look again right now.',
+        canRetryNow: true,
+      }
+    case 'timed_out':
+      return {
+        headline: "Annie's first research pass is taking longer than usual for a market this size.",
+        detail: "She's still working server-side. Refresh this page in a few minutes to see what she's found.",
+        canRetryNow: false,
+      }
+    case 'error':
+      return {
+        headline: 'Annie hit a snag reaching her research tools on her last pass.',
+        detail: "She'll retry automatically, or you can ask her to try again right now.",
+        canRetryNow: true,
+      }
+    case 'cooldown':
+      return {
+        headline: 'Annie already ran a fresh scan for you recently.',
+        detail: scanOutcome.retryAfter
+          ? `You can ask her to look again after ${new Date(scanOutcome.retryAfter).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}.`
+          : 'You can ask her to look again shortly.',
+        canRetryNow: false,
+      }
+    default:
+      return null
+  }
+}
 
 function initials(name) {
   return (name || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase()
@@ -61,8 +102,53 @@ export default function Overview() {
   const [contactsCount, setContactsCount] = useState(null) // null = not checked yet, avoids a flash of the reminder
   const [researching, setResearching] = useState(false)
   const [scanOutcome, setScanOutcome] = useState(null) // set once scan-status.js reports the scan is actually done, tells us WHY there's nothing (or something) to show
+  const [retrying, setRetrying] = useState(false)
+  const [retryError, setRetryError] = useState('')
+
+  // Identifies the "in-flight" poll loop so a stale one (from an earlier
+  // mount, or a scan that was already being polled when the user clicked
+  // "ask Annie to look again") never overwrites state from whichever poll
+  // is actually current — see beginResearchPolling below.
+  const pollTokenRef = useRef(null)
 
   useEffect(() => { load() }, [user])
+
+  // Starts (or restarts) the same "poll scan-status.js until it says done"
+  // loop from two places: automatically on mount, if onboarding stamped the
+  // scan-started flag within SCAN_WINDOW_MS (see the effect below), and
+  // on-demand from runAnotherScanNow when the customer asks Annie to try
+  // again from right here on the dashboard — previously that second path
+  // didn't exist at all: the only self-serve retry lived on the Settings
+  // page, several clicks away from the empty dashboard it was meant to fix,
+  // which is not the same thing as "it loads automatically."
+  function beginResearchPolling(startedAt) {
+    const token = {}
+    pollTokenRef.current = token
+    setResearching(true)
+    setScanOutcome(null)
+
+    async function tick() {
+      if (pollTokenRef.current !== token) return // superseded by a newer poll
+      const result = await checkScanStatus()
+      if (pollTokenRef.current !== token) return
+
+      if (result?.status === 'done') {
+        setResearching(false)
+        setScanOutcome(result)
+        try { localStorage.removeItem(SCAN_FLAG_PREFIX + user.id) } catch {}
+        if (result.signalsFound > 0) await pollSignals()
+        return
+      }
+
+      if (Date.now() - startedAt > SCAN_WINDOW_MS) {
+        setResearching(false)
+        return
+      }
+      setTimeout(tick, 5000)
+    }
+
+    setTimeout(tick, 3000)
+  }
 
   // Onboarding fires a background research scan for the account and stamps
   // this flag (see Onboarding.jsx). Rather than just waiting out a fixed
@@ -77,32 +163,8 @@ export default function Overview() {
     let startedAt = 0
     try { startedAt = Number(localStorage.getItem(SCAN_FLAG_PREFIX + user.id)) || 0 } catch {}
     if (!startedAt || Date.now() - startedAt > SCAN_WINDOW_MS) return
-
-    setResearching(true)
-    let cancelled = false
-    let timer
-
-    async function tick() {
-      const result = await checkScanStatus()
-      if (cancelled) return
-
-      if (result?.status === 'done') {
-        setResearching(false)
-        setScanOutcome(result)
-        try { localStorage.removeItem(SCAN_FLAG_PREFIX + user.id) } catch {}
-        if (result.signalsFound > 0) await pollSignals()
-        return
-      }
-
-      if (Date.now() - startedAt > SCAN_WINDOW_MS) {
-        setResearching(false)
-        return
-      }
-      timer = setTimeout(tick, 5000)
-    }
-
-    timer = setTimeout(tick, 3000)
-    return () => { cancelled = true; clearTimeout(timer) }
+    beginResearchPolling(startedAt)
+    return () => { pollTokenRef.current = null }
   }, [user])
 
   async function checkScanStatus() {
@@ -115,6 +177,39 @@ export default function Overview() {
       return await resp.json().catch(() => ({ status: 'unknown' }))
     } catch {
       return { status: 'unknown' }
+    }
+  }
+
+  // 2026-08-25: the dashboard-native counterpart to Settings' "Run a new
+  // scan" button. That button fixed the underlying "no way to ever retry"
+  // gap, but it lived on a page away from the exact moment a customer
+  // notices their dashboard is empty — every time this got reported, the
+  // fix Michael actually needed was to go find Settings and click a button
+  // by hand, which is the opposite of "loads automatically." This calls the
+  // same backend endpoint, but from directly inside the empty-state copy
+  // that explains why it's empty in the first place, and immediately
+  // resumes the same polling UI so the customer sees it pick back up right
+  // here without navigating anywhere.
+  async function runAnotherScanNow() {
+    if (!user) return
+    setRetrying(true)
+    setRetryError('')
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) throw new Error('Your session has expired. Please log in again.')
+
+      fetch('/.netlify/functions/scan-now-background', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      }).catch(() => {})
+
+      const startedAt = Date.now()
+      try { localStorage.setItem(SCAN_FLAG_PREFIX + user.id, String(startedAt)) } catch {}
+      beginResearchPolling(startedAt)
+    } catch (err) {
+      setRetryError(err.message || 'Could not start a new scan. Please try again.')
+    } finally {
+      setRetrying(false)
     }
   }
 
@@ -206,6 +301,12 @@ export default function Overview() {
   }, [candidates])
 
   const urgentCount = topActions.filter(a => a.urgency >= 1).length
+  const scanCopy = scanOutcomeCopy(scanOutcome)
+  // Only worth surfacing a scan explanation on an otherwise-quiet dashboard
+  // — a customer with real actions, meetings or signals already showing
+  // doesn't need to be told about the scan that ran hours ago, that would
+  // just be noise competing with what's actually there for them today.
+  const dashboardIsQuiet = urgentCount === 0 && totalActions === 0 && meetings.length === 0 && tasks.length === 0 && signals.length === 0
 
   const briefing = useMemo(() => {
     const parts = []
@@ -213,9 +314,11 @@ export default function Overview() {
     else if (totalActions > 0) parts.push(`${totalActions} thing${totalActions === 1 ? '' : 's'} worth a look today`)
     if (meetings.length > 0) parts.push(`${meetings.length} meeting${meetings.length === 1 ? '' : 's'} today`)
     if (tasks.length > 0) parts.push(`${tasks.length} task${tasks.length === 1 ? '' : 's'} due`)
-    if (!parts.length) return "Nothing urgent right now. Good time to work through your pipeline."
-    return parts.join(', ') + '.'
-  }, [urgentCount, totalActions, meetings.length, tasks.length])
+    if (parts.length) return parts.join(', ') + '.'
+    if (researching) return "Annie is researching your market right now, first results usually land within a few minutes."
+    if (dashboardIsQuiet && scanCopy) return scanCopy.headline
+    return 'Nothing urgent right now. Good time to work through your pipeline.'
+  }, [urgentCount, totalActions, meetings.length, tasks.length, researching, dashboardIsQuiet, scanCopy])
 
   function quickAdd(path) {
     navigate(path, { state: { autoOpenAdd: true } })
@@ -250,6 +353,28 @@ export default function Overview() {
             <p className="text-sm font-bold text-white">Annie is researching your market right now</p>
             <p className="text-[12.5px] text-gray-300 mt-0.5 leading-relaxed">Live funding rounds, leadership changes and hiring signals in your sectors. First results usually land within a couple of minutes, and this page updates itself, no need to refresh.</p>
           </div>
+        </div>
+      )}
+
+      {!researching && dashboardIsQuiet && scanCopy && (
+        <div className="bg-white border border-gray-200 rounded-2xl px-5 py-4 mb-5 flex items-center gap-3.5">
+          <div className="w-9 h-9 rounded-full bg-navy/5 flex items-center justify-center flex-shrink-0">
+            <IconSparkles className="w-[18px] h-[18px] text-navy" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[13.5px] font-semibold text-navy">{scanCopy.headline}</p>
+            <p className="text-[12.5px] text-gray-500 mt-0.5 leading-relaxed">{scanCopy.detail}</p>
+            {retryError && <p className="text-[12px] text-red-600 mt-1">{retryError}</p>}
+          </div>
+          {scanCopy.canRetryNow && (
+            <button
+              onClick={runAnotherScanNow}
+              disabled={retrying}
+              className="flex-shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[12.5px] font-semibold border border-gray-200 text-navy whitespace-nowrap disabled:opacity-60"
+            >
+              {retrying ? 'Starting…' : 'Ask Annie to look again'}
+            </button>
+          )}
         </div>
       )}
 
@@ -307,8 +432,24 @@ export default function Overview() {
               <p className="text-sm text-gray-400">Loading...</p>
             ) : topActions.length === 0 ? (
               <div className="py-2">
-                <p className="text-sm text-gray-400 mb-3">Generate today's actions to see your top items here.</p>
-                <button onClick={() => navigate('/dashboard/actions')} className="text-xs font-semibold text-navy">Go to Today's Actions →</button>
+                {researching ? (
+                  <p className="text-sm text-gray-400 mb-3">Annie is still researching your market, check back in a few minutes.</p>
+                ) : scanCopy ? (
+                  <>
+                    <p className="text-sm text-gray-400 mb-1">{scanCopy.headline}</p>
+                    <p className="text-[12.5px] text-gray-400 mb-3">{scanCopy.detail}</p>
+                  </>
+                ) : (
+                  <p className="text-sm text-gray-400 mb-3">Generate today's actions to see your top items here.</p>
+                )}
+                <div className="flex items-center gap-4 flex-wrap">
+                  <button onClick={() => navigate('/dashboard/actions')} className="text-xs font-semibold text-navy">Go to Today's Actions →</button>
+                  {!researching && scanCopy?.canRetryNow && (
+                    <button onClick={runAnotherScanNow} disabled={retrying} className="text-xs font-semibold text-navy disabled:opacity-60">
+                      {retrying ? 'Starting…' : 'Ask Annie to look again'}
+                    </button>
+                  )}
+                </div>
               </div>
             ) : (
               <>
@@ -365,17 +506,20 @@ export default function Overview() {
               <p className="text-[15px] font-bold text-navy">Latest intelligence</p>
             </div>
             {signals.length === 0 ? (
-              <p className="text-sm text-gray-400">
-                {researching
-                  ? "Annie's on it, see the banner above."
-                  : scanOutcome?.reason === 'no_results'
-                    ? "Annie checked your market just now and didn't find anything strong enough to flag yet. She checks again automatically every few hours."
-                    : scanOutcome?.reason === 'timed_out'
-                      ? "Annie's first research pass is taking longer than usual for a market this size, she's still working. Refresh this page in a few minutes to see what she's found."
-                      : scanOutcome?.reason === 'error'
-                        ? "Annie hit a snag reaching her research tools just now. She'll retry automatically, no action needed from you."
-                        : "Annie hasn't found anything new yet."}
-              </p>
+              <div>
+                <p className="text-sm text-gray-400">
+                  {researching
+                    ? "Annie's on it, see the banner above."
+                    : scanCopy
+                      ? scanCopy.headline + ' ' + scanCopy.detail
+                      : "Annie hasn't found anything new yet."}
+                </p>
+                {!researching && scanCopy?.canRetryNow && (
+                  <button onClick={runAnotherScanNow} disabled={retrying} className="text-xs font-semibold text-navy mt-2.5">
+                    {retrying ? 'Starting…' : 'Ask Annie to look again →'}
+                  </button>
+                )}
+              </div>
             ) : (
               <>
                 {signals.map((s, i) => (

@@ -30,7 +30,10 @@ export const SECTOR_TAXONOMY = [
     ],
   },
   {
-    label: 'Legal',
+    label: 'Law',
+    // Renamed from "Legal" (25 Aug 2026, Michael): this is now paired with a named
+    // firm-tier directory (TARGET_FIRM_DIRECTORY below) so Annie checks specific
+    // law firms' own career pages directly, not just generic legal-industry news.
     keywords: ['law firm', 'law practice', 'legal', 'llp', 'advocates', 'attorneys'],
     subSectors: [
       { label: 'Corporate & M&A', keywords: ['corporate law', 'm&a', 'mergers', 'acquisitions law'] },
@@ -90,13 +93,17 @@ export const SECTOR_TAXONOMY = [
     ],
   },
   {
-    label: 'Professional Services',
-    keywords: ['consulting', 'advisory', 'professional services'],
+    label: 'Management Consulting',
+    // Renamed/narrowed from "Professional Services" (25 Aug 2026, Michael): the old
+    // catch-all label covered accounting, marketing agencies and HR tech alongside
+    // consulting, which was too broad to name real target firms against. This is now
+    // paired with a named firm-tier directory (TARGET_FIRM_DIRECTORY below) so Annie
+    // checks Big 4 / Tier 1-2 / boutique consulting firms' career pages directly.
+    keywords: ['management consulting', 'strategy consulting', 'consulting', 'advisory', 'big 4', 'tier 1 consulting', 'boutique consulting'],
     subSectors: [
-      { label: 'Management Consulting', keywords: ['management consulting', 'strategy consulting', 'advisory'] },
-      { label: 'Accounting & Audit', keywords: ['accounting', 'audit', 'tax advisory'] },
-      { label: 'Marketing & Advertising', keywords: ['marketing agency', 'advertising', 'pr agency'] },
-      { label: 'HR & Staffing Tech', keywords: ['hr tech', 'staffing platform', 'talent technology'] },
+      { label: 'Big 4 & Global Advisory', keywords: ['deloitte', 'pwc', 'ey', 'ernst & young', 'kpmg', 'accenture', 'big 4'] },
+      { label: 'Strategy Consulting (Tier 1/2)', keywords: ['mckinsey', 'bcg', 'boston consulting', 'bain', 'oliver wyman', 'kearney', 'strategy&', 'roland berger', 'l.e.k.', 'strategy consulting'] },
+      { label: 'Boutique & Specialist Consulting', keywords: ['boutique consulting', 'specialist advisory', 'independent consultancy'] },
     ],
   },
   {

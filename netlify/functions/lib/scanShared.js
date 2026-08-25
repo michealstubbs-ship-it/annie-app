@@ -1177,3 +1177,159 @@ export async function buildEnrichedSignalRows(entries, { userId, apolloKey, comp
 
   return groupRows.flat()
 }
+
+
+// Regional trade-press directory: real, named sources per market, checked
+// directly (not assumed from training data) on 2026-08-25 against Annie's
+// own sector taxonomy, so the AI's own web search gets a genuine head start
+// per market instead of guessing what's out there — the same role
+// Adzuna/Apollo's lead lists already play for live jobs, just for the
+// press/deal-data landscape instead. Keyed on the exact LOCATIONS values
+// from Onboarding.jsx's picker so a customer's selected market maps
+// directly to a hint with no fuzzy matching needed. "Global" has no entry
+// on purpose — it isn't a real regional press ecosystem, and buildRegionalSourceHint
+// below silently skips any location with no matching key rather than
+// inventing something for it.
+export const REGIONAL_SOURCE_DIRECTORY = {
+  'UAE / GCC': {
+    general: ['Zawya', 'AGBI', 'Arabian Business', 'Gulf Business'],
+    sectors: {
+      'Financial Services': 'Fintech News UAE (fintechnews.ae)',
+      Technology: 'TahawulTech, Wamda',
+      Law: 'Legal 500 Middle East',
+      Healthcare: 'AGBI Health, Omnia Health',
+      'Energy & Utilities': 'MEES (Middle East Economic Survey)',
+      'Real Estate': 'MEED, Construction Week',
+      'Consumer & Retail': 'Hotelier Middle East',
+      Industrial: 'MEED, Construction Week',
+      'Management Consulting': 'Consultancy-me.com',
+      'Private Equity': 'MAGNiTT',
+      'Government & Public Sector': 'WAM (Emirates News Agency)',
+    },
+    registries: "ADGM (adgm.com/media, adgm.com/public-registers) and DIFC (difc.com/whats-on/news) — a company newly registering with either free zone is itself a genuine expansion signal, particularly for Financial Services, Private Equity and Management Consulting.",
+  },
+  'United Kingdom': {
+    general: ['Financial Times', 'Reuters UK', 'TheBusinessDesk.com', 'Insider Media'],
+    sectors: {
+      'Financial Services': 'Financial News London (efinancialnews.com)',
+      Technology: 'UKTN (uktech.news)',
+      Law: 'The Lawyer',
+      Healthcare: 'HSJ (Health Service Journal)',
+      'Energy & Utilities': 'Utility Week',
+      'Real Estate': 'Property Week',
+      'Consumer & Retail': 'Retail Week',
+      Industrial: "Insider Media's manufacturing vertical",
+      'Management Consulting': 'Consultancy.uk',
+      'Private Equity': 'Unquote',
+      'Government & Public Sector': 'Civil Service World',
+    },
+    registries: 'Companies House (already used elsewhere in this product to verify leadership changes) is also worth a direct check for brand new incorporations as an expansion signal.',
+  },
+  Europe: {
+    general: ['Sifted', 'Tech.eu', 'EU-Startups', 'Politico Europe', 'Euractiv'],
+    sectors: {
+      'Financial Services': 'Finextra',
+      Technology: 'Sifted',
+      Law: 'The Global Legal Post — Europe',
+      Healthcare: 'pharmaphorum',
+      'Energy & Utilities': 'Montel News',
+      'Real Estate': 'IPE Real Assets — Europe',
+      'Consumer & Retail': 'RetailDetail EU',
+      Industrial: 'Industry Europe',
+      'Management Consulting': 'Consultancy.eu',
+      'Private Equity': 'Unquote',
+      'Government & Public Sector': 'Politico Europe, Euractiv',
+    },
+    registries: null,
+  },
+  'United States': {
+    general: ['Reuters', 'Bloomberg', 'Axios Business'],
+    sectors: {
+      'Financial Services': 'American Banker',
+      Technology: 'TechCrunch',
+      Law: 'Law360',
+      Healthcare: 'Modern Healthcare',
+      'Energy & Utilities': 'Utility Dive',
+      'Real Estate': 'The Real Deal',
+      'Consumer & Retail': 'Retail Dive',
+      Industrial: 'ENR for construction/infrastructure, IndustryWeek for manufacturing',
+      'Management Consulting': 'Consulting Magazine',
+      'Private Equity': 'Axios Pro Rata',
+      'Government & Public Sector': 'GovExec, Route Fifty',
+    },
+    registries: null,
+  },
+  'Asia Pacific': {
+    general: ['Nikkei Asia', 'South China Morning Post Business', 'DealStreetAsia'],
+    sectors: {
+      'Financial Services': 'Regulation Asia',
+      Technology: 'Tech in Asia',
+      Law: 'Asian Legal Business',
+      Healthcare: 'Healthcare Asia Magazine',
+      'Energy & Utilities': 'Asian Power',
+      'Real Estate': 'Mingtiandi',
+      'Consumer & Retail': 'Inside Retail Asia',
+      'Management Consulting': 'Consultancy.asia',
+      'Private Equity': 'AVCJ, DealStreetAsia',
+      'Government & Public Sector': 'GovInsider',
+    },
+    registries: null,
+  },
+}
+
+// Composes a compact, named-source hint for the scan prompt — deliberately
+// short (a source list, not the full research behind it) since this is one
+// paragraph among many in an already-long prompt. Only ever mentions a
+// market the customer actually selected, and only ever a sector they
+// actually placed into, so a Technology-only recruiter in the UK isn't
+// handed eight irrelevant trade titles for sectors they never picked.
+export function buildRegionalSourceHint(locations, sectors) {
+  const parts = (locations || []).map(loc => {
+    const dir = REGIONAL_SOURCE_DIRECTORY[loc]
+    if (!dir) return null
+    const sectorLines = (sectors || [])
+      .map(s => (dir.sectors[s] ? `${s} → ${dir.sectors[s]}` : null))
+      .filter(Boolean)
+    const bits = [`general: ${dir.general.join(', ')}`]
+    if (sectorLines.length) bits.push(`sector-specific: ${sectorLines.join('; ')}`)
+    if (dir.registries) bits.push(dir.registries)
+    return `${loc} — ${bits.join('. ')}.`
+  }).filter(Boolean)
+  if (!parts.length) return ''
+  return `\nNamed regional sources worth checking directly, not just generic search, since these carry richer BD signal than a blind web search often surfaces on their own:\n${parts.join('\n')}\n`
+}
+
+// Named firm-tier anchors for the two sectors (25 Aug 2026, Michael) where "check the
+// company's own careers page" is worth doing proactively for known major players,
+// not only reactively once a firm shows up as a funding/expansion signal — a Big 4
+// or Magic Circle firm posting a senior opening is itself a BD-relevant event even
+// with no separate news trigger. Deliberately NOT an exhaustive list: anchors cover
+// the handful of firms too obvious to risk missing, and discoveryHint points Annie at
+// the same authoritative ranking source Michael named (consultancy-me.com) or its
+// legal equivalent (Legal 500 / Chambers and Partners) to find the rest for whichever
+// markets this customer actually selected — so the list doesn't need to be maintained
+// by hand as firms merge, rebrand or open new offices.
+export const TARGET_FIRM_DIRECTORY = {
+  'Management Consulting': {
+    anchors: ['Deloitte', 'PwC', 'EY', 'KPMG', 'Accenture', 'McKinsey & Company', 'Boston Consulting Group (BCG)', 'Bain & Company', 'Oliver Wyman', 'Kearney', 'Strategy&'],
+    discoveryHint: "Beyond these anchors, use consultancy-me.com's own directory and rankings to identify additional Tier 2 and boutique consulting firms active in this customer's selected markets (for UAE/GCC specifically), or the equivalent named regional trade press already listed above for other markets, then check those firms' own career pages the same way.",
+  },
+  Law: {
+    anchors: ['Clifford Chance', 'Linklaters', 'Freshfields Bruckhaus Deringer', 'A&O Shearman', 'Slaughter and May', 'Kirkland & Ellis', 'Latham & Watkins', 'Skadden Arps'],
+    discoveryHint: 'Beyond these global anchors, use Legal 500 and Chambers and Partners\' own regional rankings to identify additional national/regional and boutique law firms active in this customer\'s selected markets, then check those firms\' own career pages the same way.',
+  },
+}
+
+// Composes the proactive firm-tier check-list for the prompt, mirroring
+// buildRegionalSourceHint's shape and only-what-they-selected discipline —
+// only fires for a customer who actually selected Management Consulting
+// and/or Law, so nobody else's prompt grows for a mechanism they don't use.
+export function buildTargetFirmHint(sectors) {
+  const parts = (sectors || []).map(sector => {
+    const dir = TARGET_FIRM_DIRECTORY[sector]
+    if (!dir) return null
+    return `${sector} — anchor firms worth checking directly regardless of whether they've come up as a signal yet: ${dir.anchors.join(', ')}. ${dir.discoveryHint}`
+  }).filter(Boolean)
+  if (!parts.length) return ''
+  return `\nThis customer targets a sector with well-known major players, so proactively check these specific firms' own career pages too, the same way as the per-company follow-up check above, rather than waiting for them to surface as a signal first:\n${parts.join('\n')}\n`
+}

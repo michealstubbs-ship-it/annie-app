@@ -111,8 +111,14 @@ export default async (req) => {
             userId = existingProfile.id
           } else {
             const appUrl = process.env.APP_URL || 'https://app.meetannie.ai'
+            // Stripe Checkout already collected their name as part of card
+            // entry (session.customer_details.name) -- pass it through as
+            // user_metadata so handle_new_user() picks it up the same way a
+            // normal in-app signup's full_name does, instead of leaving new
+            // marketing-site customers with a blank profile name.
             const { data: invited, error: inviteErr } = await supabase.auth.admin.inviteUserByEmail(email, {
               redirectTo: `${appUrl}/reset-password`,
+              data: session.customer_details?.name ? { full_name: session.customer_details.name } : undefined,
             })
             if (inviteErr) throw new Error(`could not create account for ${email}: ${inviteErr.message}`)
             userId = invited.user.id
