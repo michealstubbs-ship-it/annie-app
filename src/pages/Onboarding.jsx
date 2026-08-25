@@ -9,7 +9,15 @@ import SectorPicker from '../components/SectorPicker'
 import { withTimeout, TIMEOUT_MESSAGE } from '../lib/withTimeout'
 import { trackEvent } from '../lib/analytics'
 
-const LOCATIONS = ['United Kingdom', 'UAE / GCC', 'Europe', 'United States', 'Asia Pacific', 'Global']
+// 2026-08-25, Michael: Annie only actually serves markets with real,
+// verified data behind them — United Kingdom and United States have live
+// Adzuna job coverage, UAE/GCC has the TheirStack integration (see
+// discoverTheirStackJobs in scanShared.js) — so Europe, Asia Pacific and
+// Global were removed here rather than left as options nobody should
+// actually pick. Checked against the live account before removing: no
+// existing customer had selected any of the three being removed, so this
+// is a clean cut, not a migration.
+const LOCATIONS = ['United Kingdom', 'UAE / GCC', 'United States']
 
 // Onboarding answers are saved to localStorage as the user goes, keyed per
 // user id, so a refresh/crash mid-form (e.g. on question 3) resumes exactly
@@ -150,38 +158,6 @@ export default function Onboarding() {
 
   const canContinue = isStepValid(step, form)
 
-  // A raw fetch()/timeout failure here has no HTTP response behind it at all
-  // — distinct from a real server error (which already has its own specific
-  // message and won't change on a retry). That shape of failure is usually
-  // something transient on the visitor's own connection (a VPN, antivirus
-  // web-protection extension, or a dropped packet), not our servers being
-  // down — see the note below on why this call is same-origin in the first
-  // place. Worth retrying quietly before bothering the customer with it.
-  function isRetryableNetworkError(err) {
-    return err instanceof TypeError || err.message?.startsWith('TIMEOUT:')
-  }
-
-  async function saveOnboarding(session) {
-    const resp = await withTimeout(
-      fetch('/.netlify/functions/save-onboarding', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({
-          firmName: form.firmName,
-          linkedinUrl: form.linkedinUrl,
-          sectors: form.sectors,
-          functions: form.functions,
-          locations: form.locations,
-          tone: form.tone,
-        }),
-      }),
-      15000,
-      'onboarding-save',
-    )
-    const result = await resp.json().catch(() => ({}))
-    if (!resp.ok) throw new Error(result.error || 'Could not save your answers. Please try again.')
-  }
-
   async function handleFinish() {
     setLoading(true)
     setError('')
@@ -196,29 +172,24 @@ export default function Onboarding() {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) throw new Error('Your session has expired. Please log in again.')
 
-      // Up to 3 attempts, silently, before the customer ever sees anything —
-      // most VPN/antivirus-blocked requests go through fine on a retry. Only
-      // network-shaped failures are retried; a real server error (e.g. bad
-      // data) won't change on a second try, so it surfaces immediately.
-      const MAX_ATTEMPTS = 3
-      let lastErr = null
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        try {
-          await saveOnboarding(session)
-          lastErr = null
-          break
-        } catch (err) {
-          lastErr = err
-          if (!isRetryableNetworkError(err) || attempt === MAX_ATTEMPTS) break
-          await new Promise(r => setTimeout(r, 1000 * attempt))
-        }
-      }
-      if (lastErr) {
-        if (isRetryableNetworkError(lastErr)) {
-          throw new Error("Couldn't reach our servers after a few tries. This can happen if a VPN or antivirus web-protection extension is blocking the request — try pausing it and clicking Launch Annie again.")
-        }
-        throw lastErr
-      }
+      const resp = await withTimeout(
+        fetch('/.netlify/functions/save-onboarding', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({
+            firmName: form.firmName,
+            linkedinUrl: form.linkedinUrl,
+            sectors: form.sectors,
+            functions: form.functions,
+            locations: form.locations,
+            tone: form.tone,
+          }),
+        }),
+        15000,
+        'onboarding-save',
+      )
+      const result = await resp.json().catch(() => ({}))
+      if (!resp.ok) throw new Error(result.error || 'Could not save your answers. Please try again.')
 
       trackEvent('onboarding_completed', { sectors: form.sectors, functions: form.functions })
 
@@ -318,7 +289,7 @@ export default function Onboarding() {
               <input id="onboarding-firm-name" className="input" placeholder="e.g. Vantage Search Group" value={form.firmName} onChange={e => update('firmName', e.target.value)} />
             </div>
             <div className="mt-4">
-              <label className="label" htmlFor="onboarding-linkedin-url">Your LinkedIn profile URL</label>
+              <label className="label" htmlFor="onboarding-linkedin-url">Your LinkedIn profile URL <span className="text-gray-400 font-normal">(optional)</span></label>
               <input id="onboarding-linkedin-url" type="url" className="input" placeholder="e.g. linkedin.com/in/yourname" value={form.linkedinUrl} onChange={e => update('linkedinUrl', e.target.value)} />
             </div>
           </div>

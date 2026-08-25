@@ -22,9 +22,10 @@ import { reportServerError } from './lib/reportError.js'
 import { reserveAnthropicTokens } from './lib/aiUsage.js'
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, extractJson,
-  discoverAdzunaJobs, fetchWithRetry, alertIfConfigured,
+  discoverAdzunaJobs, discoverTheirStackJobs, fetchWithRetry, alertIfConfigured,
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
   buildRegionalSourceHint,
+  buildLiveJobBoardHint,
   buildTargetFirmHint,
   getLearnedSources,
   recordLearnedDiscoveries,
@@ -77,8 +78,11 @@ ${functions ? `This recruiter places into the functions listed above. When you f
 Bias against obvious, oversaturated, famous names everyone already targets when a quieter, equally strong alternative exists, but do not discard a genuinely strong, well-sourced signal just because the company is well known, a real opportunity is better than an artificially obscure one.
 
 ${opts.adzunaLeads?.length ? `\nAdzuna's live jobs board shows these real, recent job postings that may match this recruiter's sectors and functions: ${opts.adzunaLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. For any of these that reads as posted directly by the company itself (no recruitment agency name, no "on behalf of our client" language, no agency branding) rather than through a recruiter or agency, this is a genuine open role with no recruiter attached — do NOT write this up as a generic "signal" entry. Instead, write it as its own "live_job" entry (see the separate live_job field list below), one per specific role, with the real posting URL as sourceUrl. Skip any that clearly look agency-posted. If a company has one or more of these live_job entries, do not also write a separate hiring_activity or job_posting_unclaimed signal entry about that same company being on a hiring push in general — the specific role entries replace that, they don't sit alongside it.\n` : ''}
+${opts.theirStackLeads?.length ? `\nTheirStack (a paid live jobs API covering UAE/GCC, where Adzuna has no coverage) shows these real, recent job postings: ${opts.theirStackLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. Same rules as the Adzuna leads above — write a direct-posted one up as its own "live_job" entry with the real posting URL as sourceUrl, skip anything that reads as agency-posted, and don't also write a separate hiring_activity/job_posting_unclaimed entry for a company already covered by one of these.\n` : ''}
 
-Adzuna does not cover every one of this recruiter's markets (notably the GCC/UAE) — for those, also use web search directly to find genuine, specific open roles: search a company's own careers page, recognised regional job boards (Bayt, GulfTalent, NaukriGulf, Dubizzle Jobs), and LinkedIn Jobs postings. Where it's relevant to this recruiter's sectors, also check the dedicated boards that carry roles the general ones often miss entirely: eFinancialCareers for Financial Services, MOHRE Careers / Dubai Careers / Tamm for Government & Public Sector (official UAE government job portals — many public-sector openings never appear on a general board at all), and Hosco / Caterer Middle East for hospitality roles. Write anything you find this way as its own "live_job" entry the same way as an Adzuna-sourced one — real specific title, sourceUrl pointing at the actual job posting page itself (not a news article merely mentioning that the company is hiring), no agency-posted roles. If you can only find a general "this company is hiring" mention with no specific posting page to cite, write that as an ordinary hiring_activity signal instead, never as a live_job entry — a live_job entry always needs its own real posting URL.
+Adzuna only has real, live coverage for two of this recruiter's possible markets (United Kingdom, United States) — for every other market this customer actually selected, also use web search directly to find genuine, specific open roles: search a company's own careers page, LinkedIn Jobs postings, and the named regional job boards below.
+${buildLiveJobBoardHint(onboarding?.locations, onboarding?.sectors)}
+Write anything you find this way as its own "live_job" entry the same way as an Adzuna-sourced one — real specific title, sourceUrl pointing at the actual job posting page itself (not a news article merely mentioning that the company is hiring), no agency-posted roles. If you can only find a general "this company is hiring" mention with no specific posting page to cite, write that as an ordinary hiring_activity signal instead, never as a live_job entry — a live_job entry always needs its own real posting URL.
 
 For every company you write up as a signal above (funding, expansion, leadership change, M&A, anything), before moving to the next one, do one direct follow-up check of that specific company's own website: search for its careers or jobs page to see whether it has a real, specific opening posted right now that matches this recruiter's target functions. If you find one, write it as an ADDITIONAL, separate "live_job" entry for that same company, same rules as above — a real title, sourceUrl pointing straight at that company's own posting. Skip it if the company genuinely has no findable careers page.
 ${buildRegionalSourceHint(onboarding?.locations, onboarding?.sectors, opts.learned)}
@@ -233,13 +237,19 @@ async function fetchExistingDedupKeys(supabase, userId) {
 // try/catch is what reports and moves on, same as before this was pulled
 // out into its own function.
 async function scanOneCustomer(ob, ctx) {
-  const { anthropicKey, apolloKey, companiesHouseKey, adzunaAppId, adzunaAppKey, supabase } = ctx
+  const { anthropicKey, apolloKey, companiesHouseKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase } = ctx
 
   const recentCompanies = await fetchRecentCompanies(supabase, ob.user_id)
   const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
+  // TheirStack fills the gap Adzuna leaves for UAE/GCC — see
+  // discoverTheirStackJobs's own header in scanShared.js. Only ever spends
+  // a credit for a customer whose locations actually include a market
+  // THEIRSTACK_COUNTRY_MAP covers, same "only pay for what's real" guard
+  // reserveApolloCredits already has for Apollo.
+  const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase)
   const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
 
-  const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, learned }), supabase)
+  const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned }), supabase)
   const { learned: learnedFound, rest: rawFound } = splitLearnedEntries(extractJson(text))
   // Fire-and-forget on purpose — this is Annie's own research memory
   // growing for next time (see getLearnedSources/recordLearnedDiscoveries's
@@ -299,6 +309,7 @@ export default async (req, context) => {
   const companiesHouseKey = process.env.COMPANIES_HOUSE_API_KEY
   const adzunaAppId = process.env.ADZUNA_APP_ID
   const adzunaAppKey = process.env.ADZUNA_APP_KEY
+  const theirStackApiKey = process.env.THEIRSTACK_API_KEY
   const supabaseUrl = process.env.VITE_SUPABASE_URL
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
@@ -322,7 +333,7 @@ export default async (req, context) => {
 
   let totalNewSignals = 0
   let processedCount = 0
-  const scanCtx = { anthropicKey, apolloKey, companiesHouseKey, adzunaAppId, adzunaAppKey, supabase }
+  const scanCtx = { anthropicKey, apolloKey, companiesHouseKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase }
 
   for (const ob of onboardingRows) {
     if (Date.now() - runStartedAt > RUN_BUDGET_MS) {

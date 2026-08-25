@@ -425,6 +425,115 @@ export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, lo
   return results.slice(0, 10)
 }
 
+// Same daily-spend-cap pattern as reserveApolloCredits (see that function's
+// own comment, and 2026-08-25-theirstack-credit-cap.sql for the table this
+// calls) — TheirStack is a paid third-party API with no ceiling of its
+// own, so a bug or a retried request shouldn't be able to run up an
+// unbounded bill. `credits` should be the number of jobs actually
+// requested (TheirStack's own pricing is per job returned, not per call —
+// confirmed against the account's real usage during evaluation, not
+// assumed), not a flat 1 per call the way some other APIs bill.
+const DEFAULT_THEIRSTACK_DAILY_CAP = 40
+
+export async function reserveTheirStackCredits(supabase, credits = 1) {
+  if (!supabase) return true
+  const dailyCap = parseInt(process.env.THEIRSTACK_DAILY_CREDIT_CAP, 10) || DEFAULT_THEIRSTACK_DAILY_CAP
+  try {
+    const { data, error } = await supabase.rpc('theirstack_reserve_credits', { p_credits: credits, p_daily_cap: dailyCap })
+    if (error) {
+      console.error('[scanShared] theirstack_reserve_credits RPC failed, allowing the call through:', error.message)
+      return true
+    }
+    if (!data) console.error(`[scanShared] TheirStack daily credit cap (${dailyCap}) reached for today, skipping call`)
+    return data
+  } catch (err) {
+    console.error('[scanShared] theirstack_reserve_credits threw, allowing the call through:', err.message)
+    return true
+  }
+}
+
+// 2026-08-25, Michael: Annie now only actually serves UAE/GCC, United
+// Kingdom, and United States — see buildLiveJobBoardHint/
+// REGIONAL_SOURCE_DIRECTORY's own headers for why UK/US already have real
+// Adzuna coverage and don't need this. TheirStack (theirstack.com) is a
+// genuine, verified-live job-posting aggregator — evaluated directly
+// against this account's real API key before integrating, not taken on
+// faith — that fills the one real gap: UAE/GCC has no Adzuna coverage at
+// all (see ADZUNA_COUNTRY_MAP). Only ever holds GCC country codes on
+// purpose; if Annie ever expands to serve another market again, add it
+// here deliberately rather than assuming broader coverage is safe.
+export const THEIRSTACK_COUNTRY_MAP = {
+  'uae / gcc': ['AE', 'SA', 'QA', 'KW', 'BH', 'OM'],
+}
+
+export function mapLocationsToTheirStackCountries(locations) {
+  const set = new Set()
+  for (const loc of locations || []) {
+    const key = (loc || '').trim().toLowerCase()
+    if (THEIRSTACK_COUNTRY_MAP[key]) THEIRSTACK_COUNTRY_MAP[key].forEach(c => set.add(c))
+  }
+  return [...set]
+}
+
+// Mirrors discoverAdzunaJobs's shape exactly (same lead fields: title,
+// company, location, url, salary) so both feed opts.theirStackLeads /
+// opts.adzunaLeads into the prompt the same way and the AI's existing
+// agency-vs-direct-posting judgement call applies identically to both —
+// no separate handling needed downstream. Deliberately does NOT filter by
+// company name — evaluated live against this account's real key first: a
+// company-name search came back noisy (fuzzy/partial matching pulled in
+// unrelated similarly-named companies, the same class of risk
+// pickBestOrgMatch exists to guard against for Apollo), where a plain
+// country + keyword search came back clean, real, freshly-dated postings
+// sourced from real boards (NaukriGulf, Indeed, LinkedIn Jobs confirmed
+// live). So this only ever does the safe query shape, and leaves company
+// identity resolution to the same AI read + verifyContact/enrichCompany
+// pipeline every other lead source already goes through.
+export async function discoverTheirStackJobs(apiKey, { sectors, functions, locations }, supabase) {
+  if (!apiKey) return []
+  const countries = mapLocationsToTheirStackCountries(locations)
+  if (!countries.length) return []
+
+  const keywords = [...(sectors || []).flatMap(splitToKeywords), ...(functions || []).flatMap(splitToKeywords)].slice(0, 6)
+
+  const limit = 10
+  if (!(await reserveTheirStackCredits(supabase, limit))) return []
+
+  try {
+    const body = {
+      limit,
+      offset: 0,
+      posted_at_max_age_days: SIGNAL_LOOKBACK_DAYS,
+      job_country_code_or: countries,
+    }
+    if (keywords.length) body.job_title_or = keywords
+
+    const resp = await fetchWithRetry('https://api.theirstack.com/v1/jobs/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(body),
+    })
+    if (!resp.ok) {
+      console.error(`[scanShared] TheirStack jobs/search non-ok response: ${resp.status}`)
+      return []
+    }
+    const data = await resp.json()
+    return (data.data || [])
+      .map(j => ({
+        title: (j.job_title || '').trim(),
+        company: (j.company || '').trim(),
+        location: j.location || j.short_location || '',
+        url: j.url || j.final_url || j.source_url || '',
+        salary: j.salary_string || null,
+      }))
+      .filter(j => j.title && j.company && j.url)
+      .slice(0, limit)
+  } catch (err) {
+    console.error('[scanShared] TheirStack discovery failed:', err.message)
+    return []
+  }
+}
+
 // Apollo tracks real job postings directly, it isn't guessing from news.
 // Querying it BEFORE the AI call gives the AI a head start of real,
 // independently-confirmed leads rather than relying purely on whatever
@@ -1371,6 +1480,80 @@ export function buildRegionalSourceHint(locations, sectors, learned) {
   }
   out += `\nAnnie's own knowledge here should keep growing the way a human researcher's would: while searching, if you come across a genuinely good, specific website worth checking again on future scans for one of this customer's sectors (not a generic search-results aggregator), or a real, active, notable company in one of these sectors and markets that isn't already named anywhere above, report it as an "annie_learned" entry (see the output format below — kind "source" or "company" respectively) so it's remembered for next time instead of being rediscovered from scratch on every scan.\n`
   return out
+}
+
+// Live-job board directory, parallel to REGIONAL_SOURCE_DIRECTORY above but
+// for job boards specifically rather than press/deal-data. Adzuna (a real,
+// live jobs API, see ADZUNA_COUNTRY_MAP) only actually matches two of the
+// six location options on Onboarding.jsx's picker — United Kingdom and
+// United States — every other market a customer can select needs the AI's
+// own web search pointed at real, named boards instead of a blind search,
+// the same reason REGIONAL_SOURCE_DIRECTORY exists for press.
+//
+// 2026-08-25: this used to be one hardcoded paragraph in each scan prompt
+// that only ever named GCC boards (Bayt, GulfTalent, NaukriGulf, Dubizzle
+// Jobs), unconditionally, for every customer regardless of which markets
+// they actually selected — a UK-only account was being told to search Bayt
+// and GulfTalent on every single scan, and a Europe or Asia Pacific
+// customer (also uncovered by Adzuna) got no named boards at all, just a
+// generic "search the careers page and LinkedIn" fallback. This directory
+// and buildLiveJobBoardHint below fix both: keyed on the exact LOCATIONS
+// values from Onboarding.jsx, same as REGIONAL_SOURCE_DIRECTORY, so the
+// hint only ever names boards for markets this customer actually picked,
+// and now has real entries for Europe and Asia Pacific too. United Kingdom
+// and United States have no entry here on purpose — Adzuna already covers
+// them with real, live postings. "Global" has no entry for the same reason
+// REGIONAL_SOURCE_DIRECTORY skips it — there's no single "Global" job-board
+// ecosystem to name; see the location-coverage discussion elsewhere for
+// what (if anything) to do about a Global-only customer.
+export const LIVE_JOB_BOARD_DIRECTORY = {
+  'UAE / GCC': {
+    general: ['Bayt', 'GulfTalent', 'NaukriGulf', 'Dubizzle Jobs'],
+    sectors: {
+      'Financial Services': 'eFinancialCareers',
+      'Consumer & Retail': 'Hosco, Caterer Middle East (hospitality roles)',
+    },
+    govPortal: 'MOHRE Careers / Dubai Careers / Tamm — official UAE government job portals; many public-sector openings never appear on a general board at all.',
+  },
+  Europe: {
+    // Otta was acquired by and rebranded into Welcome to the Jungle in
+    // 2024 — named this way, not "Otta", so the AI's search actually finds
+    // the live site rather than a defunct brand.
+    general: ['Welcome to the Jungle (formerly Otta)', 'StepStone', 'Xing Jobs'],
+    sectors: {
+      'Financial Services': 'eFinancialCareers',
+    },
+    govPortal: 'EURES — the official EU/EEA public employment portal; a genuine free government source, many roles never appear anywhere else.',
+  },
+  'Asia Pacific': {
+    // Seek's own group now operates JobStreet/JobsDB directly (confirmed,
+    // not assumed) rather than them being separate competing boards, named
+    // this way so the AI doesn't waste a search treating them as distinct.
+    general: ['Seek (Australia/NZ — also operates JobStreet and JobsDB across Southeast Asia)', 'Naukri.com (India)', 'Boss Zhipin, Zhaopin, 51job (China)'],
+    sectors: {},
+    govPortal: "MyCareersFuture — Singapore's official government-backed job portal, free to search.",
+  },
+}
+
+// Same composition idea as buildRegionalSourceHint, for job boards instead
+// of press. Deliberately only ever surfaces a market the customer actually
+// selected and (for the sector-specific line) a sector they actually placed
+// into, for the same reason buildRegionalSourceHint does.
+export function buildLiveJobBoardHint(locations, sectors) {
+  const parts = (locations || []).map(loc => {
+    const dir = LIVE_JOB_BOARD_DIRECTORY[loc]
+    if (!dir) return null
+    const sectorLines = (sectors || [])
+      .map(s => (dir.sectors[s] ? `${s} → ${dir.sectors[s]}` : null))
+      .filter(Boolean)
+    const bits = [`recognised regional job boards (${dir.general.join(', ')})`]
+    if (sectorLines.length) bits.push(`sector-specific boards worth checking too: ${sectorLines.join('; ')}`)
+    if (dir.govPortal) bits.push(dir.govPortal)
+    return `${loc} — ${bits.join('. ')}.`
+  }).filter(Boolean)
+
+  if (!parts.length) return ''
+  return `\n${parts.join('\n')}\n`
 }
 
 // Named firm-tier anchors for the two sectors (25 Aug 2026, Michael) where "check the

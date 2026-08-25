@@ -10,6 +10,7 @@ import {
   normalizeCompanyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
+  mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs,
 } from './scanShared.js'
 
 // Full behavioural coverage for extractJson now lives in
@@ -197,6 +198,122 @@ describe('reserveApolloCredits (spend cap)', () => {
   it('fails open (allows the call) if calling the RPC throws', async () => {
     const supabase = { rpc: vi.fn().mockRejectedValue(new Error('network down')) }
     expect(await reserveApolloCredits(supabase)).toBe(true)
+  })
+})
+
+describe('mapLocationsToTheirStackCountries', () => {
+  it('maps UAE/GCC to its member country codes', () => {
+    expect(mapLocationsToTheirStackCountries(['UAE / GCC']).sort()).toEqual(['AE', 'BH', 'KW', 'OM', 'QA', 'SA'])
+  })
+
+  it('returns nothing for a market outside the three Annie actually serves', () => {
+    // 2026-08-25, Michael: Annie only serves UAE/GCC, UK, US now — UK/US
+    // already have real Adzuna coverage (see mapLocationsToAdzunaCountries),
+    // so THEIRSTACK_COUNTRY_MAP only ever has a GCC entry on purpose.
+    expect(mapLocationsToTheirStackCountries(['United Kingdom', 'United States'])).toEqual([])
+  })
+
+  it('is case/whitespace-insensitive the same way mapLocationsToAdzunaCountries is', () => {
+    expect(mapLocationsToTheirStackCountries(['uae / gcc', ' UAE / GCC '])).toEqual(['AE', 'SA', 'QA', 'KW', 'BH', 'OM'])
+  })
+})
+
+describe('reserveTheirStackCredits (spend cap)', () => {
+  it('fails open when no supabase client is passed', async () => {
+    expect(await reserveTheirStackCredits(undefined)).toBe(true)
+  })
+
+  it('allows the call through when the RPC reports the cap is not reached', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: true, error: null })
+    expect(await reserveTheirStackCredits({ rpc }, 10)).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('theirstack_reserve_credits', expect.objectContaining({ p_credits: 10 }))
+  })
+
+  it('blocks the call when the RPC reports the daily cap is reached', async () => {
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: false, error: null }) }
+    expect(await reserveTheirStackCredits(supabase, 10)).toBe(false)
+  })
+
+  it('fails open if the RPC itself errors', async () => {
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: null, error: { message: 'connection reset' } }) }
+    expect(await reserveTheirStackCredits(supabase)).toBe(true)
+  })
+})
+
+describe('discoverTheirStackJobs', () => {
+  it('returns nothing without an API key, never calling fetch', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    expect(await discoverTheirStackJobs('', { sectors: ['Technology'], functions: [], locations: ['UAE / GCC'] })).toEqual([])
+    expect(fetchSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it('returns nothing for a customer with no GCC market selected, never calling fetch — Adzuna already covers UK/US', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    expect(await discoverTheirStackJobs('key123', { sectors: [], functions: [], locations: ['United Kingdom'] })).toEqual([])
+    expect(fetchSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it('does not spend a request when the daily credit cap is reached', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: false, error: null }) }
+    expect(await discoverTheirStackJobs('key123', { sectors: [], functions: [], locations: ['UAE / GCC'] }, supabase)).toEqual([])
+    expect(fetchSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it('queries the real endpoint with GCC country codes and maps a real result into the same lead shape discoverAdzunaJobs uses', async () => {
+    const fetchSpy = vi.fn(async (url, opts) => {
+      expect(url).toBe('https://api.theirstack.com/v1/jobs/search')
+      expect(opts.headers.Authorization).toBe('Bearer key123')
+      const body = JSON.parse(opts.body)
+      expect(body.job_country_code_or.sort()).toEqual(['AE', 'BH', 'KW', 'OM', 'QA', 'SA'])
+      return {
+        ok: true,
+        json: async () => ({
+          data: [{
+            job_title: 'Head of Product',
+            company: 'Skyro',
+            location: 'Dubai',
+            url: 'https://www.naukrigulf.com/head-of-product-jobs-in-dubai-jid-1',
+            source_url: 'https://www.naukrigulf.com/head-of-product-jobs-in-dubai-jid-1',
+            salary_string: null,
+          }],
+        }),
+      }
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: true, error: null }) }
+    const leads = await discoverTheirStackJobs('key123', { sectors: ['Financial Services'], functions: [], locations: ['UAE / GCC'] }, supabase)
+    expect(leads).toEqual([{
+      title: 'Head of Product',
+      company: 'Skyro',
+      location: 'Dubai',
+      url: 'https://www.naukrigulf.com/head-of-product-jobs-in-dubai-jid-1',
+      salary: null,
+    }])
+    vi.unstubAllGlobals()
+  })
+
+  it('drops a result missing a title, company or url rather than passing a half-formed lead to the prompt', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ job_title: '', company: 'Skyro', url: 'https://x.com/1' }] }),
+    }))
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: true, error: null }) }
+    expect(await discoverTheirStackJobs('key123', { sectors: [], functions: [], locations: ['UAE / GCC'] }, supabase)).toEqual([])
+    vi.unstubAllGlobals()
+  })
+
+  it('fails soft (empty array, no throw) on a non-ok response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401, text: async () => 'unauthorized' }))
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: true, error: null }) }
+    expect(await discoverTheirStackJobs('bad-key', { sectors: [], functions: [], locations: ['UAE / GCC'] }, supabase)).toEqual([])
+    vi.unstubAllGlobals()
   })
 })
 
