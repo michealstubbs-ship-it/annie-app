@@ -72,7 +72,9 @@ describe('FLAT_SECTOR_OPTIONS derivation', () => {
   })
 
   it("a sub-sector entry's keywords are exactly that sub-sector's own list, not the parent's", () => {
-    const flatEntry = FLAT_SECTOR_OPTIONS.find(o => o.label === 'Legal > Litigation & Disputes')
+    // "Legal" was renamed to "Law" (25 Aug 2026) — update the label this test
+    // reads, not what it asserts about sub-sector keyword isolation.
+    const flatEntry = FLAT_SECTOR_OPTIONS.find(o => o.label === 'Law > Litigation & Disputes')
     expect(flatEntry.keywords).toEqual(['litigation', 'disputes', 'arbitration'])
   })
 })
@@ -101,6 +103,6 @@ describe('keyword matching against realistic company industry text (the actual u
   })
 
   it('does not match on totally unrelated industry text', () => {
-    expect(matches('independent oil and gas exploration company', 'Legal > Litigation & Disputes')).toBe(false)
+    expect(matches('independent oil and gas exploration company', 'Law > Litigation & Disputes')).toBe(false)
   })
 })
