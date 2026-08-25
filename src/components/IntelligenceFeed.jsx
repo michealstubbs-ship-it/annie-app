@@ -111,7 +111,7 @@ export default function IntelligenceFeed() {
   }
 
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="p-8 w-full">
       <div className="mb-4 flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-xl font-extrabold text-navy flex items-center">

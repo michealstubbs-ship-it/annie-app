@@ -14,7 +14,7 @@ import { createClient } from '@supabase/supabase-js'
 import Stripe from 'stripe'
 import { reportServerError } from './lib/reportError.js'
 import { resolveTierFromPriceId } from './lib/stripeShared.js'
-import { sendPaymentFailedEmail } from './lib/email.js'
+import { sendPaymentFailedEmail, sendAddCardToContinueEmail } from './lib/email.js'
 import { createTimeoutFetch } from './lib/scanShared.js'
 
 // Pulls the fields subscriptions actually needs off a Stripe Subscription
@@ -180,11 +180,57 @@ export default async (req) => {
       // scanShared.js), and sendPaymentFailedEmail is a second,
       // Annie-branded notice pointed at the billing page — not a
       // replacement for Stripe's own dunning emails, a supplement to them.
+      //
+      // 2026-08-25: this also fires for the ANNIE100 free-month flow the
+      // moment its 30-day trial ends with no card on file — Stripe still
+      // creates an invoice (trial_settings.end_behavior.missing_payment_
+      // method defaults to 'create_invoice'), which then fails to charge
+      // immediately since there's nothing to charge. sendPaymentFailedEmail
+      // ("we weren't able to charge your card") would be wrong for that
+      // case — there was never a card — so this checks whether the
+      // subscription actually has a payment method on file and routes to
+      // sendAddCardToContinueEmail instead when it doesn't.
       case 'invoice.payment_failed': {
         const invoice = event.data.object
         console.error('[stripe-webhook] payment failed for customer', invoice.customer, 'invoice', invoice.id)
         if (invoice.customer_email) {
-          sendPaymentFailedEmail(invoice.customer_email).catch(() => {})
+          let hasPaymentMethod = true
+          try {
+            const subId = typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id
+            if (subId) {
+              const sub = await stripe.subscriptions.retrieve(subId)
+              hasPaymentMethod = !!sub.default_payment_method
+            }
+          } catch (err) {
+            console.error('[stripe-webhook] could not check payment method for', invoice.customer, ':', err.message)
+          }
+          const send = hasPaymentMethod
+            ? sendPaymentFailedEmail(invoice.customer_email)
+            : sendAddCardToContinueEmail(invoice.customer_email, { endingSoon: false })
+          send.catch(() => {})
+        }
+        break
+      }
+
+      // 2026-08-25 — fires 3 days before ANY trial ends, including the
+      // normal 7-day one, but only actionable for the ANNIE100 free-month
+      // flow: a normal signup already collected a card up front, so their
+      // trial ending just auto-charges on schedule, nothing for the
+      // customer to do and no email sent here for them. Only a subscription
+      // with no default_payment_method (the free-month flow, by design —
+      // see start-trial-checkout.js) gets this early heads-up before
+      // invoice.payment_failed becomes the same message after the fact.
+      case 'customer.subscription.trial_will_end': {
+        const sub = event.data.object
+        if (sub.default_payment_method) break
+        try {
+          const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer?.id
+          const customer = await stripe.customers.retrieve(customerId)
+          if (customer && !customer.deleted && customer.email) {
+            sendAddCardToContinueEmail(customer.email, { endingSoon: true }).catch(() => {})
+          }
+        } catch (err) {
+          console.error('[stripe-webhook] trial_will_end email lookup failed for', sub.customer, ':', err.message)
         }
         break
       }

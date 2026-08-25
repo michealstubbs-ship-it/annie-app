@@ -9,13 +9,17 @@
 // record is only written on the success path.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { mockConstructEvent, mockSubscriptionsRetrieve } = vi.hoisted(() => ({
+const { mockConstructEvent, mockSubscriptionsRetrieve, mockCustomersRetrieve } = vi.hoisted(() => ({
   mockConstructEvent: vi.fn(),
   mockSubscriptionsRetrieve: vi.fn(),
+  mockCustomersRetrieve: vi.fn(),
 }))
 const { mockCreateClient } = vi.hoisted(() => ({ mockCreateClient: vi.fn() }))
 const { mockReportServerError } = vi.hoisted(() => ({ mockReportServerError: vi.fn() }))
-const { mockSendPaymentFailedEmail } = vi.hoisted(() => ({ mockSendPaymentFailedEmail: vi.fn().mockResolvedValue() }))
+const { mockSendPaymentFailedEmail, mockSendAddCardToContinueEmail } = vi.hoisted(() => ({
+  mockSendPaymentFailedEmail: vi.fn().mockResolvedValue(),
+  mockSendAddCardToContinueEmail: vi.fn().mockResolvedValue(),
+}))
 
 vi.mock('stripe', () => ({
   // A plain `function` here, not an arrow — the real Stripe export is a
@@ -26,12 +30,16 @@ vi.mock('stripe', () => ({
     return {
       webhooks: { constructEvent: mockConstructEvent },
       subscriptions: { retrieve: mockSubscriptionsRetrieve },
+      customers: { retrieve: mockCustomersRetrieve },
     }
   }),
 }))
 vi.mock('@supabase/supabase-js', () => ({ createClient: mockCreateClient }))
 vi.mock('../lib/reportError.js', () => ({ reportServerError: mockReportServerError }))
-vi.mock('../lib/email.js', () => ({ sendPaymentFailedEmail: mockSendPaymentFailedEmail }))
+vi.mock('../lib/email.js', () => ({
+  sendPaymentFailedEmail: mockSendPaymentFailedEmail,
+  sendAddCardToContinueEmail: mockSendAddCardToContinueEmail,
+}))
 
 // Every query in this file is awaited either directly after the terminal
 // method (upsert/insert) or after one more filter (.eq()) — both work
@@ -336,6 +344,73 @@ describe('invoice.payment_failed', () => {
     const res = await handler(makeRequest(PAYMENT_FAILED_EVENT))
     expect(res.status).toBe(200)
     expect(mockSendPaymentFailedEmail).toHaveBeenCalledWith('client@example.com')
+    expect(mockSendAddCardToContinueEmail).not.toHaveBeenCalled()
+  })
+
+  // 2026-08-25: the ANNIE100 free-month flow's whole point is a subscription
+  // that reaches this exact event with no card ever having been on file —
+  // sendPaymentFailedEmail's "we weren't able to charge your card" copy
+  // would be wrong for that case. This is the regression test for the fix.
+  it('routes to sendAddCardToContinueEmail instead when the subscription has no payment method on file', async () => {
+    const event = {
+      id: 'evt_failed_no_card',
+      type: 'invoice.payment_failed',
+      data: { object: { customer: 'cus_123', id: 'in_123', customer_email: 'client@example.com', subscription: 'sub_123' } },
+    }
+    mockConstructEvent.mockReturnValue(event)
+    mockCreateClient.mockReturnValue(makeSupabaseMock())
+    mockSubscriptionsRetrieve.mockResolvedValue({ id: 'sub_123', default_payment_method: null })
+    const res = await handler(makeRequest(event))
+    expect(res.status).toBe(200)
+    expect(mockSendAddCardToContinueEmail).toHaveBeenCalledWith('client@example.com', { endingSoon: false })
+    expect(mockSendPaymentFailedEmail).not.toHaveBeenCalled()
+  })
+
+  it('still sends the normal payment-failed email when a real card is on file and just got declined', async () => {
+    const event = {
+      id: 'evt_failed_real_card',
+      type: 'invoice.payment_failed',
+      data: { object: { customer: 'cus_123', id: 'in_123', customer_email: 'client@example.com', subscription: 'sub_123' } },
+    }
+    mockConstructEvent.mockReturnValue(event)
+    mockCreateClient.mockReturnValue(makeSupabaseMock())
+    mockSubscriptionsRetrieve.mockResolvedValue({ id: 'sub_123', default_payment_method: 'pm_123' })
+    const res = await handler(makeRequest(event))
+    expect(res.status).toBe(200)
+    expect(mockSendPaymentFailedEmail).toHaveBeenCalledWith('client@example.com')
+    expect(mockSendAddCardToContinueEmail).not.toHaveBeenCalled()
+  })
+})
+
+describe('customer.subscription.trial_will_end', () => {
+  // Only actionable for the ANNIE100 free-month flow — a normal signup
+  // already has a card, so its trial ending just auto-charges on schedule.
+  it('sends an early heads-up when there is no payment method on file yet', async () => {
+    const event = {
+      id: 'evt_trial_end_1',
+      type: 'customer.subscription.trial_will_end',
+      data: { object: { id: 'sub_123', customer: 'cus_123', default_payment_method: null } },
+    }
+    mockConstructEvent.mockReturnValue(event)
+    mockCreateClient.mockReturnValue(makeSupabaseMock())
+    mockCustomersRetrieve.mockResolvedValue({ id: 'cus_123', email: 'client@example.com', deleted: false })
+    const res = await handler(makeRequest(event))
+    expect(res.status).toBe(200)
+    expect(mockSendAddCardToContinueEmail).toHaveBeenCalledWith('client@example.com', { endingSoon: true })
+  })
+
+  it('does nothing for a subscription that already has a card on file', async () => {
+    const event = {
+      id: 'evt_trial_end_2',
+      type: 'customer.subscription.trial_will_end',
+      data: { object: { id: 'sub_123', customer: 'cus_123', default_payment_method: 'pm_123' } },
+    }
+    mockConstructEvent.mockReturnValue(event)
+    mockCreateClient.mockReturnValue(makeSupabaseMock())
+    const res = await handler(makeRequest(event))
+    expect(res.status).toBe(200)
+    expect(mockCustomersRetrieve).not.toHaveBeenCalled()
+    expect(mockSendAddCardToContinueEmail).not.toHaveBeenCalled()
   })
 })
 

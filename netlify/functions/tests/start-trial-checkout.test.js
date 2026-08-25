@@ -2,20 +2,26 @@
 // The one behavior this file exists specifically to pin down: a normal
 // signup MUST always collect a card up front, even during the trial — a
 // real bug (2026-08-24) had every trial skip the card, not just ones using
-// a 100%-off code, because `payment_method_collection: 'if_required'`
+// the free-month code, because `payment_method_collection: 'if_required'`
 // looks at "is anything due today" and a trial alone already makes that
 // true. See start-trial-checkout.js's own comment for the full story.
+//
+// 2026-08-25: the free-month code check no longer calls Stripe at all — an
+// earlier version looked up a live Stripe promotion code, which broke
+// silently in production the day that promotion code didn't actually exist
+// in live Stripe (an incident this simplification exists to prevent from
+// ever happening again). It's now a literal, case-insensitive string
+// compare, so there's no external dependency and no Stripe mock needed for
+// it — see the "annie100 case-insensitivity" test below for the one
+// behavior that matters most from that change (Michael types it in caps).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { mockCheckoutCreate, mockPromoList, mockStripeCtor } = vi.hoisted(() => {
+const { mockCheckoutCreate, mockStripeCtor } = vi.hoisted(() => {
   const mockCheckoutCreate = vi.fn()
-  const mockPromoList = vi.fn()
   return {
     mockCheckoutCreate,
-    mockPromoList,
     mockStripeCtor: vi.fn(function () {
       this.checkout = { sessions: { create: mockCheckoutCreate } }
-      this.promotionCodes = { list: mockPromoList }
     }),
   }
 })
@@ -38,7 +44,6 @@ beforeEach(async () => {
   process.env.STRIPE_PRICE_TEAM_MONTHLY = 'price_team_month'
 
   mockCheckoutCreate.mockResolvedValue({ url: 'https://checkout.stripe.com/session/abc' })
-  mockPromoList.mockResolvedValue({ data: [] })
 
   vi.resetModules()
   ;({ default: handler } = await import('../start-trial-checkout.js'))
@@ -68,33 +73,42 @@ it('always requires a card for a normal signup, even though the trial makes $0 d
     subscription_data: expect.objectContaining({ trial_period_days: 7 }),
   }))
   const call = mockCheckoutCreate.mock.calls[0][0]
-  expect(call.discounts).toBeUndefined()
+  expect(call.subscription_data.metadata.free_month_code).toBeUndefined()
 })
 
-it('skips the card only for a link carrying a real, active promo code', async () => {
-  mockPromoList.mockResolvedValue({ data: [{ id: 'promo_annie100' }] })
-  const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
-  expect(res.status).toBe(302)
-  expect(mockPromoList).toHaveBeenCalledWith({ code: 'annie100', active: true, limit: 1 })
-  expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
-    payment_method_collection: 'if_required',
-    discounts: [{ promotion_code: 'promo_annie100' }],
-  }))
-  // Stripe rejects a session with both `discounts` and `allow_promotion_codes` set.
-  const call = mockCheckoutCreate.mock.calls[0][0]
-  expect(call.allow_promotion_codes).toBeUndefined()
-})
+describe('the ANNIE100 free-month code', () => {
+  it('skips the card and gives a 30-day trial for ?code=annie100', async () => {
+    const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
+    expect(res.status).toBe(302)
+    expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
+      payment_method_collection: 'if_required',
+      allow_promotion_codes: true,
+      subscription_data: expect.objectContaining({
+        trial_period_days: 30,
+        metadata: expect.objectContaining({ free_month_code: 'annie100' }),
+      }),
+    }))
+  })
 
-it('falls back to the normal card-required flow when the code is unknown or inactive', async () => {
-  mockPromoList.mockResolvedValue({ data: [] })
-  const res = await handler(makeRequest('?tier=starter&interval=month&code=not-a-real-code'))
-  expect(res.status).toBe(302)
-  expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
-    payment_method_collection: 'always',
-    allow_promotion_codes: true,
-  }))
-  const call = mockCheckoutCreate.mock.calls[0][0]
-  expect(call.discounts).toBeUndefined()
+  // Michael's own real usage: he types the code in caps on Stripe's side,
+  // so the link he hands out has to work regardless of case.
+  it('matches regardless of case — ANNIE100, Annie100, annie100 all work', async () => {
+    for (const code of ['ANNIE100', 'Annie100', 'annie100']) {
+      mockCheckoutCreate.mockClear()
+      const res = await handler(makeRequest(`?tier=starter&interval=month&code=${code}`))
+      expect(res.status).toBe(302)
+      expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({ payment_method_collection: 'if_required' }))
+    }
+  })
+
+  it('falls back to the normal card-required, 7-day flow for any other code', async () => {
+    const res = await handler(makeRequest('?tier=starter&interval=month&code=not-a-real-code'))
+    expect(res.status).toBe(302)
+    expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
+      payment_method_collection: 'always',
+      subscription_data: expect.objectContaining({ trial_period_days: 7 }),
+    }))
+  })
 })
 
 it('sets team seats to the 3-seat minimum with adjustable quantity', async () => {

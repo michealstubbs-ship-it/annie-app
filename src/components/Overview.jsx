@@ -5,6 +5,23 @@ import { supabase } from '../lib/supabase'
 import {
   IconZap, IconCalendar, IconRadio, IconBriefcase, IconSparkles, IconArrowRight, IconPlus, IconMessageCircle, IconBuilding, IconUsers,
 } from './icons'
+// 2026-08-25: Overview's "Needs your attention" card and urgentCount used to
+// read the legacy actions_cache table, which Today's Actions itself stopped
+// writing to when it moved to a live, always-recomputed model (see
+// useTodaysActions.js's own header) — actions_cache is permanently empty
+// for every account now, so this card silently said "generate today's
+// actions" and the hero banner said "nothing urgent" even with real,
+// visible items on the actual Today's Actions page. Reusing the exact same
+// pool builders + resolveTodaysActions Today's Actions itself uses is what
+// guarantees this card can never disagree with that page again — same
+// eligibility rules, same signal-type whitelist (BD_ACTION_SIGNAL_TYPES),
+// same "already marked done" check, computed once here without the AI-copy
+// step (Overview only ever shows a headline/company preview, never the full
+// card), not a second, hand-maintained opinion of what belongs here.
+import {
+  buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool, buildSourcedPool,
+  selectDailyItems, resolveTodaysActions,
+} from '../lib/todaysActions/index.js'
 
 const JOB_STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled', lost: 'Lost' }
 const JOB_STATUS_COLOR = { active: '#2f9e5b', onhold: '#d99a2b', filled: '#c9a84c', lost: '#9ca0ac' }
@@ -235,28 +252,35 @@ export default function Overview() {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
     const [
-      { data: cache },
+      { data: fullContacts },
+      { data: deals },
       { data: jobRows },
       { data: candRows },
-      { data: signalRows },
+      { data: allSignalRows },
       { data: signalCountRows },
       { data: meetingRows },
       { data: taskRows },
       { count: contactsCountResult },
     ] = await Promise.all([
-      // actions_cache stays user_id-scoped — it's the legacy Today's
-      // Actions cache (superseded by todays_action_state, see
-      // TodaysActions/), not part of the 2026-08-24 team-scoping pass.
-      supabase.from('actions_cache').select('*').eq('user_id', user.id).gt('expires_at', new Date().toISOString()).order('generated_at', { ascending: false }).limit(1).single(),
       // jobs/candidates/meetings/bd_tasks/contacts are the shared CRM —
       // team-scoped by RLS, dropping the user_id filter is what makes the
       // dashboard reflect the whole team's pipeline, not just this user's
       // slice of it. intelligence_signals is the opposite (see
       // lib/data/signals.js) and keeps its own explicit user_id filter
       // below so the dashboard's signal widget stays personal too.
+      // fullContacts/deals are what the pool builders below need — same
+      // shape and same limit as useTodaysActions.js uses, so this can
+      // never disagree with what Today's Actions itself computes.
+      supabase.from('contacts').select('*').limit(500),
+      supabase.from('deals').select('*').limit(200),
       supabase.from('jobs').select('id, status, fee_value'),
       supabase.from('candidates').select('id, status'),
-      supabase.from('intelligence_signals').select('id, company_name, company_logo_url, headline, found_at').eq('user_id', user.id).neq('status', 'actioned').order('found_at', { ascending: false }).limit(3),
+      // Uncapped (well, 300 — same cap useTodaysActions.js uses) rather
+      // than the old limit(3): the pool builders need every eligible
+      // signal to score/rank correctly, not just the newest few. The
+      // "Latest intelligence" panel below takes its own top-3 slice of
+      // this same result instead of running a second, separate query.
+      supabase.from('intelligence_signals').select('*').eq('user_id', user.id).neq('status', 'actioned').order('found_at', { ascending: false }).limit(300),
       supabase.from('intelligence_signals').select('id').eq('user_id', user.id).gte('found_at', sevenDaysAgo),
       supabase.from('meetings').select('id, title, meeting_type, meeting_date').gte('meeting_date', todayStart).lte('meeting_date', todayEnd).order('meeting_date', { ascending: true }),
       supabase.from('bd_tasks').select('id, title, due_date').eq('status', 'open').lte('due_date', todayDateStr).order('due_date', { ascending: true }).limit(5),
@@ -267,16 +291,43 @@ export default function Overview() {
       supabase.from('contacts').select('id', { count: 'exact', head: true }),
     ])
 
-    if (cache?.actions?.length) {
-      setTopActions(cache.actions.slice(0, 3))
-      setTotalActions(cache.actions.length)
-    } else {
-      setTopActions([])
-      setTotalActions(0)
+    // Same pools -> selectDailyItems -> resolveTodaysActions pipeline
+    // useTodaysActions.js runs, minus the AI-copy-writing step (Overview
+    // never shows the full card, just a headline/company preview) — see
+    // the import comment above for why this replaces the old actions_cache
+    // read.
+    const pools = {
+      dormant: buildDormantPool(fullContacts || []),
+      meeting: buildMeetingPool(deals || [], fullContacts || []),
+      relationship: buildRelationshipPool(allSignalRows || [], fullContacts || []),
+      new_client: buildNewClientPool(fullContacts || [], deals || []),
+      sourced: buildSourcedPool(allSignalRows || [], fullContacts || []),
     }
+    const selected = selectDailyItems(pools)
+    const shaped = selected.map(item => {
+      if (item.category === 'sourced') {
+        const s = item.signal
+        return { category: 'sourced', urgency: item.urgency, score: item.score, headline: s.headline, company: s.company_name, signalId: s.id }
+      }
+      return {
+        category: item.category,
+        urgency: item.urgency,
+        score: item.score,
+        headline: item.contact?.name || item.deal?.company || item.signal?.company_name || 'Follow up',
+        company: item.contact?.company || item.deal?.company || item.signal?.company_name,
+        signalId: item.category === 'relationship' ? item.signal?.id : null,
+        contactId: item.contact?.id || null,
+        dealId: item.deal?.id || null,
+        keyContext: item.contact?.last_contacted || item.contact?.created_at || item.deal?.updated_at || '',
+      }
+    })
+    const resolvedActions = await resolveTodaysActions({ supabase, userId: user.id, freshActions: shaped })
+
+    setTopActions(resolvedActions.slice(0, 3))
+    setTotalActions(resolvedActions.length)
     setJobs(jobRows || [])
     setCandidates(candRows || [])
-    setSignals(signalRows || [])
+    setSignals((allSignalRows || []).slice(0, 3))
     setNewSignalsCount(signalCountRows?.length || 0)
     setMeetings(meetingRows || [])
     setTasks(taskRows || [])

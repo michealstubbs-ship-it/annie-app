@@ -35,9 +35,9 @@ describe('buildSourcedPool — signal-type whitelist (2026-08-24 narrowing)', ()
     }
   )
 
-  it('a whitelist exclusion is not bypassed by manually_added_at', () => {
+  it('2026-08-25: a manual "Add to Today\'s BD Actions" click DOES bypass the whitelist, as long as it still has a real contact', () => {
     const signals = [baseSignal({ signal_type: 'funding', manually_added_at: daysAgoIso(0) })]
-    expect(buildSourcedPool(signals, [])).toEqual([])
+    expect(buildSourcedPool(signals, [])).toHaveLength(1)
   })
 })
 

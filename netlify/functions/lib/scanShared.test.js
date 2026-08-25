@@ -418,7 +418,7 @@ describe('buildEnrichedSignalRow', () => {
     const supabase = makeTableAwareSupabase()
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (url.includes('mixed_companies/search')) {
-        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Rabigh 1', primary_domain: 'acme.com' }] }) }
       }
       if (url.includes('mixed_people/api_search')) {
         return { ok: true, json: async () => ({ people: [{ first_name: 'Naif', last_name: '', title: 'Project Development Manager', id: 'p1' }] }) }
@@ -450,7 +450,7 @@ describe('buildEnrichedSignalRow', () => {
     const supabase = makeTableAwareSupabase()
     vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
       if (url.includes('mixed_companies/search')) {
-        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'dpworld.com' }] }) }
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'DP World', primary_domain: 'dpworld.com' }] }) }
       }
       if (url.includes('mixed_people/api_search')) {
         // This is what Apollo's search endpoint actually returns on this
@@ -483,7 +483,7 @@ describe('buildEnrichedSignalRow', () => {
   it('still returns null when the reveal call itself cannot confirm a real last name (a genuinely thin record, not just a masked one)', async () => {
     const supabase = makeTableAwareSupabase()
     vi.stubGlobal('fetch', vi.fn(async (url) => {
-      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', primary_domain: 'acme.com' }] }) }
       if (url.includes('mixed_people/api_search')) {
         return { ok: true, json: async () => ({ people: [{ first_name: 'Naif', last_name_obfuscated: '', title: 'Project Development Manager', id: 'p1' }] }) }
       }
@@ -576,7 +576,7 @@ describe('buildEnrichedSignalRows — same-company sequencing (the actual Live J
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (url.includes('mixed_companies/search')) {
         companySearchCalls++
-        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', primary_domain: 'acme.com' }] }) }
       }
       if (url.includes('mixed_people/api_search')) {
         peopleSearchCalls++
@@ -614,7 +614,7 @@ describe('buildEnrichedSignalRows — same-company sequencing (the actual Live J
     let peopleSearchCalls = 0
     const seenTitles = []
     vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
-      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', primary_domain: 'acme.com' }] }) }
       if (url.includes('mixed_people/api_search')) {
         peopleSearchCalls++
         const body = JSON.parse(opts.body)
@@ -701,7 +701,7 @@ describe('enrichCompany — logo resolution fallback chain', () => {
     const supabase = makeTableAwareSupabase()
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (url.includes('mixed_companies/search')) {
-        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com', logo_url: 'https://apollo.example/acme-logo.png' }] }) }
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', primary_domain: 'acme.com', logo_url: 'https://apollo.example/acme-logo.png' }] }) }
       }
       throw new Error(`unexpected fetch in this test: ${url}`)
     }))
@@ -714,7 +714,7 @@ describe('enrichCompany — logo resolution fallback chain', () => {
     const supabase = makeTableAwareSupabase()
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (url.includes('mixed_companies/search')) {
-        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', primary_domain: 'acme.com' }] }) }
       }
       throw new Error(`unexpected fetch in this test: ${url}`)
     }))
@@ -747,6 +747,74 @@ describe('enrichCompany — logo resolution fallback chain', () => {
     const result = await enrichCompany('apollo-key', 'Zenith Group', supabase)
     expect(result.logo_url).toBe('https://logo.clearbit.com/zenith.io')
     expect(fetchSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+})
+
+// 2026-08-25 — a real, customer-facing bug: a signal genuinely about
+// "Stitch" (a small GCC fintech) got Apollo contact data for "Stitch Fix"
+// (an unrelated, much larger US public company) because enrichCompany used
+// to blindly trust Apollo's top-ranked mixed_companies/search result with
+// no check that it was actually the right company. These are the
+// regression tests for pickBestOrgMatch, the fix.
+describe('enrichCompany — pickBestOrgMatch (the Stitch / Stitch Fix wrong-company bug)', () => {
+  it('does NOT take a same-search, different-name candidate just because it was ranked first', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) {
+        // Apollo's actual top result for a bare "Stitch" query in the real
+        // bug — ranked first, but the wrong company entirely.
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_stitchfix', name: 'Stitch Fix', primary_domain: 'stitchfix.com' }] }) }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    const result = await enrichCompany('apollo-key', 'Stitch', supabase)
+    expect(result.matched).toBe(false)
+    expect(result.apolloOrgId).toBeNull()
+    expect(result.domain).not.toBe('stitchfix.com')
+    vi.unstubAllGlobals()
+  })
+
+  it('picks the exact-name match even when it is ranked below a same-search decoy', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) {
+        return {
+          ok: true,
+          json: async () => ({
+            organizations: [
+              { id: 'org_stitchfix', name: 'Stitch Fix', primary_domain: 'stitchfix.com' },
+              { id: 'org_stitch_real', name: 'Stitch', primary_domain: 'stitch.money' },
+            ],
+          }),
+        }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    const result = await enrichCompany('apollo-key', 'Stitch', supabase)
+    expect(result.apolloOrgId).toBe('org_stitch_real')
+    expect(result.domain).toBe('stitch.money')
+    vi.unstubAllGlobals()
+  })
+
+  it('falls back to a location-hint match when no candidate is an exact name match', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) {
+        return {
+          ok: true,
+          json: async () => ({
+            organizations: [
+              { id: 'org_us', name: 'Stitch Fix', primary_domain: 'stitchfix.com', country: 'United States' },
+              { id: 'org_ae', name: 'Stitch FZ LLC', primary_domain: 'stitch.money', country: 'United Arab Emirates' },
+            ],
+          }),
+        }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    const result = await enrichCompany('apollo-key', 'Stitch', supabase, ['United Arab Emirates'])
+    expect(result.apolloOrgId).toBe('org_ae')
     vi.unstubAllGlobals()
   })
 })
@@ -835,7 +903,7 @@ describe('buildEnrichedSignalRow — candidateProfile and leadership_change cont
     const supabase = makeTableAwareSupabase()
     let nameMatchCalls = 0
     vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
-      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', primary_domain: 'acme.com' }] }) }
       if (url.includes('mixed_people/api_search')) return { ok: true, json: async () => ({ people: [] }) }
       if (url.includes('people/match')) {
         const body = JSON.parse(opts.body)
@@ -855,7 +923,7 @@ describe('buildEnrichedSignalRow — candidateProfile and leadership_change cont
   it("resolves a leadership_change signal's contact by the appointed name", async () => {
     const supabase = makeTableAwareSupabase()
     vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
-      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'dewa.gov.ae' }] }) }
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'DEWA', primary_domain: 'dewa.gov.ae' }] }) }
       if (url.includes('people/match')) {
         const body = JSON.parse(opts.body)
         if (body.id) return { ok: true, json: async () => ({ person: {} }) }
@@ -950,7 +1018,7 @@ describe('buildEnrichedSignalRow — always a contact recommendation on the 4 wh
   it('a funding signal with no single obvious contact gets a multi-function contact_candidates panel instead, and no single verified contact', async () => {
     const supabase = makeTableAwareSupabase()
     vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
-      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', primary_domain: 'acme.com' }] }) }
       if (url.includes('mixed_people/api_search')) {
         const body = JSON.parse(opts.body)
         if (body.person_titles?.includes('Head of Product')) return { ok: true, json: async () => ({ people: [{ first_name: 'Priya', last_name: 'Nair', title: 'Head of Product', id: 'p1' }] }) }
@@ -973,7 +1041,7 @@ describe('buildEnrichedSignalRow — always a contact recommendation on the 4 wh
   it('a live_job signal whose single-contact lookup finds nobody falls back to the multi-function panel', async () => {
     const supabase = makeTableAwareSupabase()
     vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
-      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', primary_domain: 'acme.com' }] }) }
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', primary_domain: 'acme.com' }] }) }
       if (url.includes('mixed_people/api_search')) {
         const body = JSON.parse(opts.body)
         // The specific role's own title search comes back empty...

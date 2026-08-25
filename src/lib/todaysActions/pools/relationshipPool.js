@@ -6,17 +6,20 @@ const RELATIONSHIP_FRESH_DAYS = 14
 export function isEligibleRelationship(s, linkedContact) {
   if (!linkedContact) return false // not an existing contact, belongs in sourcedPool instead
   if (s.status === 'actioned') return false
-  // Today's BD Actions only ever surfaces the whitelisted signal types —
-  // never a BD trigger otherwise, so this pool never surfaces anything
-  // outside it, even one someone manually added from the Feed (see the
-  // manually_added_at bypass below, which only clears the freshness
-  // window, not this check).
-  if (!BD_ACTION_SIGNAL_TYPES.includes(s.signal_type)) return false
+  const manuallyAdded = !!s.manually_added_at
+  // Today's BD Actions only ever surfaces the whitelisted signal types on
+  // an ordinary scan-sourced signal. 2026-08-25 change, per Michael (see
+  // the identical fix in sourcedPool.js's isEligibleSourced for the full
+  // reasoning): a manual "Add to Today's BD Actions" click from the Feed
+  // bypasses the type whitelist too, for a company Annie already knows
+  // just as much as for a brand-new one — the customer explicitly chose
+  // this signal either way.
+  if (!manuallyAdded && !BD_ACTION_SIGNAL_TYPES.includes(s.signal_type)) return false
   // A signal the user explicitly pulled in via "Add to Today's BD Actions"
   // on the Feed always clears the freshness window — they already decided
   // it's worth pursuing, so it's not this pool's place to second-guess
   // that. Still scored/ranked normally, just never dropped for being old.
-  if (s.manually_added_at) return true
+  if (manuallyAdded) return true
   const daysFound = daysSince(s.found_at) ?? 999
   // A leadership-change signal about a company Annie already knows is
   // worth a longer freshness window than the ordinary 14 days — see

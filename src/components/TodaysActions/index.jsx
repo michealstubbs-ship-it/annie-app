@@ -36,7 +36,7 @@ export default function TodaysActions() {
   }
 
   return (
-    <div className="p-8 max-w-[900px]">
+    <div className="p-8 w-full">
       <div className="mb-1">
         <h1 className="text-xl font-extrabold text-navy">Good morning, {profile?.full_name?.split(' ')[0] || 'there'}</h1>
         <p className="text-gray-500 text-[13px] mt-0.5">

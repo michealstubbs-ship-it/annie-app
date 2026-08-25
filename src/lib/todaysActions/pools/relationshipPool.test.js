@@ -57,10 +57,10 @@ describe('buildRelationshipPool', () => {
   )
 
   it.each(['funding', 'm_and_a', 'hiring_activity', 'public_commentary', 'regulatory'])(
-    'excludes a %s signal even when manually added — the whitelist cannot be overridden from the Feed',
+    '2026-08-25: includes a %s signal when manually added — the whitelist IS bypassed by an explicit Feed add',
     (signal_type) => {
       const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type, found_at: daysAgoIso(1), manually_added_at: daysAgoIso(0) }]
-      expect(buildRelationshipPool(signals, contacts)).toEqual([])
+      expect(buildRelationshipPool(signals, contacts)).toHaveLength(1)
     }
   )
 

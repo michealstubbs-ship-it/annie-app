@@ -809,7 +809,40 @@ async function resolveLogoUrl(company, domain, existingLogoUrl) {
   return resolvedDomain ? `https://logo.clearbit.com/${resolvedDomain}` : null
 }
 
-export async function enrichCompany(apolloKey, company, supabase) {
+// Apollo's org-name search is a fuzzy/relevance search, not an exact-match
+// lookup — for a short or generic company name it can rank a completely
+// unrelated, larger, better-known company above the actual one a signal is
+// about (confirmed live: a signal genuinely about "Stitch", a GCC fintech
+// that raised a Series A, got matched to "Stitch Fix", the unrelated US
+// public company — and every "Stitch"-named signal afterward inherited the
+// same wrong match via the cache below, since enrichCompany used to just
+// take candidates[0] with no check at all). This picks, in order: (1) a
+// candidate whose name matches the input exactly (case/whitespace
+// insensitive) — the only case that's actually safe to trust blindly; (2)
+// failing that, a candidate whose country matches one of the customer's
+// monitored locations, as a best-effort disambiguator when Apollo has
+// location data for the org; (3) otherwise null. A wrong-but-plausible
+// guess is worse than no match here — an unmatched company still shows
+// fine (no logo/no contact), where a wrong match puts a real stranger's
+// name and email on a card for the wrong business.
+function pickBestOrgMatch(candidates, company, locationHints = []) {
+  if (!candidates?.length) return null
+  const norm = (v) => (v || '').trim().toLowerCase().replace(/\s+/g, ' ')
+  const target = norm(company)
+  const exact = candidates.find((c) => norm(c.name) === target)
+  if (exact) return exact
+  if (locationHints.length) {
+    const hints = locationHints.map(norm).filter(Boolean)
+    const locationMatch = candidates.find((c) => {
+      const country = norm(c.country)
+      return country && hints.some((h) => country.includes(h) || h.includes(country))
+    })
+    if (locationMatch) return locationMatch
+  }
+  return null
+}
+
+export async function enrichCompany(apolloKey, company, supabase, locationHints = []) {
   if (!company) return null
   const cacheKey = enrichmentCacheKey(company)
 
@@ -854,17 +887,24 @@ export async function enrichCompany(apolloKey, company, supabase) {
   let result = null
   if (apolloKey && (await reserveApolloCredits(supabase))) {
     try {
+      // per_page: 5 (was 1) — pickBestOrgMatch needs real candidates to
+      // choose between, not just Apollo's single top-ranked (and, for a
+      // short/generic name, not necessarily correct) guess.
       const resp = await fetchWithRetry('https://api.apollo.io/v1/mixed_companies/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
-        body: JSON.stringify({ q_organization_name: company, page: 1, per_page: 1 }),
+        body: JSON.stringify({ q_organization_name: company, page: 1, per_page: 5 }),
       })
       if (!resp.ok) {
         console.error(`[scanShared] enrichCompany non-ok response for "${company}": ${resp.status}`)
         await reportServerError('scanShared:enrichCompany', new Error(`Apollo mixed_companies/search returned ${resp.status}`), { company })
       } else {
         const data = await resp.json()
-        const org = (data.organizations && data.organizations[0]) || (data.accounts && data.accounts[0])
+        const candidates = [...(data.organizations || []), ...(data.accounts || [])]
+        const org = pickBestOrgMatch(candidates, company, locationHints)
+        if (!org && candidates.length) {
+          console.log(`[scanShared] enrichCompany: no confident match for "${company}" among ${candidates.length} Apollo candidates (top candidate: "${candidates[0]?.name}") — leaving unmatched rather than guessing`)
+        }
         if (org) {
           result = {
             domain: org.primary_domain || org.domain || null,
@@ -1024,14 +1064,14 @@ function sanitizeCandidateProfile(profile) {
 // entryType field for live_job entries, never trusted to the AI's own
 // signalType choice — see dropGenericHiringWhereLiveJobsExist above and
 // both scan files' prompts.
-export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix }) {
+export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints = [] }) {
   // enrichCompany runs first, not in parallel with verifyContact: Apollo's
   // people-search now requires a resolved organization_id (see
   // verifyContact's header), which only enrichCompany's own company lookup
   // can provide — running them in parallel would mean verifyContact never
   // has an id to search with.
   const [companyInfo, chVerification, sourceVerified] = await Promise.all([
-    enrichCompany(apolloKey, s.company, supabase),
+    enrichCompany(apolloKey, s.company, supabase, locationHints),
     s.signalType === 'leadership_change' ? verifyLeadershipChange(companiesHouseKey, s.company) : Promise.resolve(null),
     verifySourceUrl(s.sourceUrl),
   ])
@@ -1049,19 +1089,27 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
   }
   const signalType = isLiveJob && liveJobUrlVerified ? 'live_job' : resolveSignalType(isLiveJob ? 'hiring_activity' : s.signalType, logPrefix)
 
-  // Every one of the four whitelisted Today's BD Actions signal types
-  // (funding, expansion, leadership_change, live_job — see
-  // BD_ACTION_SIGNAL_TYPES in actionsEngine.js) must always carry a usable
-  // contact recommendation. Funding/expansion rarely have one obvious
-  // single contact the way a named leadership appointment or a specific job
-  // posting does — see verifyContactsAcrossFunctions's own header — so those
-  // two go straight to the multi-function search instead of a single
-  // generic title-keyword lookup that would usually come back empty
-  // anyway. live_job/leadership_change keep their existing single-contact
-  // lookup as the primary path, falling back to the same multi-function
-  // search only if that comes back with nobody, so the "always a contact"
-  // guarantee holds for every whitelisted type, not just the two with an
-  // obvious single person.
+  // 2026-08-25 correction: this comment used to say "the four whitelisted
+  // Today's BD Actions signal types ... see BD_ACTION_SIGNAL_TYPES in
+  // actionsEngine.js" — both wrong. That file doesn't exist anymore (the
+  // constant lives in src/lib/todaysActions/eligibility.js), and the live
+  // whitelist there is currently just ['leadership_change', 'live_job'] —
+  // funding/expansion were narrowed out on 2026-08-24. This function still
+  // enriches all four types the same way regardless, on purpose: a
+  // funding/expansion signal can still reach Today's BD Actions via the
+  // "Add to Today's BD Actions" manual bypass from the Feed, and it needs
+  // the same real contact data as anything else, not a worse version just
+  // because it took the manual path. See eligibility.js for the actual
+  // current whitelist and sourcedPool.js for how the manual bypass works.
+  // Funding/expansion rarely have one obvious single contact the way a
+  // named leadership appointment or a specific job posting does — see
+  // verifyContactsAcrossFunctions's own header — so those two go straight
+  // to the multi-function search instead of a single generic title-keyword
+  // lookup that would usually come back empty anyway. live_job/
+  // leadership_change keep their existing single-contact lookup as the
+  // primary path, falling back to the same multi-function search only if
+  // that comes back with nobody, so the "always a contact" guarantee holds
+  // for all four types, not just the two with an obvious single person.
   const isFundingOrExpansion = ['funding', 'expansion'].includes(signalType)
   let contact = null
   let contactCandidates = []
@@ -1159,7 +1207,7 @@ export async function mapWithConcurrency(items, limit, fn) {
 // Output order becomes "grouped by company" rather than strict input order
 // — harmless, since the result is only ever used as a set for a bulk
 // upsert, never rendered in array order.
-export async function buildEnrichedSignalRows(entries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, concurrency = 4 }) {
+export async function buildEnrichedSignalRows(entries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, concurrency = 4, locationHints = [] }) {
   const groups = new Map()
   for (const s of entries) {
     const key = normalizeCompanyKey(s.company)
@@ -1170,7 +1218,7 @@ export async function buildEnrichedSignalRows(entries, { userId, apolloKey, comp
   const groupRows = await mapWithConcurrency([...groups.values()], concurrency, async (group) => {
     const rows = []
     for (const s of group) {
-      rows.push(await buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix }))
+      rows.push(await buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints }))
     }
     return rows
   })
@@ -1283,7 +1331,11 @@ export const REGIONAL_SOURCE_DIRECTORY = {
 // market the customer actually selected, and only ever a sector they
 // actually placed into, so a Technology-only recruiter in the UK isn't
 // handed eight irrelevant trade titles for sectors they never picked.
-export function buildRegionalSourceHint(locations, sectors) {
+// `learned` (optional, from getLearnedSources below) layers in whatever
+// Annie has discovered on her own since this was last hand-curated — see
+// that function's header for why this grows over time instead of staying
+// fixed at today's names.
+export function buildRegionalSourceHint(locations, sectors, learned) {
   const parts = (locations || []).map(loc => {
     const dir = REGIONAL_SOURCE_DIRECTORY[loc]
     if (!dir) return null
@@ -1295,28 +1347,53 @@ export function buildRegionalSourceHint(locations, sectors) {
     if (dir.registries) bits.push(dir.registries)
     return `${loc} — ${bits.join('. ')}.`
   }).filter(Boolean)
-  if (!parts.length) return ''
-  return `\nNamed regional sources worth checking directly, not just generic search, since these carry richer BD signal than a blind web search often surfaces on their own:\n${parts.join('\n')}\n`
+
+  const learnedSourceLines = (sectors || [])
+    .map(s => (learned?.sources?.[s]?.length ? `${s} → ${learned.sources[s].join(', ')}` : null))
+    .filter(Boolean)
+  const learnedCompanyLines = (sectors || [])
+    .map(s => (learned?.companies?.[s]?.length
+      ? `${s} → ${learned.companies[s].slice(0, 30).join(', ')}${learned.companies[s].length > 30 ? ', and others already tracked' : ''}`
+      : null))
+    .filter(Boolean)
+
+  if (!parts.length && !learnedSourceLines.length && !learnedCompanyLines.length) return ''
+
+  let out = ''
+  if (parts.length) {
+    out += `\nNamed regional sources worth checking directly, not just generic search, since these carry richer BD signal than a blind web search often surfaces on their own:\n${parts.join('\n')}\n`
+  }
+  if (learnedSourceLines.length) {
+    out += `\nAnnie has also learned these additional sources from past scans, worth checking the same way as the named ones above:\n${learnedSourceLines.join('\n')}\n`
+  }
+  if (learnedCompanyLines.length) {
+    out += `\nNotable, previously-confirmed active players Annie already knows about in these sectors and markets — don't limit yourself to only these, but do check whether any have fresh news too, so real coverage isn't always the same handful of famous names:\n${learnedCompanyLines.join('\n')}\n`
+  }
+  out += `\nAnnie's own knowledge here should keep growing the way a human researcher's would: while searching, if you come across a genuinely good, specific website worth checking again on future scans for one of this customer's sectors (not a generic search-results aggregator), or a real, active, notable company in one of these sectors and markets that isn't already named anywhere above, report it as an "annie_learned" entry (see the output format below — kind "source" or "company" respectively) so it's remembered for next time instead of being rediscovered from scratch on every scan.\n`
+  return out
 }
 
 // Named firm-tier anchors for the two sectors (25 Aug 2026, Michael) where "check the
 // company's own careers page" is worth doing proactively for known major players,
 // not only reactively once a firm shows up as a funding/expansion signal — a Big 4
 // or Magic Circle firm posting a senior opening is itself a BD-relevant event even
-// with no separate news trigger. Deliberately NOT an exhaustive list: anchors cover
-// the handful of firms too obvious to risk missing, and discoveryHint points Annie at
-// the same authoritative ranking source Michael named (consultancy-me.com) or its
-// legal equivalent (Legal 500 / Chambers and Partners) to find the rest for whichever
-// markets this customer actually selected — so the list doesn't need to be maintained
-// by hand as firms merge, rebrand or open new offices.
+// with no separate news trigger. Deliberately NOT an exhaustive list: anchors are
+// the seed data in annie_learned_sources (kind='company', found_via='seed') — the
+// starting handful of firms too obvious to risk missing — and discoveryHint points
+// Annie at the same authoritative ranking source Michael named (consultancy-me.com)
+// or its legal equivalent (Legal 500 / Chambers and Partners) to find the rest,
+// spanning big firms down to boutique ones, for whichever markets this customer
+// actually selected. getLearnedSources/recordLearnedDiscoveries below are what
+// actually grow this list past its seed over time, so it doesn't need to be
+// maintained by hand as firms merge, rebrand or open new offices.
 export const TARGET_FIRM_DIRECTORY = {
   'Management Consulting': {
     anchors: ['Deloitte', 'PwC', 'EY', 'KPMG', 'Accenture', 'McKinsey & Company', 'Boston Consulting Group (BCG)', 'Bain & Company', 'Oliver Wyman', 'Kearney', 'Strategy&'],
-    discoveryHint: "Beyond these anchors, use consultancy-me.com's own directory and rankings to identify additional Tier 2 and boutique consulting firms active in this customer's selected markets (for UAE/GCC specifically), or the equivalent named regional trade press already listed above for other markets, then check those firms' own career pages the same way.",
+    discoveryHint: "Beyond these firms, use consultancy-me.com's own directory and rankings as the authority on who else is active — it names Tier 2 and boutique consulting firms too, not just the largest ones — for this customer's selected markets (for UAE/GCC specifically), or the equivalent named regional trade press already listed above for other markets, then check those firms' own career pages the same way.",
   },
   Law: {
     anchors: ['Clifford Chance', 'Linklaters', 'Freshfields Bruckhaus Deringer', 'A&O Shearman', 'Slaughter and May', 'Kirkland & Ellis', 'Latham & Watkins', 'Skadden Arps'],
-    discoveryHint: 'Beyond these global anchors, use Legal 500 and Chambers and Partners\' own regional rankings to identify additional national/regional and boutique law firms active in this customer\'s selected markets, then check those firms\' own career pages the same way.',
+    discoveryHint: 'Beyond these global firms, use Legal 500 and Chambers and Partners\' own regional rankings as the authority on who else is active in this customer\'s selected markets — both rank firms across every tier, global elite down to national and boutique, not just the largest names — then check those firms\' own career pages the same way.',
   },
 }
 
@@ -1324,12 +1401,106 @@ export const TARGET_FIRM_DIRECTORY = {
 // buildRegionalSourceHint's shape and only-what-they-selected discipline —
 // only fires for a customer who actually selected Management Consulting
 // and/or Law, so nobody else's prompt grows for a mechanism they don't use.
-export function buildTargetFirmHint(sectors) {
+// `learned` layers in every firm Annie has already discovered beyond the
+// seed anchors (see getLearnedSources) so the list actually reflects big
+// firms down to boutique ones as it grows, not just the original seed.
+export function buildTargetFirmHint(sectors, learned) {
   const parts = (sectors || []).map(sector => {
     const dir = TARGET_FIRM_DIRECTORY[sector]
-    if (!dir) return null
-    return `${sector} — anchor firms worth checking directly regardless of whether they've come up as a signal yet: ${dir.anchors.join(', ')}. ${dir.discoveryHint}`
+    const learnedNames = learned?.companies?.[sector] || []
+    const names = [...new Set([...(dir?.anchors || []), ...learnedNames])]
+    if (!dir || !names.length) return null
+    return `${sector} — firms worth checking directly regardless of whether they've come up as a signal yet (${names.length} tracked so far, seed anchors plus everything discovered since): ${names.join(', ')}. ${dir.discoveryHint}`
   }).filter(Boolean)
   if (!parts.length) return ''
-  return `\nThis customer targets a sector with well-known major players, so proactively check these specific firms' own career pages too, the same way as the per-company follow-up check above, rather than waiting for them to surface as a signal first:\n${parts.join('\n')}\n`
+  return `\nThis customer targets a sector with well-known major players, so proactively check these specific firms' own career pages too, the same way as the per-company follow-up check above, rather than waiting for them to surface as a signal first:\n${parts.join('\n')}\nThis list should keep growing: if you find a real, verifiable firm active in this customer's markets on the named ranking source above, big or boutique, that isn't already in this list, report it as an "annie_learned" entry (kind "company", see the output format below) so it's added for next time — this is exactly how the list above grew past its original starting set.\n`
+}
+
+// Reads Annie's own growing research memory (25 Aug 2026, Michael) — companies
+// and sources she's learned are worth checking for a sector/market, seeded
+// with a handful of obvious names (see TARGET_FIRM_DIRECTORY) and grown every
+// scan via recordLearnedDiscoveries below, the actual mechanism behind "Annie
+// should evolve and get better the way a human researcher would" rather than
+// staying fixed at whatever was hand-curated on a given day. Deliberately
+// global/shared across every account, not per-customer: which law firms or
+// which trade site covers a market is an objective fact, not a customer
+// opinion, so one account's discovery benefits every other account
+// researching the same sector/market — the same reasoning company_contacts
+// already uses for verified contacts. Capped per sector so a sector that's
+// been scanned for months doesn't grow into an unbounded prompt.
+const LEARNED_PER_SECTOR_CAP = 100
+
+export async function getLearnedSources(supabase, sectors, locations) {
+  const empty = { companies: {}, sources: {} }
+  if (!supabase || !sectors?.length) return empty
+  try {
+    const locs = [...new Set([...(locations || []), 'Global'])]
+    const { data, error } = await supabase
+      .from('annie_learned_sources')
+      .select('kind, sector, value')
+      .in('sector', sectors)
+      .in('location', locs)
+      .order('first_seen_at', { ascending: true })
+      .limit(2000)
+    if (error || !data) return empty
+    const result = { companies: {}, sources: {} }
+    for (const row of data) {
+      const bucket = row.kind === 'source' ? result.sources : result.companies
+      if (!bucket[row.sector]) bucket[row.sector] = []
+      if (bucket[row.sector].length < LEARNED_PER_SECTOR_CAP && !bucket[row.sector].includes(row.value)) {
+        bucket[row.sector].push(row.value)
+      }
+    }
+    return result
+  } catch (err) {
+    console.error('[scanShared] failed to read annie_learned_sources', err.message)
+    return empty
+  }
+}
+
+// Pulls "annie_learned" entries (see buildScanPrompt's third entryType in
+// both scan-now-background.js and intelligence-scan.js) out of a raw
+// `found` array before it reaches mergeSignals/dropGenericHiringWhereLiveJobsExist
+// — those entries have no company/headline pair, so downstream signal
+// processing would otherwise just silently drop them instead of them
+// getting recorded via recordLearnedDiscoveries below. One shared
+// implementation so both scan files agree on exactly what an
+// "annie_learned" entry looks like.
+export function splitLearnedEntries(found) {
+  const learned = []
+  const rest = []
+  for (const entry of found || []) {
+    if (entry?.entryType === 'annie_learned') learned.push(entry)
+    else rest.push(entry)
+  }
+  return { learned, rest }
+}
+
+// Writes new companies/sources Annie found this scan back to the shared
+// table above so her list keeps growing — this is the actual "evolve and
+// get better" half of the mechanism, not just a one-time seed. Silently
+// deduplicates via the table's own unique constraint (ignoreDuplicates),
+// so re-discovering "Deloitte" for the hundredth time is a cheap no-op
+// rather than a growing pile of duplicate rows.
+export async function recordLearnedDiscoveries(supabase, entries) {
+  if (!supabase || !entries?.length) return
+  const rows = entries
+    .filter(e => e?.kind && e?.sector && e?.value)
+    .map(e => ({
+      kind: e.kind,
+      sector: e.sector,
+      location: e.location || 'Global',
+      value: e.value,
+      value_key: normalizeCompanyKey(e.value),
+      found_via: e.foundVia || 'discovered',
+    }))
+  if (!rows.length) return
+  try {
+    const { error } = await supabase
+      .from('annie_learned_sources')
+      .upsert(rows, { onConflict: 'kind,sector,location,value_key', ignoreDuplicates: true })
+    if (error) console.error('[scanShared] failed to record learned discoveries', error.message)
+  } catch (err) {
+    console.error('[scanShared] failed to record learned discoveries', err.message)
+  }
 }

@@ -26,6 +26,9 @@ import {
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
   buildRegionalSourceHint,
   buildTargetFirmHint,
+  getLearnedSources,
+  recordLearnedDiscoveries,
+  splitLearnedEntries,
 } from './lib/scanShared.js'
 
 // Hard ceiling on how many NEW (never-seen-before) signals get enriched via
@@ -78,8 +81,8 @@ ${opts.adzunaLeads?.length ? `\nAdzuna's live jobs board shows these real, recen
 Adzuna does not cover every one of this recruiter's markets (notably the GCC/UAE) — for those, also use web search directly to find genuine, specific open roles: search a company's own careers page, recognised regional job boards (Bayt, GulfTalent, NaukriGulf, Dubizzle Jobs), and LinkedIn Jobs postings. Where it's relevant to this recruiter's sectors, also check the dedicated boards that carry roles the general ones often miss entirely: eFinancialCareers for Financial Services, MOHRE Careers / Dubai Careers / Tamm for Government & Public Sector (official UAE government job portals — many public-sector openings never appear on a general board at all), and Hosco / Caterer Middle East for hospitality roles. Write anything you find this way as its own "live_job" entry the same way as an Adzuna-sourced one — real specific title, sourceUrl pointing at the actual job posting page itself (not a news article merely mentioning that the company is hiring), no agency-posted roles. If you can only find a general "this company is hiring" mention with no specific posting page to cite, write that as an ordinary hiring_activity signal instead, never as a live_job entry — a live_job entry always needs its own real posting URL.
 
 For every company you write up as a signal above (funding, expansion, leadership change, M&A, anything), before moving to the next one, do one direct follow-up check of that specific company's own website: search for its careers or jobs page to see whether it has a real, specific opening posted right now that matches this recruiter's target functions. If you find one, write it as an ADDITIONAL, separate "live_job" entry for that same company, same rules as above — a real title, sourceUrl pointing straight at that company's own posting. Skip it if the company genuinely has no findable careers page.
-${buildRegionalSourceHint(onboarding?.locations, onboarding?.sectors)}
-${buildTargetFirmHint(onboarding?.sectors)}
+${buildRegionalSourceHint(onboarding?.locations, onboarding?.sectors, opts.learned)}
+${buildTargetFirmHint(onboarding?.sectors, opts.learned)}
 Companies already surfaced recently, don't re-report the same event for these unless there is a brand new development: ${recentCompanies.join(', ') || 'None yet'}.
 
 Every signal must have a real, citable source you actually found via search. Do not invent anything. Return up to 5 entries total (signal and live_job entries combined), fewer if you can't find genuinely good ones after searching thoroughly, never pad with weak filler.
@@ -117,7 +120,15 @@ For each genuine, directly-posted open role you found via the Adzuna list above 
 - benchStrengthAngle: same as above, tailored to this exact role's niche. Leave blank if you cannot confidently name genuine peer companies.
 - candidateProfile: same structure and rules as the signal field above, tailored to this exact open role's seniority and requirements.
 
-Return a single JSON array mixing both kinds of entries, each tagged with its entryType. Only return the JSON array, nothing else. If nothing genuinely good was found, return an empty array.`
+For each genuinely new company or source you noticed while checking the named sources above (see buildRegionalSourceHint's and buildTargetFirmHint's instructions earlier in this prompt) that isn't already in the lists they gave you, write a THIRD kind of entry instead:
+- entryType: "annie_learned"
+- kind: "company" or "source"
+- sector: the exact sector label (from the list this recruiter targets, above) this belongs to
+- value: the company name, or the source's name/domain, exactly as you'd want it referenced again on a future scan
+- foundVia: the specific named source you found it on (e.g. "consultancy-me.com", "Legal 500 UAE"), never blank
+Only include something here you actually found via search and are confident is real and current — never invent a plausible-sounding company or site to pad this out. Leave this out entirely for a scan where nothing genuinely new turned up, it is not required every time.
+
+Return a single JSON array mixing all three kinds of entries, each tagged with its entryType. Only return the JSON array, nothing else. If nothing genuinely good was found, return an empty array.`
 }
 
 const DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP = 2_000_000
@@ -226,12 +237,20 @@ async function scanOneCustomer(ob, ctx) {
 
   const recentCompanies = await fetchRecentCompanies(supabase, ob.user_id)
   const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
+  const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
 
-  const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads }), supabase)
+  const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, learned }), supabase)
+  const { learned: learnedFound, rest: rawFound } = splitLearnedEntries(extractJson(text))
+  // Fire-and-forget on purpose — this is Annie's own research memory
+  // growing for next time (see getLearnedSources/recordLearnedDiscoveries's
+  // own headers), it has zero bearing on this customer's signals and
+  // should never slow this run down or fail it. recordLearnedDiscoveries
+  // already fails soft internally.
+  if (learnedFound.length) recordLearnedDiscoveries(supabase, learnedFound).catch(() => {})
   // Enforce "replace, not supplement" here in code — see the function's own
   // comment in scanShared.js for why this can't just be a prompt instruction
   // alone.
-  const found = dropGenericHiringWhereLiveJobsExist(extractJson(text))
+  const found = dropGenericHiringWhereLiveJobsExist(rawFound)
   if (!found.length) {
     // Log a preview so a zero-result customer is diagnosable from the log,
     // not guessed at.
@@ -254,7 +273,11 @@ async function scanOneCustomer(ob, ctx) {
 
   // Row-building itself lives once in scanShared.js, shared with
   // scan-now-background.js — see buildEnrichedSignalRows's own comment.
-  const rows = await buildEnrichedSignalRows(newSignals, { userId: ob.user_id, apolloKey, companiesHouseKey, supabase, logPrefix: '[intelligence-scan]' })
+  // locationHints — see scan-now-background.js's identical call for why:
+  // lets enrichCompany prefer an Apollo org whose country matches this
+  // customer's monitored markets when a company name alone is ambiguous
+  // (see pickBestOrgMatch in scanShared.js).
+  const rows = await buildEnrichedSignalRows(newSignals, { userId: ob.user_id, apolloKey, companiesHouseKey, supabase, logPrefix: '[intelligence-scan]', locationHints: ob.locations || [] })
   if (!rows.length) return 0
 
   // Throwing here (rather than swallowing) is deliberate: this function's

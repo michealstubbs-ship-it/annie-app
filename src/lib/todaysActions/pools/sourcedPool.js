@@ -15,20 +15,28 @@ const SOURCED_MAX_AGE_DAYS = 21
 export function isEligibleSourced(s, knownCompanies) {
   if (s.status === 'actioned') return false
   if (knownCompanies.has(norm(s.company_name))) return false
-  // Today's BD Actions only ever surfaces the whitelisted signal types —
-  // on principle, not just by default scoring. Checked before the
-  // manually-added bypass even gets a chance to run, so choosing "Add to
-  // Today's BD Actions" on one from the Feed can't override this either.
-  if (!BD_ACTION_SIGNAL_TYPES.includes(s.signal_type)) return false
+  const manuallyAdded = !!s.manually_added_at
+  // Today's BD Actions only ever surfaces the whitelisted signal types on
+  // an ordinary scan-sourced signal. 2026-08-25 change, per Michael: a
+  // manual "Add to Today's BD Actions" click from the Feed is a different
+  // case — the customer explicitly chose this specific signal, so it
+  // bypasses the type whitelist ("them clicking add to todays actions
+  // should go through the current blocker"). This is exactly the bug that
+  // silently ate Stitch before this fix — a funding signal outside the
+  // whitelist, manually added, that never surfaced anywhere and looked to
+  // the customer like the click just didn't work.
+  if (!manuallyAdded && !BD_ACTION_SIGNAL_TYPES.includes(s.signal_type)) return false
   // A real BD action always comes with someone to actually approach — a
   // card whose "who to approach" is just a generic role with nobody's name
   // behind it isn't a lead yet, it's a headline. No bypass for a manually
   // added signal here either: adding a signal to the list doesn't conjure
-  // a contact for it.
+  // a contact for it. (Every signal gets a real contact-resolution attempt
+  // at scan time regardless of type — see buildEnrichedSignalRow in
+  // scanShared.js — so this isn't usually a dead end for a manual add.)
   if (!s.contact_verified && !(Array.isArray(s.contact_candidates) && s.contact_candidates.length > 0)) return false
   // A signal the user explicitly chose from the Feed always clears the age
   // cutoff below, still scored/ranked normally, just never dropped for age.
-  if (s.manually_added_at) return true
+  if (manuallyAdded) return true
   const daysFound = daysSince(s.found_at) ?? 999
   // Leadership-change gets a wider cutoff than the ordinary
   // SOURCED_MAX_AGE_DAYS (21 days) — see the urgency comment in
