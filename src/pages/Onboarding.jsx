@@ -281,7 +281,7 @@ export default function Onboarding() {
               <input id="onboarding-firm-name" className="input" placeholder="e.g. Vantage Search Group" value={form.firmName} onChange={e => update('firmName', e.target.value)} />
             </div>
             <div className="mt-4">
-              <label className="label" htmlFor="onboarding-linkedin-url">Your LinkedIn profile URL <span className="text-gray-400 font-normal">(optional)</span></label>
+              <label className="label" htmlFor="onboarding-linkedin-url">Your LinkedIn profile URL</label>
               <input id="onboarding-linkedin-url" type="url" className="input" placeholder="e.g. linkedin.com/in/yourname" value={form.linkedinUrl} onChange={e => update('linkedinUrl', e.target.value)} />
             </div>
           </div>
