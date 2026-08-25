@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
-import { callChat } from '../lib/callChat'
+import { callChatStream } from '../lib/callChat'
 import { trackEvent } from '../lib/analytics'
 
 export default function Chat() {
@@ -40,6 +40,20 @@ export default function Chat() {
     setInput('')
     setLoading(true)
 
+    // The streaming assistant bubble starts empty and grows in place as
+    // tokens arrive — its index is captured the moment the placeholder is
+    // added so onDelta below always knows which message to update, and the
+    // bubble itself (not a separate dots indicator) is what shows the
+    // "thinking" state, then becomes the real answer word by word. This is
+    // the fix for "needs to be functioning like a top AI chat bot" — the
+    // old version showed bouncing dots then popped the whole reply in at
+    // once, which is why it never felt like one.
+    let assistantIndex
+    setMessages(prev => {
+      assistantIndex = prev.length
+      return [...prev, { role: 'assistant', content: '', streaming: true }]
+    })
+
     try {
       await supabase.from('chat_messages').insert({ user_id: user.id, role: 'user', content: userMsg.content })
 
@@ -52,17 +66,39 @@ ${onboarding?.writing_style ? `\nWhen drafting any message, email, or LinkedIn c
 You help with: BD strategy, outreach messages, market intelligence, interview prep, candidate pitches, objection handling, and anything recruitment business development related.
 Be specific, actionable and concise. No waffle.`
 
-      const { text } = await callChat({
+      const { text } = await callChatStream({
         messages: [...messages, userMsg].map(m => ({ role: m.role, content: m.content })),
         systemOverride: systemPrompt,
         maxTokens: 1500,
+        onDelta: (_chunk, fullTextSoFar) => {
+          setMessages(prev => {
+            const next = [...prev]
+            next[assistantIndex] = { role: 'assistant', content: fullTextSoFar, streaming: true }
+            return next
+          })
+        },
       })
-      const assistantMsg = { role: 'assistant', content: text }
-      setMessages(prev => [...prev, assistantMsg])
+      setMessages(prev => {
+        const next = [...prev]
+        next[assistantIndex] = { role: 'assistant', content: text }
+        return next
+      })
       await supabase.from('chat_messages').insert({ user_id: user.id, role: 'assistant', content: text })
       trackEvent('ask_annie_message_sent')
     } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Please try again.' }])
+      setMessages(prev => {
+        const next = [...prev]
+        // Replace the streaming placeholder in place (it may already have
+        // partial text in it) rather than appending a second bubble — a
+        // failed request should leave exactly one assistant message, not a
+        // half-written one plus a separate apology underneath it.
+        if (assistantIndex != null && next[assistantIndex]?.streaming) {
+          next[assistantIndex] = { role: 'assistant', content: 'Sorry, something went wrong. Please try again.' }
+        } else {
+          next.push({ role: 'assistant', content: 'Sorry, something went wrong. Please try again.' })
+        }
+        return next
+      })
     } finally {
       setLoading(false)
     }
@@ -92,19 +128,19 @@ Be specific, actionable and concise. No waffle.`
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[80%] px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap
               ${m.role === 'user' ? 'bg-navy text-white rounded-br-sm' : 'bg-white border border-gray-100 text-gray-700 rounded-bl-sm shadow-sm'}`}>
-              {m.content}
+              {m.streaming && !m.content ? (
+                <div className="flex gap-1">
+                  {[0,1,2].map(i => <div key={i} className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />)}
+                </div>
+              ) : (
+                <>
+                  {m.content}
+                  {m.streaming && <span className="inline-block w-1.5 h-4 bg-gray-400 ml-0.5 align-middle animate-pulse" />}
+                </>
+              )}
             </div>
           </div>
         ))}
-        {loading && (
-          <div className="flex justify-start">
-            <div className="bg-white border border-gray-100 rounded-2xl rounded-bl-sm px-4 py-3 shadow-sm">
-              <div className="flex gap-1">
-                {[0,1,2].map(i => <div key={i} className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />)}
-              </div>
-            </div>
-          </div>
-        )}
         <div ref={bottomRef} />
       </div>
 

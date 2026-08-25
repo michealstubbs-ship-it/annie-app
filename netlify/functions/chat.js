@@ -8,6 +8,67 @@ import { createTimeoutFetch } from './lib/scanShared.js'
 const DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP = 2_000_000
 const DEFAULT_CHAT_PER_MINUTE_CAP = 20
 
+// Turns Anthropic's own SSE stream (data: {...}\n\n lines) into a minimal
+// newline-delimited JSON stream Chat.jsx can render token-by-token as it
+// arrives, instead of buffering the whole reply before responding — see the
+// 2026-08-25 "needs to be functioning like a top AI chat bot" request. NDJSON
+// rather than re-emitting raw SSE because the only two things the frontend
+// ever needs are "here's some more text" and "you're done, here are the
+// citations" — no reason to make it re-implement SSE framing plus
+// Anthropic's full event-type vocabulary for that.
+function streamAnthropicReplyAsNdjson(anthropicBody) {
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  const reader = anthropicBody.getReader()
+  let buffer = ''
+  const citations = []
+
+  return new ReadableStream({
+    async pull(controller) {
+      const { done, value } = await reader.read()
+      if (done) {
+        controller.enqueue(encoder.encode(JSON.stringify({ type: 'done', citations }) + '\n'))
+        controller.close()
+        return
+      }
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() // keep the last, possibly-incomplete line for the next pull()
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const jsonStr = line.slice(6).trim()
+        if (!jsonStr || jsonStr === '[DONE]') continue
+
+        let event
+        try {
+          event = JSON.parse(jsonStr)
+        } catch {
+          continue // a malformed/partial event isn't worth failing the whole reply over
+        }
+
+        if (event.type === 'content_block_delta') {
+          if (event.delta?.type === 'text_delta' && event.delta.text) {
+            controller.enqueue(encoder.encode(JSON.stringify({ type: 'delta', text: event.delta.text }) + '\n'))
+          } else if (event.delta?.type === 'citations_delta' && event.delta.citation?.url) {
+            citations.push({ url: event.delta.citation.url, title: event.delta.citation.title || event.delta.citation.url })
+          }
+        } else if (event.type === 'error') {
+          // Anthropic can send an error event mid-stream — after streaming has
+          // already started, past the point the retry-on-transient-status
+          // logic below can help — so surface it as visible text rather than
+          // a reply that silently stops mid-sentence with no explanation.
+          controller.enqueue(encoder.encode(JSON.stringify({ type: 'delta', text: `\n\n[${event.error?.message || 'Annie lost connection — please try again.'}]` }) + '\n'))
+        }
+      }
+    },
+    cancel(reason) {
+      reader.cancel(reason).catch(() => {})
+    },
+  })
+}
+
 export default async (req, context) => {
   if (req.method !== 'POST') {
     return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } })
@@ -105,6 +166,7 @@ export default async (req, context) => {
       model,
       max_tokens: maxTokens,
       messages,
+      stream: true,
       ...(systemOverride && { system: systemOverride }),
       ...(webSearch && {
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxSearchUses }],
@@ -157,25 +219,12 @@ export default async (req, context) => {
       return new Response(JSON.stringify({ error: errText || 'Anthropic request failed' }), { status: resp.status, headers: { 'Content-Type': 'application/json' } })
     }
 
-    const data = await resp.json()
-
-    // Collect every text block (web search runs interleave tool_use / tool_result / text blocks)
-    const textBlocks = (data.content || []).filter(b => b.type === 'text').map(b => b.text)
-    const text = textBlocks.join('\n')
-
-    // Collect citations if the model cited web search results, so the frontend can show real sources
-    const citations = []
-    for (const block of data.content || []) {
-      if (block.type === 'text' && Array.isArray(block.citations)) {
-        for (const c of block.citations) {
-          if (c.url) citations.push({ url: c.url, title: c.title || c.url })
-        }
-      }
-    }
-
-    return new Response(JSON.stringify({ text, citations }), {
+    // Anthropic's own SSE body streams straight through to the caller as
+    // NDJSON — see streamAnthropicReplyAsNdjson above. Nothing here waits
+    // for the reply to finish before responding.
+    return new Response(streamAnthropicReplyAsNdjson(resp.body), {
       status: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
     })
   } catch (err) {
     await reportServerError('chat', err)

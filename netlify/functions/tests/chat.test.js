@@ -64,12 +64,35 @@ function makeRequest(body, { method = 'POST', invalidJson = false } = {}) {
   return new Request('https://annie.example/api/chat', init)
 }
 
+// chat.js now requests stream:true and re-emits Anthropic's SSE stream as
+// NDJSON — this builds a real SSE body (data: {...}\n\n lines) matching what
+// Anthropic actually sends, so the mocked fetch exercises the real
+// streaming/parsing code path instead of a shape chat.js no longer produces.
 function anthropicOkResponse(text = 'hello there') {
-  return new Response(JSON.stringify({ content: [{ type: 'text', text }] }), { status: 200 })
+  const events = [
+    { type: 'message_start', message: { id: 'msg_1' } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    { type: 'message_stop' },
+  ]
+  const body = events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('') + 'data: [DONE]\n\n'
+  return new Response(body, { status: 200 })
 }
 
 function anthropicErrorResponse(status, body = 'upstream error') {
   return new Response(body, { status })
+}
+
+// Reads chat.js's NDJSON response body to completion and returns the
+// concatenated delta text plus the final done event's citations, mirroring
+// what callChatStream() does client-side.
+async function readNdjson(resp) {
+  const lines = (await resp.text()).trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+  const text = lines.filter(e => e.type === 'delta').map(e => e.text).join('')
+  const done = lines.find(e => e.type === 'done')
+  return { text, citations: done?.citations || [], lines }
 }
 
 let handler
@@ -141,11 +164,13 @@ describe('auth and rate/budget guards', () => {
 })
 
 describe('the successful path', () => {
-  it('returns the assistant text and never reports an error', async () => {
+  it('streams the assistant text as NDJSON deltas followed by a done event, and never reports an error', async () => {
     const resp = await handler(makeRequest())
     expect(resp.status).toBe(200)
-    const body = await resp.json()
-    expect(body.text).toBe('hello there')
+    expect(resp.headers.get('Content-Type')).toContain('application/x-ndjson')
+    const { text, lines } = await readNdjson(resp)
+    expect(text).toBe('hello there')
+    expect(lines[lines.length - 1]).toEqual({ type: 'done', citations: [] })
     expect(mockReportServerError).not.toHaveBeenCalled()
   })
 })
@@ -175,8 +200,8 @@ describe('Anthropic failures — the 2026-08-23 regression target', () => {
 
     expect(global.fetch).toHaveBeenCalledTimes(2)
     expect(resp.status).toBe(200)
-    const body = await resp.json()
-    expect(body.text).toBe('recovered on retry')
+    const { text } = await readNdjson(resp)
+    expect(text).toBe('recovered on retry')
     expect(mockReportServerError).not.toHaveBeenCalled()
     vi.useRealTimers()
   })
