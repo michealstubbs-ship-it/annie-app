@@ -109,7 +109,37 @@ describe('markActionDone', () => {
   })
 
   it('is a no-op for an action with no stable identity', async () => {
-    await markActionDone(supabase, 'u1', { headline: 'no id' })
+    const result = await markActionDone(supabase, 'u1', { headline: 'no id' })
     expect(supabase._state.size).toBe(0)
+    expect(result).toEqual({ error: null })
+  })
+
+  it('resolves { error: null } on a clean save', async () => {
+    const result = await markActionDone(supabase, 'u1', { signalId: 's1' })
+    expect(result).toEqual({ error: null })
+  })
+
+  // 2026-08-26 audit fix: both writes' results used to be discarded — a
+  // failed upsert or signal update left the item visibly removed from
+  // Today's Actions client-side while the database still showed it as
+  // active, so it would reappear (or worse, never get marked 'actioned')
+  // with no error surfaced anywhere.
+  it('surfaces an error from the todays_action_state write and never attempts the signal update', async () => {
+    supabase.from = (table) => {
+      if (table === 'todays_action_state') return { upsert: () => Promise.resolve({ data: null, error: { message: 'state db down' } }) }
+      throw new Error(`unexpected table ${table}`)
+    }
+    const result = await markActionDone(supabase, 'u1', { signalId: 's1' })
+    expect(result).toEqual({ error: { message: 'state db down' } })
+  })
+
+  it('surfaces an error from the intelligence_signals update even though the state write succeeded', async () => {
+    supabase.from = (table) => {
+      if (table === 'todays_action_state') return { upsert: () => Promise.resolve({ data: null, error: null }) }
+      if (table === 'intelligence_signals') return { update: () => ({ eq: () => Promise.resolve({ data: null, error: { message: 'signal db down' } }) }) }
+      throw new Error(`unexpected table ${table}`)
+    }
+    const result = await markActionDone(supabase, 'u1', { signalId: 's1' })
+    expect(result).toEqual({ error: { message: 'signal db down' } })
   })
 })

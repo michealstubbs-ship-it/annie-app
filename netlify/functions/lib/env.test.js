@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { requireEnv } from './env.js'
+import { requireEnv, parseIntEnv } from './env.js'
 
 describe('requireEnv', () => {
   const KEYS = ['ANNIE_TEST_VAR_A', 'ANNIE_TEST_VAR_B', 'ANNIE_TEST_VAR_C']
@@ -50,5 +50,31 @@ describe('requireEnv', () => {
   it('still records the (undefined) value for a missing var in `values`', () => {
     const result = requireEnv(['ANNIE_TEST_VAR_A'])
     expect(result.values.ANNIE_TEST_VAR_A).toBeUndefined()
+  })
+})
+
+describe('parseIntEnv', () => {
+  it('falls back to the default when the var is unset (undefined)', () => {
+    expect(parseIntEnv(undefined, 50)).toBe(50)
+  })
+
+  it('falls back to the default when the var is an empty string', () => {
+    expect(parseIntEnv('', 50)).toBe(50)
+  })
+
+  it('falls back to the default when the var is not a number at all', () => {
+    expect(parseIntEnv('not-a-number', 50)).toBe(50)
+  })
+
+  it('respects an explicit 0 rather than silently falling back — the bug this exists to fix', () => {
+    expect(parseIntEnv('0', 50)).toBe(0)
+  })
+
+  it('respects any other explicit positive value', () => {
+    expect(parseIntEnv('12', 50)).toBe(12)
+  })
+
+  it('respects a negative value rather than treating it as unset', () => {
+    expect(parseIntEnv('-1', 50)).toBe(-1)
   })
 })

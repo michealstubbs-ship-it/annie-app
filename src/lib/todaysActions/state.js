@@ -28,9 +28,15 @@ export async function recordFirstSeen(supabase, userId, itemKeys) {
 }
 
 export async function markItemDone(supabase, userId, itemKey) {
-  if (!itemKey) return
-  await supabase.from('todays_action_state').upsert(
+  // 2026-08-26 audit fix: this write's result was previously discarded, so
+  // a failed upsert (RLS denial, dropped connection) still let the caller
+  // remove the card from the visible list — it would then silently
+  // reappear on the next load since todays_action_state never actually
+  // recorded it as done.
+  if (!itemKey) return { error: null }
+  const { error } = await supabase.from('todays_action_state').upsert(
     { user_id: userId, item_key: itemKey, status: 'done', done_at: new Date().toISOString() },
     { onConflict: 'user_id,item_key' }
   )
+  return { error }
 }

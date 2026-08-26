@@ -227,7 +227,12 @@ export function useTodaysActions({ user, profile }) {
   }
 
   async function markDone(action) {
-    await markActionDone(supabase, user.id, action)
+    // 2026-08-26 audit fix: this write's result was never checked — a
+    // failed markActionDone (RLS denial, dropped connection) still removed
+    // the card from the visible list, so it would silently reappear on the
+    // next load with nothing telling the user their "done" didn't stick.
+    const { error: err } = await markActionDone(supabase, user.id, action)
+    if (err) { setError(err.message || 'Could not mark this done. Please try again.'); return }
     setActions(prev => prev.filter(a => a !== action))
   }
 

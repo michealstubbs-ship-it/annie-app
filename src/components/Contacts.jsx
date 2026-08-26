@@ -33,12 +33,20 @@ export default function Contacts() {
 
   async function loadContacts() {
     setLoading(true)
+    setListError('')
     // 2026-08-24 Task 2: routed through lib/data/contacts.js (previously
     // duplicated inline here) so this table's query shape lives in exactly
     // one place.
-    const data = await listContacts(user.id)
-    setContacts(data)
-    setLoading(false)
+    // 2026-08-26 audit fix: listContacts now throws on a real Supabase
+    // error instead of quietly returning [] — previously that looked
+    // identical to "you have no contacts yet".
+    try {
+      setContacts(await listContacts(user.id))
+    } catch (err) {
+      setListError(err.message || 'Could not load your contacts. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   function openAdd() { setEditContact(null); setShowModal(true) }

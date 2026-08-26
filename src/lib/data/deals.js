@@ -5,8 +5,12 @@ import { supabase } from '../supabase'
 
 // 2026-08-24: deals is team-scoped — RLS already restricts every row to the
 // caller's active team, so no client-side user_id filter on top of it.
+// 2026-08-26 audit fix: throws on a Supabase error instead of silently
+// falling back to `data || []` — see contacts.js's header comment for the
+// full reasoning (same fix, same pattern, applied file-by-file).
 export async function listDeals(userId) {
-  const { data } = await supabase.from('deals').select('*').order('created_at', { ascending: false })
+  const { data, error } = await supabase.from('deals').select('*').order('created_at', { ascending: false })
+  if (error) throw error
   return data || []
 }
 

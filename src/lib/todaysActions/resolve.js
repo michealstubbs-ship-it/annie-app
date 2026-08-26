@@ -44,9 +44,12 @@ export async function resolveTodaysActions({ supabase, userId, freshActions }) {
 // local to Today's Actions' own bookkeeping.
 export async function markActionDone(supabase, userId, action) {
   const key = actionKey(action)
-  if (!key) return
-  await markItemDone(supabase, userId, key)
+  if (!key) return { error: null }
+  const { error } = await markItemDone(supabase, userId, key)
+  if (error) return { error }
   if (action.signalId) {
-    await supabase.from('intelligence_signals').update({ status: 'actioned' }).eq('id', action.signalId)
+    const { error: signalError } = await supabase.from('intelligence_signals').update({ status: 'actioned' }).eq('id', action.signalId)
+    if (signalError) return { error: signalError }
   }
+  return { error: null }
 }

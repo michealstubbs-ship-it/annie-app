@@ -7,8 +7,11 @@
 // checkout.session.completed handler, once payment is confirmed. This is a
 // plain GET+redirect (not a fetch) so a bare marketing-site <a href> works
 // with zero JS.
+import { createClient } from '@supabase/supabase-js'
 import Stripe from 'stripe'
 import { priceIdFor } from './lib/stripeShared.js'
+import { alertIfConfigured, createTimeoutFetch } from './lib/scanShared.js'
+import { parseIntEnv } from './lib/env.js'
 
 const TEAM_MIN_SEATS = 3
 const VALID_TIERS = ['starter', 'growth', 'team']
@@ -36,6 +39,65 @@ const FREE_MONTH_CODE = 'annie100'
 const DEFAULT_TRIAL_DAYS = 7
 const FREE_MONTH_TRIAL_DAYS = 30
 
+// 2026-08-26: the free-month link had no limit on it at all -- no expiry,
+// no per-use cap, no rate limiting, and (by design, so a bare marketing-
+// site <a href> works with zero JS) no Turnstile check either. It's a
+// plain GET link with the code visible in the URL text itself -- the
+// moment it's shared anywhere public (a screenshot, a forum post, a
+// forwarded email), anyone can mint unlimited free 30-day trials with no
+// card on file. Trialing accounts aren't a lesser tier internally
+// (LIVE_STATUSES in adminDashboard.js treats them the same as active), so
+// each one spends real Apollo/Anthropic/TheirStack credit for up to 30
+// days against zero revenue.
+//
+// This caps total redemptions rather than picking an arbitrary expiry
+// date or per-email check (Stripe Checkout hasn't collected an email yet
+// at this point in the flow, so a per-email dedup would have to live in
+// stripe-webhook.js instead -- a reasonable future addition if this cap
+// alone isn't enough). Configurable via FREE_MONTH_MAX_REDEMPTIONS so
+// Michael can raise it, lower it, or effectively retire the code without a
+// deploy. Hitting the cap never breaks the link or shows an error --
+// same "soft gate, nobody hits a dead end" philosophy as entitlements.js
+// -- it just quietly falls back to the standard 7-day-trial-with-card
+// flow, and alerts so Michael knows the cap was reached and can decide
+// whether to raise it.
+const DEFAULT_FREE_MONTH_MAX_REDEMPTIONS = 50
+
+// Counts real redemptions (subscriptions.free_month_code, persisted by
+// stripe-webhook.js once a checkout actually completes — see its own
+// header) against the cap. Deliberately FAILS CLOSED (denies the free
+// month, falls back to the standard flow) if Supabase isn't configured or
+// the query errors — the opposite of this codebase's usual fail-open
+// reservation pattern (reserveApolloCredits etc.), because the risk here
+// is asymmetric: fail-open on a credit reservation costs a few extra
+// dollars of Apollo spend at worst, but fail-open here would silently
+// remove the one cap standing between this link and unlimited free-trial
+// abuse. The cost of failing closed is small and recoverable (one visitor
+// gets the standard 7-day-with-card flow instead of the free month, on a
+// day Supabase happens to be having trouble) — never a broken checkout.
+async function freeMonthRedemptionAllowed() {
+  const supabaseUrl = process.env.VITE_SUPABASE_URL
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!supabaseUrl || !serviceKey) return false
+
+  const maxRedemptions = parseIntEnv(process.env.FREE_MONTH_MAX_REDEMPTIONS, DEFAULT_FREE_MONTH_MAX_REDEMPTIONS)
+  const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
+  const { count, error } = await supabase
+    .from('subscriptions')
+    .select('user_id', { count: 'exact', head: true })
+    .eq('free_month_code', FREE_MONTH_CODE)
+
+  if (error) {
+    console.error('[start-trial-checkout] free-month redemption count failed, denying the free month for this request:', error.message)
+    return false
+  }
+  if (count >= maxRedemptions) {
+    await alertIfConfigured(`:warning: start-trial-checkout: free-month code "${FREE_MONTH_CODE}" has hit its redemption cap (${maxRedemptions}) — new requests are quietly falling back to the standard 7-day/card-required signup. Raise FREE_MONTH_MAX_REDEMPTIONS in Netlify to allow more, or leave it as-is to retire the code.`)
+    return false
+  }
+  return true
+}
+
 export default async (req) => {
   const stripeKey = process.env.STRIPE_SECRET_KEY
   const appUrl = process.env.APP_URL || 'https://app.meetannie.ai'
@@ -48,7 +110,11 @@ export default async (req) => {
   const url = new URL(req.url)
   const tier = url.searchParams.get('tier')
   const interval = url.searchParams.get('interval') === 'year' ? 'year' : 'month'
-  const isFreeMonth = (url.searchParams.get('code') || '').trim().toLowerCase() === FREE_MONTH_CODE
+  let isFreeMonth = (url.searchParams.get('code') || '').trim().toLowerCase() === FREE_MONTH_CODE
+
+  if (isFreeMonth) {
+    isFreeMonth = await freeMonthRedemptionAllowed()
+  }
 
   if (!VALID_TIERS.includes(tier)) {
     return new Response(`Unknown plan: ${tier}`, { status: 400 })

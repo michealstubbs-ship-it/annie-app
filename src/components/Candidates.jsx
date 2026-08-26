@@ -57,15 +57,24 @@ export default function Candidates() {
 
   async function load() {
     setLoading(true)
+    setListError('')
     // 2026-08-24 Task 2: routed through lib/data/* (previously duplicated
     // inline here) so this table's query shape lives in exactly one place.
-    const [data, j] = await Promise.all([
-      listCandidatesWithJobs(user.id),
-      listActiveJobsForPicker(user.id),
-    ])
-    setCandidates(data)
-    setJobs(j)
-    setLoading(false)
+    // 2026-08-26 audit fix: each of these now throws on a real Supabase
+    // error instead of quietly returning [] — previously that looked
+    // identical to "you have no candidates/jobs yet".
+    try {
+      const [data, j] = await Promise.all([
+        listCandidatesWithJobs(user.id),
+        listActiveJobsForPicker(user.id),
+      ])
+      setCandidates(data)
+      setJobs(j)
+    } catch (err) {
+      setListError(err.message || 'Could not load your candidates. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const metrics = useMemo(() => {

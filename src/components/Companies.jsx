@@ -33,6 +33,7 @@ export default function Companies() {
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [listError, setListError] = useState('')
 
   const [showCoModal, setShowCoModal] = useState(false)
   const [editCo, setEditCo] = useState(null)
@@ -53,17 +54,26 @@ export default function Companies() {
 
   async function load() {
     setLoading(true)
+    setListError('')
     // 2026-08-24 Task 2: routed through lib/data/* (previously duplicated
     // inline here) so this table's query shape lives in exactly one place.
-    const [co, ct, jb] = await Promise.all([
-      listCompanies(user.id),
-      listContactsWithCompany(user.id),
-      listJobsMinimal(user.id),
-    ])
-    setCompanies(co)
-    setContacts(ct)
-    setJobs(jb)
-    setLoading(false)
+    // 2026-08-26 audit fix: each of these now throws on a real Supabase
+    // error instead of quietly returning [] — previously that looked
+    // identical to "you have no companies/contacts/jobs yet".
+    try {
+      const [co, ct, jb] = await Promise.all([
+        listCompanies(user.id),
+        listContactsWithCompany(user.id),
+        listJobsMinimal(user.id),
+      ])
+      setCompanies(co)
+      setContacts(ct)
+      setJobs(jb)
+    } catch (err) {
+      setListError(err.message || 'Could not load your companies. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const filtered = useMemo(() =>
@@ -139,6 +149,8 @@ export default function Companies() {
         </div>
         <button onClick={openAddCo} className="btn-primary">+ Add Company</button>
       </div>
+
+      <ErrorBanner>{listError}</ErrorBanner>
 
       <input className="input max-w-sm mb-6" placeholder="Search companies..." value={search} onChange={e => setSearch(e.target.value)} />
 

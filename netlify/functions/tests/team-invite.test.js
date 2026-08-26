@@ -68,9 +68,37 @@ function makeFakeSupabase({ teamMembers = [], subscriptions = [], profiles = [],
     return b
   }
 
+  // 2026-08-26: the seat count + insert moved from two separate JS
+  // round-trips into one atomic, per-team-locked Postgres RPC (see
+  // supabase-migrations/2026-08-26-atomic-team-seat-cap.sql) — this fake
+  // mirrors that same atomic count-then-insert behaviour in-memory so
+  // every existing test (and the new race-condition test) exercises the
+  // real call shape team-invite.js now uses.
+  const rpc = vi.fn(async (fnName, params) => {
+    const seatsUsed = state.team_members.filter(
+      r => r.team_id === params.p_team_id && ['active', 'invited'].includes(r.status),
+    ).length
+    if (seatsUsed >= params.p_seat_limit) {
+      return { data: 'seat_limit_reached', error: null }
+    }
+    if (fnName === 'team_invite_add_active_member') {
+      state.team_members = [...state.team_members, {
+        id: `new_${state.team_members.length}`,
+        team_id: params.p_team_id, user_id: params.p_user_id, role: 'member', status: 'active', activated_at: new Date().toISOString(),
+      }]
+    } else if (fnName === 'team_invite_add_pending_member') {
+      state.team_members = [...state.team_members, {
+        id: `new_${state.team_members.length}`,
+        team_id: params.p_team_id, invited_email: params.p_invited_email, role: 'member', status: 'invited',
+      }]
+    }
+    return { data: 'ok', error: null }
+  })
+
   return {
     _state: state,
     from: vi.fn((table) => builder(table)),
+    rpc,
     auth: { admin: { inviteUserByEmail } },
     _inviteUserByEmail: inviteUserByEmail,
   }
@@ -218,6 +246,57 @@ describe('brand new email', () => {
     const res = await handler(makeRequest({ email: 'brandnew@person.com' }))
     expect(res.status).toBe(500)
     expect(supabase._state.team_members.find(m => m.invited_email === 'brandnew@person.com')).toBeUndefined()
+    expect(mockReportServerError).toHaveBeenCalled()
+  })
+})
+
+// 2026-08-26 audit fix: the seat count + insert used to be two separate
+// round-trips with nothing serializing them, so two concurrent invites for
+// the same team could both pass the seat check and both insert, pushing a
+// team over its paid seat limit. Now one atomic RPC call handles both — see
+// supabase-migrations/2026-08-26-atomic-team-seat-cap.sql.
+describe('atomic seat reservation (2026-08-26 fix)', () => {
+  it('calls the atomic team_invite_add_pending_member RPC with the resolved seat limit, not a separate count query', async () => {
+    const supabase = makeFakeSupabase({ teamMembers: [OWNER_TEAM], subscriptions: [TEAM_SUB] })
+    mockCreateClient.mockReturnValue(supabase)
+    await handler(makeRequest({ email: 'brandnew@person.com' }))
+    expect(supabase.rpc).toHaveBeenCalledWith('team_invite_add_pending_member', {
+      p_team_id: 'team_1', p_invited_email: 'brandnew@person.com', p_seat_limit: 3,
+    })
+  })
+
+  it('calls the atomic team_invite_add_active_member RPC for an existing Annie account', async () => {
+    const supabase = makeFakeSupabase({
+      teamMembers: [OWNER_TEAM],
+      subscriptions: [TEAM_SUB],
+      profiles: [{ id: 'user_new', email: 'existing@person.com' }],
+    })
+    mockCreateClient.mockReturnValue(supabase)
+    await handler(makeRequest({ email: 'existing@person.com' }))
+    expect(supabase.rpc).toHaveBeenCalledWith('team_invite_add_active_member', {
+      p_team_id: 'team_1', p_user_id: 'user_new', p_seat_limit: 3,
+    })
+  })
+
+  it('rejects with the seat-limit message when the atomic RPC itself reports the cap reached (simulating a race a JS-only check-then-write would miss)', async () => {
+    const supabase = makeFakeSupabase({ teamMembers: [OWNER_TEAM], subscriptions: [TEAM_SUB] })
+    // Simulate a concurrent invite winning the race inside the same
+    // Postgres transaction lock — the RPC itself says no, even though
+    // nothing in this test's in-memory state looks over the cap yet.
+    supabase.rpc = vi.fn(async () => ({ data: 'seat_limit_reached', error: null }))
+    mockCreateClient.mockReturnValue(supabase)
+    const res = await handler(makeRequest({ email: 'brandnew@person.com' }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/seats/)
+    expect(supabase._state.team_members.find(m => m.invited_email === 'brandnew@person.com')).toBeUndefined()
+  })
+
+  it('surfaces an RPC-level error (not a seat-limit response) as a 500, same as any other write failure', async () => {
+    const supabase = makeFakeSupabase({ teamMembers: [OWNER_TEAM], subscriptions: [TEAM_SUB] })
+    supabase.rpc = vi.fn(async () => ({ data: null, error: { message: 'db unreachable' } }))
+    mockCreateClient.mockReturnValue(supabase)
+    const res = await handler(makeRequest({ email: 'brandnew@person.com' }))
+    expect(res.status).toBe(500)
     expect(mockReportServerError).toHaveBeenCalled()
   })
 })

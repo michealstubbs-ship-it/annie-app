@@ -7,11 +7,15 @@ import { supabase } from '../supabase'
 
 // 2026-08-24: bd_tasks is team-scoped — RLS already restricts every row to
 // the caller's active team, so no client-side user_id filter on top of it.
+// 2026-08-26 audit fix: throws on a Supabase error instead of silently
+// falling back to `data || []` — see contacts.js's header comment for the
+// full reasoning (same fix, same pattern, applied file-by-file).
 export async function listTasksWithLinks(userId) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('bd_tasks')
     .select('*, contacts(name, company), candidates(name)')
     .order('due_date', { ascending: true, nullsFirst: false })
+  if (error) throw error
   return data || []
 }
 

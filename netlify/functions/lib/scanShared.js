@@ -18,6 +18,7 @@ import { extractJson } from '../../../src/lib/jsonExtract.js'
 import { SIGNAL_TYPES } from '../../../src/lib/signalTypes.js'
 import { stripAiArtifacts, sanitizeStringList } from '../../../src/lib/textSanitize.js'
 import { reportServerError } from './reportError.js'
+import { parseIntEnv } from './env.js'
 
 // Re-exported so every existing backend caller (scan-now-background.js,
 // intelligence-scan.js) keeps importing these from here unchanged — both
@@ -274,7 +275,7 @@ export async function reserveApolloCredits(supabase, userId, credits = 1, caps =
   // directly) — fail open rather than block a context that was never meant
   // to be capped in the first place.
   if (!supabase) return true
-  const platformDailyCap = caps.platformDailyCap ?? (parseInt(process.env.APOLLO_DAILY_CREDIT_CAP, 10) || DEFAULT_APOLLO_DAILY_CAP)
+  const platformDailyCap = caps.platformDailyCap ?? parseIntEnv(process.env.APOLLO_DAILY_CREDIT_CAP, DEFAULT_APOLLO_DAILY_CAP)
   const userDailyCap = caps.userDailyCap ?? null
   try {
     const { data, error } = await supabase.rpc('apollo_reserve_credits', {
@@ -577,7 +578,7 @@ const DEFAULT_THEIRSTACK_DAILY_CAP = 500
 
 export async function reserveTheirStackCredits(supabase, userId, credits = 1, caps = {}) {
   if (!supabase) return true
-  const platformDailyCap = caps.platformDailyCap ?? (parseInt(process.env.THEIRSTACK_DAILY_CREDIT_CAP, 10) || DEFAULT_THEIRSTACK_DAILY_CAP)
+  const platformDailyCap = caps.platformDailyCap ?? parseIntEnv(process.env.THEIRSTACK_DAILY_CREDIT_CAP, DEFAULT_THEIRSTACK_DAILY_CAP)
   const userDailyCap = caps.userDailyCap ?? null
   try {
     const { data, error } = await supabase.rpc('theirstack_reserve_credits', {
@@ -601,6 +602,30 @@ export async function reserveTheirStackCredits(supabase, userId, credits = 1, ca
   } catch (err) {
     console.error('[scanShared] theirstack_reserve_credits threw, allowing the call through:', err.message)
     return true
+  }
+}
+
+// 2026-08-26 audit fix: discoverTheirStackJobs reserves `limit` credits
+// upfront (the most it could possibly be billed for, needed to enforce the
+// cap correctly BEFORE spending anything), but a real call usually returns
+// fewer jobs than `limit` — sometimes zero, if nothing matched or the call
+// failed outright. Without this, every call permanently counted as its
+// full worst-case cost against both the per-customer and platform-wide
+// daily caps, inflating internal cost tracking relative to what TheirStack
+// actually bills (per job returned — see reserveTheirStackCredits's own
+// comment) and able to cap a customer out earlier than their real spend
+// justifies. Called after the real response is known, to refund the
+// difference. Best-effort and fail-silent-but-logged on purpose — a failed
+// refund just leaves that day's counters a little conservative, which is
+// the safe direction to err in, not a reason to fail the caller's own
+// (already-successful) job search.
+export async function releaseTheirStackCredits(supabase, userId, credits) {
+  if (!supabase || !credits || credits <= 0) return
+  try {
+    const { error } = await supabase.rpc('theirstack_release_credits', { p_credits: credits, p_user_id: userId || null })
+    if (error) console.error('[scanShared] theirstack_release_credits RPC failed:', error.message)
+  } catch (err) {
+    console.error('[scanShared] theirstack_release_credits threw:', err.message)
   }
 }
 
@@ -667,10 +692,19 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
     })
     if (!resp.ok) {
       console.error(`[scanShared] TheirStack jobs/search non-ok response: ${resp.status}`)
+      // Nothing was actually returned (so nothing actually billed) — refund
+      // the whole reservation rather than leaving it counted as spent.
+      await releaseTheirStackCredits(supabase, userId, limit)
       return []
     }
     const data = await resp.json()
-    return (data.data || [])
+    const rawResults = data.data || []
+    // Refund the gap between what was reserved and what TheirStack actually
+    // returned — see releaseTheirStackCredits's own comment.
+    if (rawResults.length < limit) {
+      await releaseTheirStackCredits(supabase, userId, limit - rawResults.length)
+    }
+    return rawResults
       .map(j => ({
         title: (j.job_title || '').trim(),
         company: (j.company || '').trim(),
@@ -682,6 +716,9 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
       .slice(0, limit)
   } catch (err) {
     console.error('[scanShared] TheirStack discovery failed:', err.message)
+    // The call never completed — nothing was billed, refund the whole
+    // reservation.
+    await releaseTheirStackCredits(supabase, userId, limit)
     return []
   }
 }
@@ -785,12 +822,19 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase,
   // every single run either.
   if (supabase) {
     try {
-      const { data: cached } = await supabase
+      // 2026-08-26 audit fix: same gap as the write path below (see its own
+      // 2026-08-24 Task 5 comment) — a query-level failure here (RLS denial,
+      // a bad filter) resolves normally with `error` set rather than
+      // throwing, so it fell through silently as if this were just an
+      // ordinary cache miss, with nothing in the logs to explain why a
+      // contact that should have been cached got re-looked-up anyway.
+      const { data: cached, error } = await supabase
         .from('company_contacts')
         .select('contact_name, contact_title, contact_linkedin_url, contact_email, contact_verified, checked_at')
         .eq('company_name_key', cacheKey)
         .eq('title_key', titleKey)
         .maybeSingle()
+      if (error) console.error(`[scanShared] contact cache lookup failed for "${company}" (${titleKey}):`, error.message)
       if (cached?.checked_at) {
         const ageDays = (Date.now() - new Date(cached.checked_at).getTime()) / (24 * 60 * 60 * 1000)
         if (ageDays <= CONTACT_CACHE_TTL_DAYS) {
@@ -1173,11 +1217,18 @@ export async function enrichCompany(apolloKey, company, supabase, locationHints 
   // re-spent a credit on the same company every time it resurfaced).
   if (supabase) {
     try {
-      const { data: cached } = await supabase
+      // 2026-08-26 audit fix: same gap as verifyContact's contact-cache
+      // read above — a query-level failure here (RLS denial, a bad filter)
+      // resolves normally with `error` set rather than throwing, so it fell
+      // through silently as if this were just an ordinary cache miss, with
+      // nothing in the logs to explain why a company that should have been
+      // cached got re-enriched (and re-charged an Apollo credit) anyway.
+      const { data: cached, error } = await supabase
         .from('company_enrichment')
         .select('domain, industry, city, state, country, logo_url, matched, apollo_org_id')
         .eq('company_name_key', cacheKey)
         .maybeSingle()
+      if (error) console.error(`[scanShared] company_enrichment cache lookup failed for "${company}":`, error.message)
       // A cache row from before apollo_org_id existed (matched=true but the
       // new column is still null) is treated as a miss, not a hit — falls
       // through to a fresh lookup so it gets backfilled, rather than
@@ -1878,6 +1929,11 @@ export async function getLearnedSources(supabase, sectors, locations) {
       .in('location', locs)
       .order('first_seen_at', { ascending: true })
       .limit(2000)
+    // 2026-08-26 audit fix: `error` was already checked (so a query-level
+    // failure correctly falls back to `empty` instead of being mistaken for
+    // "no learned sources yet"), but it was never logged — silently
+    // indistinguishable from the genuinely-empty case in Netlify's own logs.
+    if (error) console.error('[scanShared] failed to read annie_learned_sources', error.message)
     if (error || !data) return empty
     const result = { companies: {}, sources: {} }
     for (const row of data) {

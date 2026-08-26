@@ -24,6 +24,17 @@ export function summarizeAccounts(rows) {
   let seatsLive = 0
   let canceledLast30d = 0
   const tierCounts = { starter: 0, growth: 0, team: 0 }
+  // 2026-08-26 audit fix: AdminOverview.jsx's "Revenue by tier" chart used
+  // to approximate each tier's revenue as `tierCounts[tier] * t.monthly` —
+  // always the full, non-discounted monthly price, regardless of how many
+  // of those accounts are actually on annual billing (cheaper per month,
+  // see pricing.js's own header) or, for Team, how many seats each account
+  // actually has. That inflated a tier's apparent share whenever any
+  // account in it was on an annual or multi-seat plan. monthlyRevenueFor
+  // already computes the real, billing_interval- and seat-aware $/month
+  // per row for the overall `mrr` total below — summing it per tier here
+  // gives the chart the same real number instead of a second, wrong guess.
+  const tierMrr = { starter: 0, growth: 0, team: 0 }
   const atRisk = []
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
 
@@ -31,9 +42,13 @@ export function summarizeAccounts(rows) {
     const isLive = LIVE_STATUSES.has(row.status)
     if (isLive) {
       activeAccounts += 1
-      mrr += monthlyRevenueFor(row)
+      const rowMrr = monthlyRevenueFor(row)
+      mrr += rowMrr
       seatsLive += row.tier === 'team' ? Math.max(1, Number(row.seats) || 1) : 1
-      if (row.tier && tierCounts[row.tier] !== undefined) tierCounts[row.tier] += 1
+      if (row.tier && tierCounts[row.tier] !== undefined) {
+        tierCounts[row.tier] += 1
+        tierMrr[row.tier] += rowMrr
+      }
     }
 
     if (AT_RISK_STATUSES.has(row.status)) {
@@ -54,7 +69,7 @@ export function summarizeAccounts(rows) {
     }
   }
 
-  return { mrr, activeAccounts, seatsLive, canceledLast30d, tierCounts, atRisk }
+  return { mrr, activeAccounts, seatsLive, canceledLast30d, tierCounts, tierMrr, atRisk }
 }
 
 export async function getAdminAccountSummary() {

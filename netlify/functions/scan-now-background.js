@@ -546,20 +546,40 @@ async function resolveCaller(req, body, supabaseUrl, anonKey) {
 // invocation (not a loop inside this one) is what keeps this safe against
 // Netlify's per-invocation execution limit.
 function fireNextRound(userId, round, chainStartedAt) {
+  // 2026-08-26 audit fix: every OTHER failure path in this file explicitly
+  // calls reportServerError specifically because a bare console.error
+  // "vanish[es] into Netlify's own ephemeral function logs with nothing
+  // persisted" (this file's own words, on the sector-group/broaden-pass/
+  // cooldown-write failures above) — this chaining path was the one
+  // exception. If INTERNAL_SCAN_SECRET goes missing or out of sync
+  // (rotated in Netlify without a redeploy, a typo), every Growth/Team
+  // scan would silently stop chaining after round 1 for every customer,
+  // permanently, with nothing anywhere pointing at the actual cause until
+  // scan-status.js's own timeout eventually flips the status to
+  // 'timed_out' — a customer-visible symptom with no matching root-cause
+  // signal anywhere. Reported here now, same as every other failure mode
+  // this file already treats as worth paging over.
   if (!INTERNAL_SCAN_SECRET) {
-    console.error('[scan-now] INTERNAL_SCAN_SECRET not configured — cannot chain to round', round, 'for', userId, '(this account will stop short of its tier target)')
+    const msg = `INTERNAL_SCAN_SECRET not configured — cannot chain to round ${round} for ${userId} (this account will stop short of its tier target)`
+    console.error('[scan-now]', msg)
+    reportServerError('scan-now-background', new Error(msg), { userId, stage: 'chain-fire', round }).catch(() => {})
     return
   }
   const baseUrl = process.env.URL || process.env.DEPLOY_PRIME_URL
   if (!baseUrl) {
-    console.error('[scan-now] no site URL available to chain to round', round, 'for', userId)
+    const msg = `no site URL available to chain to round ${round} for ${userId}`
+    console.error('[scan-now]', msg)
+    reportServerError('scan-now-background', new Error(msg), { userId, stage: 'chain-fire', round }).catch(() => {})
     return
   }
   fetch(`${baseUrl}/.netlify/functions/scan-now-background`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-scan-secret': INTERNAL_SCAN_SECRET },
     body: JSON.stringify({ userId, round, chainStartedAt }),
-  }).catch(err => console.error('[scan-now] failed to fire round', round, 'for', userId, ':', err.message))
+  }).catch(err => {
+    console.error('[scan-now] failed to fire round', round, 'for', userId, ':', err.message)
+    reportServerError('scan-now-background', err, { userId, stage: 'chain-fire', round }).catch(() => {})
+  })
 }
 
 export default async (req) => {
@@ -580,7 +600,22 @@ export default async (req) => {
   try { body = await req.json() } catch { /* fine — a real browser trigger sends no body at all */ }
 
   const { userId, internal, error: authError } = await resolveCaller(req, body, supabaseUrl, anonKey)
-  if (!userId) { console.error('[scan-now] auth failed:', authError); return }
+  if (!userId) {
+    console.error('[scan-now] auth failed:', authError)
+    // 2026-08-26 audit fix: a request that carried an internal-secret
+    // header but still failed to resolve a caller means INTERNAL_SCAN_
+    // SECRET itself is missing or out of sync (a mismatch, not a normal
+    // unauthenticated browser hit) — the same silent chain-stopping risk
+    // fireNextRound's own fix above addresses, just from the receiving
+    // side instead of the firing side. An ordinary unauthenticated request
+    // (no such header — a stray bot hit, a stale bookmark) stays console-
+    // only on purpose, same as before; not every failed auth here is an
+    // ops problem worth paging over.
+    if (req.headers.get('x-internal-scan-secret')) {
+      await reportServerError('scan-now-background', new Error(`internal chain continuation failed auth: ${authError}`), { userId: body?.userId, stage: 'chain-auth', round: body?.round })
+    }
+    return
+  }
   const round = internal ? (Number(body?.round) || 1) : 1
   const chainStartedAt = internal && body?.chainStartedAt ? Number(body.chainStartedAt) : Date.now()
 
@@ -597,7 +632,21 @@ export default async (req) => {
   const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
 
   const startedAt = Date.now()
-  await setStatus(userId, { status: 'running', stage: 'starting', startedAt })
+  // 2026-08-26 audit fix: this first status write of every round used to
+  // stamp `startedAt` (this INVOCATION's own start), not `chainStartedAt`
+  // (the whole chain's start — see scan-status.js's own comment on why
+  // that distinction matters for its age-based timeout math). For round 1
+  // the two are identical, so this was invisible there — but for round 2+
+  // (a continuation potentially minutes into an already-running chain),
+  // this briefly overwrote the correct chain-start timestamp with a later
+  // one. If that invocation then died before its next status write (a
+  // slow onboarding/entitlements lookup, a hard kill), the blob was left
+  // stuck understating how long the chain had actually been running,
+  // delaying scan-status.js's timeout past its intended ceiling. The local
+  // `startedAt` variable itself stays — it's still correctly used below
+  // for THIS invocation's own remaining-time budget (elapsedBeforeBroaden
+  // etc.), a genuinely different measurement from the chain's total age.
+  await setStatus(userId, { status: 'running', stage: 'starting', startedAt: chainStartedAt })
 
   try {
     // Guard against duplicate triggers (a retried request, a second tab)
@@ -616,7 +665,7 @@ export default async (req) => {
         .limit(1)
       if (recentBatch?.length) {
         console.log('[scan-now] recent signals already exist for', userId, 'skipping')
-        await setStatus(userId, { status: 'done', reason: 'recent_signals_exist', signalsFound: recentBatch.length, startedAt, finishedAt: Date.now() })
+        await setStatus(userId, { status: 'done', reason: 'recent_signals_exist', signalsFound: recentBatch.length, startedAt: chainStartedAt, finishedAt: Date.now() })
         return
       }
     }
@@ -628,7 +677,7 @@ export default async (req) => {
       .single()
     if (!ob) {
       console.error('[scan-now] no onboarding row yet for', userId)
-      await setStatus(userId, { status: 'done', reason: 'no_onboarding', signalsFound: 0, startedAt, finishedAt: Date.now() })
+      await setStatus(userId, { status: 'done', reason: 'no_onboarding', signalsFound: 0, startedAt: chainStartedAt, finishedAt: Date.now() })
       return
     }
 
@@ -796,6 +845,6 @@ export default async (req) => {
   } catch (err) {
     console.error('[scan-now] failed for', userId, err.message)
     await reportServerError('scan-now-background', err, { userId })
-    await setStatus(userId, { status: 'done', reason: 'error', errorMessage: err.message, signalsFound: 0, startedAt, finishedAt: Date.now() })
+    await setStatus(userId, { status: 'done', reason: 'error', errorMessage: err.message, signalsFound: 0, startedAt: chainStartedAt, finishedAt: Date.now() })
   }
 }

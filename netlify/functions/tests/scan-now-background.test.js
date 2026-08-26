@@ -23,8 +23,10 @@ vi.mock('@netlify/blobs', () => ({ getStore: mockGetStore }))
 vi.mock('../lib/reportError.js', () => ({ reportServerError: mockReportServerError }))
 vi.mock('@supabase/supabase-js', () => ({ createClient: mockCreateClient }))
 
-function makeRequest(method = 'POST') {
-  return new Request('https://annie.example/.netlify/functions/scan-now-background', { method })
+function makeRequest(method = 'POST', { headers, body } = {}) {
+  return new Request('https://annie.example/.netlify/functions/scan-now-background', {
+    method, headers, body: body ? JSON.stringify(body) : undefined,
+  })
 }
 
 // Builds a `.from(table)` mock whose chainable methods all resolve to
@@ -84,6 +86,37 @@ describe('authentication', () => {
     mockCreateClient.mockReturnValue(makeSupabase({}))
     await handler(makeRequest())
     expect(mockSetJSON).not.toHaveBeenCalled()
+  })
+
+  // 2026-08-26 audit fix: a request carrying an x-internal-scan-secret
+  // header that still fails auth means the chain-continuation secret is
+  // missing or out of sync server-side — that's an ops problem (the scan
+  // chain silently stops short of its tier target), not an ordinary
+  // unauthenticated hit, so it's worth reporting.
+  it('reports a server error when a request carrying x-internal-scan-secret still fails auth', async () => {
+    mockGetAuthedUser.mockResolvedValue({ user: null, error: 'invalid_session' })
+    mockCreateClient.mockReturnValue(makeSupabase({}))
+    await handler(makeRequest('POST', {
+      headers: { 'x-internal-scan-secret': 'wrong-or-unconfigured-secret', 'Content-Type': 'application/json' },
+      body: { userId: 'user_123', round: 2 },
+    }))
+    expect(mockSetJSON).not.toHaveBeenCalled()
+    expect(mockReportServerError).toHaveBeenCalledTimes(1)
+    expect(mockReportServerError).toHaveBeenCalledWith(
+      'scan-now-background',
+      expect.any(Error),
+      expect.objectContaining({ stage: 'chain-auth', round: 2 })
+    )
+  })
+
+  // An ordinary unauthenticated browser hit (no internal-secret header —
+  // a stray bot, a stale bookmark) stays console-only, same as before this
+  // fix — not every failed auth here is an ops problem worth paging over.
+  it('does not report a server error for an ordinary unauthenticated request without the internal-secret header', async () => {
+    mockGetAuthedUser.mockResolvedValue({ user: null, error: 'invalid_session' })
+    mockCreateClient.mockReturnValue(makeSupabase({}))
+    await handler(makeRequest())
+    expect(mockReportServerError).not.toHaveBeenCalled()
   })
 })
 

@@ -4,6 +4,7 @@ import { getAuthedUser } from './lib/auth.js'
 import { reserveAnthropicTokens, reserveChatCall } from './lib/aiUsage.js'
 import { getEntitlements, resolveResourceCaps } from './lib/entitlements.js'
 import { createTimeoutFetch } from './lib/scanShared.js'
+import { parseIntEnv } from './lib/env.js'
 
 const DEFAULT_CHAT_PER_MINUTE_CAP = 20
 
@@ -77,7 +78,15 @@ export default async (req, context) => {
   const supabaseUrl = process.env.VITE_SUPABASE_URL
   const anonKey = process.env.VITE_SUPABASE_ANON_KEY
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!apiKey || !supabaseUrl || !anonKey) {
+  // 2026-08-26: serviceKey used to be missing from this guard. Every rate/
+  // spend cap below (reserveChatCall, getEntitlements, reserveAnthropicTokens)
+  // silently no-ops or falls back to an unlimited default when usageClient is
+  // null (see below) — so a missing/rotated-wrong SUPABASE_SERVICE_ROLE_KEY
+  // used to mean this endpoint kept returning normal 200s with every cap this
+  // comment block claims is "checked before the request body is even parsed"
+  // silently turned off, rather than the 500 a genuine misconfiguration
+  // should produce.
+  if (!apiKey || !supabaseUrl || !anonKey || !serviceKey) {
     return new Response(JSON.stringify({ error: 'Not configured' }), { status: 500, headers: { 'Content-Type': 'application/json' } })
   }
 
@@ -101,7 +110,7 @@ export default async (req, context) => {
   // codebase at all (unlike Apollo, which does). Both checked before the
   // request body is even parsed, so a rate-limited or over-cap caller never
   // reaches the Anthropic call.
-  const perMinuteCap = parseInt(process.env.CHAT_PER_MINUTE_CAP, 10) || DEFAULT_CHAT_PER_MINUTE_CAP
+  const perMinuteCap = parseIntEnv(process.env.CHAT_PER_MINUTE_CAP, DEFAULT_CHAT_PER_MINUTE_CAP)
   if (!(await reserveChatCall(usageClient, user.id, perMinuteCap))) {
     return new Response(JSON.stringify({ error: 'Too many requests — please slow down and try again in a minute.' }), { status: 429, headers: { 'Content-Type': 'application/json' } })
   }

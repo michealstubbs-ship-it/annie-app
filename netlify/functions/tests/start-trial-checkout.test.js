@@ -14,6 +14,11 @@
 // compare, so there's no external dependency and no Stripe mock needed for
 // it — see the "annie100 case-insensitivity" test below for the one
 // behavior that matters most from that change (Michael types it in caps).
+//
+// 2026-08-26: the free-month path now also checks a real redemption count
+// against a cap (see start-trial-checkout.js's own header for why — the
+// link has no expiry/rate-limit otherwise). That check is real Supabase
+// I/O, mocked below the same way other function tests mock it.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const { mockCheckoutCreate, mockStripeCtor } = vi.hoisted(() => {
@@ -26,7 +31,21 @@ const { mockCheckoutCreate, mockStripeCtor } = vi.hoisted(() => {
   }
 })
 
+const { mockCountQuery, mockCreateClient, mockAlertIfConfigured } = vi.hoisted(() => {
+  const mockCountQuery = vi.fn()
+  const mockCreateClient = vi.fn(() => ({
+    from: () => ({ select: () => ({ eq: mockCountQuery }) }),
+  }))
+  const mockAlertIfConfigured = vi.fn()
+  return { mockCountQuery, mockCreateClient, mockAlertIfConfigured }
+})
+
 vi.mock('stripe', () => ({ default: mockStripeCtor }))
+vi.mock('@supabase/supabase-js', () => ({ createClient: mockCreateClient }))
+vi.mock('../lib/scanShared.js', async (importOriginal) => {
+  const actual = await importOriginal()
+  return { ...actual, alertIfConfigured: mockAlertIfConfigured }
+})
 
 function makeRequest(query = '') {
   return new Request(`https://annie.example/api/start-trial-checkout${query}`, { method: 'GET' })
@@ -42,8 +61,13 @@ beforeEach(async () => {
   process.env.STRIPE_PRICE_STARTER_MONTHLY = 'price_starter_month'
   process.env.STRIPE_PRICE_GROWTH_MONTHLY = 'price_growth_month'
   process.env.STRIPE_PRICE_TEAM_MONTHLY = 'price_team_month'
+  process.env.VITE_SUPABASE_URL = 'https://example.supabase.co'
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service_role_x'
 
   mockCheckoutCreate.mockResolvedValue({ url: 'https://checkout.stripe.com/session/abc' })
+  // Well under the default cap of 50 — the free-month path is allowed
+  // through unless a specific test says otherwise.
+  mockCountQuery.mockResolvedValue({ count: 3, error: null })
 
   vi.resetModules()
   ;({ default: handler } = await import('../start-trial-checkout.js'))
@@ -74,10 +98,12 @@ it('always requires a card for a normal signup, even though the trial makes $0 d
   }))
   const call = mockCheckoutCreate.mock.calls[0][0]
   expect(call.subscription_data.metadata.free_month_code).toBeUndefined()
+  // A normal signup never even needs to count redemptions.
+  expect(mockCountQuery).not.toHaveBeenCalled()
 })
 
 describe('the ANNIE100 free-month code', () => {
-  it('skips the card and gives a 30-day trial for ?code=annie100', async () => {
+  it('skips the card and gives a 30-day trial for ?code=annie100, under the redemption cap', async () => {
     const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
     expect(res.status).toBe(302)
     expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
@@ -108,6 +134,61 @@ describe('the ANNIE100 free-month code', () => {
       payment_method_collection: 'always',
       subscription_data: expect.objectContaining({ trial_period_days: 7 }),
     }))
+    // An unrecognized code isn't the free-month path at all — no reason
+    // to spend a Supabase round-trip counting redemptions for it.
+    expect(mockCountQuery).not.toHaveBeenCalled()
+  })
+
+  describe('redemption cap', () => {
+    it('quietly falls back to the standard flow once the cap is reached, and alerts', async () => {
+      mockCountQuery.mockResolvedValue({ count: 50, error: null }) // == default cap
+      const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
+      expect(res.status).toBe(302)
+      expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
+        payment_method_collection: 'always',
+        subscription_data: expect.objectContaining({ trial_period_days: 7 }),
+      }))
+      expect(mockAlertIfConfigured).toHaveBeenCalledWith(expect.stringContaining('redemption cap'))
+    })
+
+    it('respects a FREE_MONTH_MAX_REDEMPTIONS override', async () => {
+      process.env.FREE_MONTH_MAX_REDEMPTIONS = '2'
+      mockCountQuery.mockResolvedValue({ count: 2, error: null })
+      vi.resetModules()
+      ;({ default: handler } = await import('../start-trial-checkout.js'))
+      const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
+      expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({ payment_method_collection: 'always' }))
+      delete process.env.FREE_MONTH_MAX_REDEMPTIONS
+    })
+
+    // 2026-08-26 audit finding: parseInt(env, 10) || DEFAULT silently
+    // ignored an explicit "0" (falsy, so it fell through to the 50
+    // default) — the one value an operator would actually set to
+    // immediately retire the code. Now fixed via parseIntEnv (env.js).
+    it('respects FREE_MONTH_MAX_REDEMPTIONS=0 as "retire the code now", not as unset', async () => {
+      process.env.FREE_MONTH_MAX_REDEMPTIONS = '0'
+      mockCountQuery.mockResolvedValue({ count: 0, error: null })
+      vi.resetModules()
+      ;({ default: handler } = await import('../start-trial-checkout.js'))
+      const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
+      expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({ payment_method_collection: 'always' }))
+      delete process.env.FREE_MONTH_MAX_REDEMPTIONS
+    })
+
+    it('fails closed (denies the free month, does not throw) when the redemption count query errors', async () => {
+      mockCountQuery.mockResolvedValue({ count: null, error: { message: 'db down' } })
+      const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
+      expect(res.status).toBe(302)
+      expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({ payment_method_collection: 'always' }))
+    })
+
+    it('fails closed when Supabase is not configured, rather than allowing unlimited free months', async () => {
+      delete process.env.VITE_SUPABASE_URL
+      vi.resetModules()
+      ;({ default: handler } = await import('../start-trial-checkout.js'))
+      const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
+      expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({ payment_method_collection: 'always' }))
+    })
   })
 })
 

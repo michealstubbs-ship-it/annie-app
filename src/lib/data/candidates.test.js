@@ -44,6 +44,12 @@ describe('listCandidatesWithJobs', () => {
   it('returns an empty array rather than null when there are no rows', async () => {
     expect(await listCandidatesWithJobs('user_1')).toEqual([])
   })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listCandidatesWithJobs('user_1')).rejects.toEqual({ message: 'db down' })
+  })
 })
 
 describe('createCandidate', () => {
@@ -79,6 +85,12 @@ describe('listCandidateJobLinks', () => {
     expect(builder.not).toHaveBeenCalledWith('job_id', 'is', null)
     expect(result).toEqual([{ job_id: 'job1' }])
   })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listCandidateJobLinks('user_1')).rejects.toEqual({ message: 'db down' })
+  })
 })
 
 describe('listCandidatesForMatching', () => {
@@ -86,6 +98,12 @@ describe('listCandidatesForMatching', () => {
     await listCandidatesForMatching('user_1')
     expect(builder.select).toHaveBeenCalledWith('id, name, role, industry, status, company, notes')
     expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listCandidatesForMatching('user_1')).rejects.toEqual({ message: 'db down' })
   })
 })
 
@@ -95,5 +113,11 @@ describe('listCandidatesMinimal', () => {
     expect(builder.select).toHaveBeenCalledWith('id, name')
     expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
     expect(builder.order).toHaveBeenCalledWith('name')
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listCandidatesMinimal('user_1')).rejects.toEqual({ message: 'db down' })
   })
 })

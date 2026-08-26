@@ -40,15 +40,24 @@ export default function Meetings() {
 
   async function load() {
     setLoading(true)
+    setListError('')
     // 2026-08-24 Task 2: routed through lib/data/* (previously duplicated
     // inline here) so this table's query shape lives in exactly one place.
-    const [m, c] = await Promise.all([
-      listMeetingsWithContacts(user.id),
-      listContactsMinimal(user.id),
-    ])
-    setMeetings(m)
-    setContacts(c)
-    setLoading(false)
+    // 2026-08-26 audit fix: each of these now throws on a real Supabase
+    // error instead of quietly returning [] — previously that looked
+    // identical to "you have no meetings/contacts yet".
+    try {
+      const [m, c] = await Promise.all([
+        listMeetingsWithContacts(user.id),
+        listContactsMinimal(user.id),
+      ])
+      setMeetings(m)
+      setContacts(c)
+    } catch (err) {
+      setListError(err.message || 'Could not load your meetings. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const { upcoming, past } = useMemo(() => {

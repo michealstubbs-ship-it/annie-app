@@ -39,7 +39,14 @@ export default async (req) => {
     // is what stops this from flagging a legitimately still-chaining
     // Growth/Team scan as dead partway through its longer allowance.
     if (record?.status === 'running' && record?.startedAt) {
-      const tierCeilingMs = SCAN_TIER_CONFIG[record.tier]?.maxWallClockMs ?? 10 * 60 * 1000
+      // 2026-08-26 audit fix: the fallback for a missing/unrecognized tier
+      // used to be a separately hardcoded `10 * 60 * 1000` — it happened to
+      // equal starter's own maxWallClockMs today, but nothing kept them in
+      // sync; a future change to starter's ceiling would silently leave
+      // this fallback stale. References the real config value instead, same
+      // "unknown tier degrades to starter" default entitlements.js itself
+      // uses (see getEntitlements/resolveResourceCaps).
+      const tierCeilingMs = SCAN_TIER_CONFIG[record.tier]?.maxWallClockMs ?? SCAN_TIER_CONFIG.starter.maxWallClockMs
       const timeoutMs = tierCeilingMs + 4 * 60 * 1000
       const ageMs = Date.now() - record.startedAt
       if (ageMs > timeoutMs) {

@@ -93,4 +93,17 @@ describe('getTeamActivitySummary', () => {
     expect(fromMock).toHaveBeenCalledWith('intelligence_signals')
     expect(fromMock).toHaveBeenCalledWith('todays_action_state')
   })
+
+  // 2026-08-26 audit fix: either query's error used to be discarded — a
+  // failed query silently produced an all-zero summary row indistinguishable
+  // from a team that's genuinely had no activity this week.
+  it('throws when the signals query errors, instead of silently returning a zeroed summary', async () => {
+    signalsResult = { data: null, error: { message: 'signals db down' } }
+    await expect(getTeamActivitySummary(['u1'])).rejects.toEqual({ message: 'signals db down' })
+  })
+
+  it('throws when the action-state query errors, instead of silently returning a zeroed summary', async () => {
+    actionStateResult = { data: null, error: { message: 'action-state db down' } }
+    await expect(getTeamActivitySummary(['u1'])).rejects.toEqual({ message: 'action-state db down' })
+  })
 })

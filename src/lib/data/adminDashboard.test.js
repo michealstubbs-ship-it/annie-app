@@ -40,6 +40,7 @@ describe('summarizeAccounts', () => {
       seatsLive: 0,
       canceledLast30d: 0,
       tierCounts: { starter: 0, growth: 0, team: 0 },
+      tierMrr: { starter: 0, growth: 0, team: 0 },
       atRisk: [],
     })
   })
@@ -50,6 +51,7 @@ describe('summarizeAccounts', () => {
     expect(result.activeAccounts).toBe(1)
     expect(result.seatsLive).toBe(1)
     expect(result.tierCounts.starter).toBe(1)
+    expect(result.tierMrr.starter).toBe(79)
   })
 
   it('multiplies a Team subscription by its seat count, on the yearly rate', () => {
@@ -57,6 +59,25 @@ describe('summarizeAccounts', () => {
     expect(result.mrr).toBe(84 * 4)
     expect(result.seatsLive).toBe(4)
     expect(result.tierCounts.team).toBe(1)
+    expect(result.tierMrr.team).toBe(84 * 4)
+  })
+
+  // 2026-08-26 audit fix: tierMrr used to not exist at all — AdminOverview.jsx
+  // approximated it client-side as tierCounts * t.monthly, which was wrong
+  // for any annual-billing or per-seat (Team) account. This pins that the
+  // per-tier sum is real, billing_interval- and seat-aware revenue, and that
+  // it excludes non-live accounts the same way the overall mrr total does.
+  it('sums real per-row revenue into tierMrr, distinct per tier, on top of the aggregate mrr', () => {
+    const result = summarizeAccounts([
+      { tier: 'starter', status: 'active', billing_interval: 'year', seats: 1 }, // 69/mo, discounted
+      { tier: 'starter', status: 'active', billing_interval: 'month', seats: 1 }, // 79/mo
+      { tier: 'growth', status: 'active', billing_interval: 'month', seats: 1 }, // 129/mo
+      { tier: 'team', status: 'past_due', billing_interval: 'month', seats: 5 }, // not live — excluded
+    ])
+    expect(result.tierMrr.starter).toBe(69 + 79)
+    expect(result.tierMrr.growth).toBe(129)
+    expect(result.tierMrr.team).toBe(0)
+    expect(result.mrr).toBe(69 + 79 + 129)
   })
 
   it('treats trialing the same as active for the live count, but not for MRR purposes beyond the normal price lookup', () => {

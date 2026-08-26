@@ -45,6 +45,12 @@ describe('listActiveSignals', () => {
   it('returns an empty array rather than null when there are no rows', async () => {
     expect(await listActiveSignals('user_1')).toEqual([])
   })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listActiveSignals('user_1')).rejects.toEqual({ message: 'db down' })
+  })
 })
 
 describe('markSignalSeen', () => {

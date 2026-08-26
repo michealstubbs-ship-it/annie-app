@@ -36,17 +36,26 @@ export default function Tasks() {
 
   async function load() {
     setLoading(true)
+    setListError('')
     // 2026-08-24 Task 2: routed through lib/data/* (previously duplicated
     // inline here) so this table's query shape lives in exactly one place.
-    const [t, c, cd] = await Promise.all([
-      listTasksWithLinks(user.id),
-      listContactsMinimal(user.id),
-      listCandidatesMinimal(user.id),
-    ])
-    setTasks(t)
-    setContacts(c)
-    setCandidates(cd)
-    setLoading(false)
+    // 2026-08-26 audit fix: each of these now throws on a real Supabase
+    // error instead of quietly returning [] — previously that looked
+    // identical to "you have no tasks/contacts/candidates yet".
+    try {
+      const [t, c, cd] = await Promise.all([
+        listTasksWithLinks(user.id),
+        listContactsMinimal(user.id),
+        listCandidatesMinimal(user.id),
+      ])
+      setTasks(t)
+      setContacts(c)
+      setCandidates(cd)
+    } catch (err) {
+      setListError(err.message || 'Could not load your tasks. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const { overdue, today, upcoming, noDate, done } = useMemo(() => {

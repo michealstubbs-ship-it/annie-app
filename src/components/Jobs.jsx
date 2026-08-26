@@ -37,17 +37,26 @@ export default function Jobs() {
 
   async function load() {
     setLoading(true)
+    setListError('')
     // 2026-08-24 Task 2: routed through lib/data/* (previously duplicated
     // inline here) so this table's query shape lives in exactly one place.
-    const [j, c] = await Promise.all([
-      listJobsWithCompanies(user.id),
-      listCandidateJobLinks(user.id),
-    ])
-    setJobs(j)
-    const counts = {}
-    c.forEach(row => { counts[row.job_id] = (counts[row.job_id] || 0) + 1 })
-    setCandCounts(counts)
-    setLoading(false)
+    // 2026-08-26 audit fix: each of these now throws on a real Supabase
+    // error instead of quietly returning [] — previously that looked
+    // identical to "you have no jobs yet".
+    try {
+      const [j, c] = await Promise.all([
+        listJobsWithCompanies(user.id),
+        listCandidateJobLinks(user.id),
+      ])
+      setJobs(j)
+      const counts = {}
+      c.forEach(row => { counts[row.job_id] = (counts[row.job_id] || 0) + 1 })
+      setCandCounts(counts)
+    } catch (err) {
+      setListError(err.message || 'Could not load your jobs. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const { open, closed } = useMemo(() => {

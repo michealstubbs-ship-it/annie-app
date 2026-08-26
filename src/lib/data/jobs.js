@@ -10,28 +10,34 @@ import { supabase } from '../supabase'
 // 2026-08-24: jobs is team-scoped — RLS already restricts every row to the
 // caller's active team, so none of the reads below add a client-side
 // user_id filter on top of it.
+// 2026-08-26 audit fix: every read below now throws on a Supabase error
+// instead of silently falling back to `data || []` — see contacts.js's
+// header comment for the full reasoning (same fix, same pattern).
 export async function listJobsMinimal(userId) {
-  const { data } = await supabase.from('jobs').select('id, title, status, company_id')
+  const { data, error } = await supabase.from('jobs').select('id, title, status, company_id')
+  if (error) throw error
   return data || []
 }
 
 // Candidates.jsx's "attach to a job" picker — only jobs still open.
 export async function listActiveJobsForPicker(userId) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('jobs')
     .select('id, title, companies(name)')
     .in('status', ['active', 'onhold'])
     .order('title')
+  if (error) throw error
   return data || []
 }
 
 // Jobs.jsx's own list — every job, newest first, with just enough of its
 // linked company to show client name/industry/location on the card.
 export async function listJobsWithCompanies(userId) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('jobs')
     .select('*, companies(name, industry, location)')
     .order('created_at', { ascending: false })
+  if (error) throw error
   return data || []
 }
 

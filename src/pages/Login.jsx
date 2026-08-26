@@ -1,6 +1,18 @@
 import React, { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import ErrorBanner from '../components/ErrorBanner'
+import Turnstile from '../components/Turnstile'
+
+// 2026-08-26 audit finding: Turnstile.jsx and verify-turnstile.js both
+// already existed, and both had comments claiming Login.jsx called them
+// before signUp — it never actually did. Signup had zero bot verification
+// wired up despite both halves of the mechanism being built. Both
+// TURNSTILE_SECRET_KEY and VITE_TURNSTILE_SITE_KEY are already set in
+// production, so this closes a real, live gap rather than adding a new
+// dependency. TURNSTILE_ENABLED mirrors Turnstile.jsx's own "no site key
+// configured -> render nothing" fallback, so local/dev signup without
+// Cloudflare configured still isn't blocked.
+const TURNSTILE_ENABLED = Boolean(import.meta.env.VITE_TURNSTILE_SITE_KEY)
 
 export default function Login() {
   const { signIn, signUp, resetPassword, resendConfirmation } = useAuth()
@@ -10,6 +22,7 @@ export default function Login() {
   const [success, setSuccess] = useState('')
   const [showResend, setShowResend] = useState(false)
   const [showExistingAccount, setShowExistingAccount] = useState(false)
+  const [turnstileToken, setTurnstileToken] = useState(null)
 
   const [form, setForm] = useState({
     email: '', password: '', fullName: '', firmName: '',
@@ -48,6 +61,21 @@ export default function Login() {
         if (!form.firmName.trim()) return setError('Please enter your firm name')
         if (form.password.length < 8) return setError('Password must be at least 8 characters')
         if (!agreedToTerms) return setError('Please agree to the Terms of Service and Privacy Policy to continue')
+        if (TURNSTILE_ENABLED) {
+          if (!turnstileToken) return setError('Please complete the verification challenge below.')
+          try {
+            const verifyRes = await fetch('/.netlify/functions/verify-turnstile', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token: turnstileToken }),
+            })
+            if (!verifyRes.ok) {
+              return setError('Verification failed. Please try the challenge again.')
+            }
+          } catch {
+            return setError('Could not verify you’re not a bot right now. Please try again.')
+          }
+        }
 
         const { data, error } = await signUp(form.email, form.password, form.fullName, form.firmName)
         if (error) {
@@ -184,7 +212,14 @@ export default function Login() {
               </div>
             )}
 
-            <button type="submit" disabled={loading || (mode === 'signup' && !agreedToTerms)} className="btn-primary w-full mt-2">
+            {mode === 'signup' && TURNSTILE_ENABLED && (
+              <Turnstile
+                onVerify={token => setTurnstileToken(token)}
+                onExpire={() => setTurnstileToken(null)}
+              />
+            )}
+
+            <button type="submit" disabled={loading || (mode === 'signup' && !agreedToTerms) || (mode === 'signup' && TURNSTILE_ENABLED && !turnstileToken)} className="btn-primary w-full mt-2">
               {loading ? 'Please wait...' : mode === 'login' ? 'Sign in' : mode === 'signup' ? 'Create account' : 'Send reset link'}
             </button>
           </form>

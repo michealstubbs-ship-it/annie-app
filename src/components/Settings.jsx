@@ -3,8 +3,17 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { callChat } from '../lib/callChat'
+import { useScanStatusPoll } from '../lib/useScanStatusPoll'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBanner from './ErrorBanner'
+
+// Matches the old LOCAL_POLL_WINDOW_MS this page used to hand-roll: local
+// feedback for up to 3 minutes, matching how long a scan usually takes to
+// at least report *something*. If it's still running after that, Overview's
+// own longer-lived poll (autoDetectExisting, up to the scan's real
+// wall-clock budget) picks up the same status via the same localStorage
+// flag, so nothing is lost by not waiting here forever.
+const LOCAL_POLL_WINDOW_MS = 3 * 60 * 1000
 
 export default function Settings() {
   const navigate = useNavigate()
@@ -13,6 +22,7 @@ export default function Settings() {
   const [onboarding, setOnboarding] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [profileError, setProfileError] = useState('')
 
   const [pastedMessages, setPastedMessages] = useState('')
   const [writingStyle, setWritingStyle] = useState('')
@@ -39,9 +49,14 @@ export default function Settings() {
   // self-serve path. The backend now cooldown-gates it (see
   // RESCAN_COOLDOWN_MS in scan-now-background.js) instead of blocking
   // forever, so repeated use is throttled, not permanently locked out.
-  const [scanState, setScanState] = useState('idle') // 'idle' | 'starting' | 'running' | 'done'
-  const [scanResult, setScanResult] = useState(null)
+  // 2026-08-26 audit fix: this used to hand-roll its own copy of the exact
+  // fetch + localStorage-flag + recursive-setTimeout polling logic
+  // useScanStatusPoll.js already existed to share with Overview.jsx —
+  // routed through the real hook now instead of a second, drifting copy.
+  const [starting, setStarting] = useState(false)
   const [scanError, setScanError] = useState('')
+  const { polling: scanRunning, result: scanResult, start: startScanPoll } = useScanStatusPoll({ user, windowMs: LOCAL_POLL_WINDOW_MS })
+  const scanState = starting ? 'starting' : scanRunning ? 'running' : scanResult ? 'done' : 'idle'
 
   useEffect(() => {
     if (profile) setForm({ full_name: profile.full_name || '', firm_name: profile.firm_name || '', job_title: profile.job_title || '', phone: profile.phone || '' })
@@ -72,9 +87,20 @@ export default function Settings() {
 
   async function saveProfile() {
     setSaving(true)
-    await supabase.from('profiles').update({ ...form, updated_at: new Date().toISOString() }).eq('id', user.id)
-    await refreshProfile()
+    setProfileError('')
+    // 2026-08-26 audit finding: this write's error used to go unchecked —
+    // the UI showed "Saved!" regardless of whether the update actually
+    // persisted, the same unchecked-write bug already found (and fixed) in
+    // stripe-webhook.js's subscriptions upsert. Every sibling save handler
+    // in this codebase (Companies.jsx, Contacts.jsx, etc.) already checks
+    // `error` and surfaces it — this brings Settings in line.
+    const { error } = await supabase.from('profiles').update({ ...form, updated_at: new Date().toISOString() }).eq('id', user.id)
     setSaving(false)
+    if (error) {
+      setProfileError('Could not save your profile. Please try again.')
+      return
+    }
+    await refreshProfile()
     setSaved(true)
     setTimeout(() => setSaved(false), 3000)
   }
@@ -108,17 +134,24 @@ Only return the style profile text, nothing else.`
 
   async function saveWritingStyle() {
     setStyleSaving(true)
-    await supabase.from('onboarding').update({ writing_style: writingStyle.trim() || null }).eq('user_id', user.id)
-    setOnboarding(prev => prev ? { ...prev, writing_style: writingStyle.trim() || null } : prev)
+    setStyleError('')
+    // Same unchecked-write fix as saveProfile above — this used to
+    // optimistically update local state and show "Saved!" even if the
+    // write itself failed.
+    const { error } = await supabase.from('onboarding').update({ writing_style: writingStyle.trim() || null }).eq('user_id', user.id)
     setStyleSaving(false)
+    if (error) {
+      setStyleError('Could not save your writing style. Please try again.')
+      return
+    }
+    setOnboarding(prev => prev ? { ...prev, writing_style: writingStyle.trim() || null } : prev)
     setStyleSaved(true)
     setTimeout(() => setStyleSaved(false), 3000)
   }
 
   async function runNewScan() {
-    setScanState('starting')
+    setStarting(true)
     setScanError('')
-    setScanResult(null)
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) throw new Error('Your session has expired. Please log in again.')
@@ -131,45 +164,17 @@ Only return the style profile text, nothing else.`
         headers: { Authorization: `Bearer ${session.access_token}` },
       }).catch(() => {})
 
-      // Same flag Overview.jsx already watches for the post-onboarding scan
-      // — setting it here means the "Annie is researching" banner shows up
-      // there too if the user navigates over, for free, no separate wiring.
-      try { localStorage.setItem('annie_scan_started_' + user.id, String(Date.now())) } catch {}
-
-      setScanState('running')
-      pollScanStatus(Date.now())
+      // useScanStatusPoll.start() sets the same localStorage flag
+      // Overview.jsx watches for the post-onboarding scan — so the "Annie
+      // is researching" banner shows up there too if the user navigates
+      // over, for free, no separate wiring — and begins polling scan-
+      // status.js itself.
+      startScanPoll()
     } catch (err) {
-      setScanState('idle')
       setScanError(err.message || 'Could not start a new scan. Please try again.')
+    } finally {
+      setStarting(false)
     }
-  }
-
-  async function pollScanStatus(startedAt) {
-    // Local feedback on this page for up to 3 minutes, matching how long a
-    // scan usually takes to at least report *something*. If it's still
-    // running after that, Overview's own longer-lived poll (up to the
-    // scan's real 15-minute budget) picks up the same status via the same
-    // localStorage flag, so nothing is lost by not waiting here forever.
-    const LOCAL_POLL_WINDOW_MS = 3 * 60 * 1000
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session?.access_token) { setScanState('idle'); return }
-
-    const resp = await fetch('/.netlify/functions/scan-status', {
-      headers: { Authorization: `Bearer ${session.access_token}` },
-    }).then(r => r.json()).catch(() => ({ status: 'unknown' }))
-
-    if (resp?.status === 'done') {
-      setScanState('done')
-      setScanResult(resp)
-      try { localStorage.removeItem('annie_scan_started_' + user.id) } catch {}
-      return
-    }
-    if (Date.now() - startedAt > LOCAL_POLL_WINDOW_MS) {
-      setScanState('done')
-      setScanResult({ status: 'done', reason: 'still_running' })
-      return
-    }
-    setTimeout(() => pollScanStatus(startedAt), 5000)
   }
 
   return (
@@ -190,6 +195,7 @@ Only return the style profile text, nothing else.`
           <div><label className="label" htmlFor="settings-phone">Phone</label><input id="settings-phone" className="input" type="tel" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
           <div><label className="label" htmlFor="settings-email">Email</label><input id="settings-email" className="input opacity-60 cursor-not-allowed" value={user?.email || ''} disabled /></div>
         </div>
+        <ErrorBanner>{profileError}</ErrorBanner>
         <div className="flex items-center gap-3 mt-5">
           <button onClick={saveProfile} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save changes'}</button>
           {saved && <span className="text-green-600 text-sm font-medium">Saved!</span>}
@@ -227,6 +233,7 @@ Only return the style profile text, nothing else.`
           value={writingStyle}
           onChange={e => setWritingStyle(e.target.value)}
         />
+        <ErrorBanner>{styleError}</ErrorBanner>
         <div className="flex items-center gap-3 mt-3">
           <button onClick={saveWritingStyle} disabled={styleSaving} className="btn-primary">{styleSaving ? 'Saving...' : 'Save style profile'}</button>
           {styleSaved && <span className="text-green-600 text-sm font-medium">Saved!</span>}

@@ -19,8 +19,13 @@ import { supabase } from '../supabase'
 // across the team. A team owner gets their own separate, read-only,
 // explicitly-additive way to see teammates' activity — see
 // lib/data/teamActivity.js — rather than this list ever silently widening.
+// 2026-08-26 audit fix: throws on a Supabase error instead of silently
+// falling back to `data || []` — see contacts.js's header comment for the
+// full reasoning. Here the throw is caught by useSupabaseQuery (see
+// loadFeedPageData in IntelligenceFeed.jsx), which already sets its own
+// `error` state for exactly this case.
 export async function listActiveSignals(userId) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('intelligence_signals')
     .select('*')
     .eq('user_id', userId)
@@ -28,6 +33,7 @@ export async function listActiveSignals(userId) {
     .neq('signal_type', 'live_job')
     .order('found_at', { ascending: false })
     .limit(200)
+  if (error) throw error
   return data || []
 }
 

@@ -1,3 +1,5 @@
+import { parseIntEnv } from './env.js'
+
 // Soft-gate tier lookup, shared by every Netlify function that needs to
 // know "what plan is this caller's team on" (chat.js's message cap today;
 // onboarding's research depth and LinkedIn re-import-on-demand are the
@@ -158,15 +160,15 @@ export function resolveResourceCaps(tier) {
   return {
     apollo: {
       userDailyCap: t.apolloUserDailyCap,
-      platformDailyCap: parseInt(process.env.APOLLO_DAILY_CREDIT_CAP, 10) || DEFAULT_PLATFORM_CAPS.apollo,
+      platformDailyCap: parseIntEnv(process.env.APOLLO_DAILY_CREDIT_CAP, DEFAULT_PLATFORM_CAPS.apollo),
     },
     theirStack: {
       userDailyCap: t.theirStackUserDailyCap,
-      platformDailyCap: parseInt(process.env.THEIRSTACK_DAILY_CREDIT_CAP, 10) || DEFAULT_PLATFORM_CAPS.theirStack,
+      platformDailyCap: parseIntEnv(process.env.THEIRSTACK_DAILY_CREDIT_CAP, DEFAULT_PLATFORM_CAPS.theirStack),
     },
     anthropicTokens: {
       userDailyCap: t.anthropicUserDailyTokenCap,
-      platformDailyCap: parseInt(process.env.ANTHROPIC_DAILY_TOKEN_CAP, 10) || DEFAULT_PLATFORM_CAPS.anthropicTokens,
+      platformDailyCap: parseIntEnv(process.env.ANTHROPIC_DAILY_TOKEN_CAP, DEFAULT_PLATFORM_CAPS.anthropicTokens),
     },
   }
 }

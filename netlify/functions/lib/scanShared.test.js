@@ -11,7 +11,7 @@ import {
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs,
-  looksTruncatedByTokenLimit,
+  looksTruncatedByTokenLimit, getLearnedSources,
 } from './scanShared.js'
 
 // Full behavioural coverage for extractJson now lives in
@@ -407,6 +407,48 @@ describe('discoverTheirStackJobs', () => {
     expect(await discoverTheirStackJobs('bad-key', { sectors: [], functions: [], locations: ['UAE / GCC'] }, supabase)).toEqual([])
     vi.unstubAllGlobals()
   })
+
+  // 2026-08-26 audit fix: a flat `limit` (10) credits used to be reserved
+  // and never reconciled, regardless of how many jobs TheirStack actually
+  // returned (or whether the call even succeeded) — permanently inflating
+  // internal cost tracking relative to real per-job billing.
+  describe('credit reconciliation (2026-08-26 fix)', () => {
+    it('refunds the reservation gap when TheirStack returns fewer jobs than the limit reserved', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ job_title: 'Head of Product', company: 'Skyro', url: 'https://x.com/1' }] }), // 1 of 10 reserved
+      }))
+      const rpc = vi.fn().mockResolvedValue({ data: 'ok', error: null })
+      await discoverTheirStackJobs('key123', { sectors: [], functions: [], locations: ['UAE / GCC'] }, { rpc }, 'u1')
+      expect(rpc).toHaveBeenCalledWith('theirstack_release_credits', { p_credits: 9, p_user_id: 'u1' })
+      vi.unstubAllGlobals()
+    })
+
+    it('refunds the whole reservation on a non-ok response, since nothing was actually billed', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401, text: async () => 'unauthorized' }))
+      const rpc = vi.fn().mockResolvedValue({ data: 'ok', error: null })
+      await discoverTheirStackJobs('bad-key', { sectors: [], functions: [], locations: ['UAE / GCC'] }, { rpc }, 'u1')
+      expect(rpc).toHaveBeenCalledWith('theirstack_release_credits', { p_credits: 10, p_user_id: 'u1' })
+      vi.unstubAllGlobals()
+    })
+
+    it('refunds the whole reservation when the call throws outright', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
+      const rpc = vi.fn().mockResolvedValue({ data: 'ok', error: null })
+      await discoverTheirStackJobs('key123', { sectors: [], functions: [], locations: ['UAE / GCC'] }, { rpc }, 'u1')
+      expect(rpc).toHaveBeenCalledWith('theirstack_release_credits', { p_credits: 10, p_user_id: 'u1' })
+      vi.unstubAllGlobals()
+    })
+
+    it('does not issue a refund when the API returns exactly the full limit of jobs', async () => {
+      const tenJobs = Array.from({ length: 10 }, (_, i) => ({ job_title: `Role ${i}`, company: 'Skyro', url: `https://x.com/${i}` }))
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: tenJobs }) }))
+      const rpc = vi.fn().mockResolvedValue({ data: 'ok', error: null })
+      await discoverTheirStackJobs('key123', { sectors: [], functions: [], locations: ['UAE / GCC'] }, { rpc }, 'u1')
+      expect(rpc).not.toHaveBeenCalledWith('theirstack_release_credits', expect.anything())
+      vi.unstubAllGlobals()
+    })
+  })
 })
 
 describe('dropGenericHiringWhereLiveJobsExist (Live Jobs "replace, not supplement")', () => {
@@ -508,11 +550,11 @@ describe('normalizeCompanyKey', () => {
 // run. A mock supabase client stands in for the one real dependency; global
 // fetch is stubbed so a cache hit can be proven by asserting it was never
 // even called.
-function makeMockSupabase({ cachedRow = null } = {}) {
+function makeMockSupabase({ cachedRow = null, readError = null } = {}) {
   const upsertCalls = []
   const rpc = vi.fn().mockResolvedValue({ data: true, error: null })
   const from = vi.fn((table) => ({
-    select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: cachedRow, error: null }) }) }) }),
+    select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: cachedRow, error: readError }) }) }) }),
     upsert: async (payload) => { upsertCalls.push(payload); return { data: null, error: null } },
   }))
   return { supabase: { from, rpc }, upsertCalls, rpc }
@@ -567,6 +609,20 @@ describe('verifyContact — company + title-bucket contact cache', () => {
     expect(result).toBeNull()
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(rpc).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  // 2026-08-26 audit fix: a query-level cache-read failure (RLS denial, a
+  // bad filter) used to fall through silently, indistinguishable in the
+  // logs from an ordinary cache miss.
+  it('logs a query-level cache-read failure instead of silently treating it as a cache miss', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ people: [] }) })
+    vi.stubGlobal('fetch', fetchSpy)
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { supabase } = makeMockSupabase({ readError: { message: 'RLS denied' } })
+    await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123')
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('contact cache lookup failed'), 'RLS denied')
+    consoleSpy.mockRestore()
     vi.unstubAllGlobals()
   })
 })
@@ -972,6 +1028,29 @@ describe('enrichCompany — logo resolution fallback chain', () => {
     const result = await enrichCompany('apollo-key', 'Zenith Group', supabase)
     expect(result.matched).toBe(false)
     expect(result.logo_url).toBe('https://logo.clearbit.com/zenith.io')
+    vi.unstubAllGlobals()
+  })
+
+  // 2026-08-26 audit fix: a query-level cache-read failure (RLS denial, a
+  // bad filter) used to fall through silently, indistinguishable in the
+  // logs from an ordinary cache miss.
+  it('logs a query-level cache-read failure instead of silently treating it as a cache miss', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const supabase = {
+      from: () => ({
+        select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: { message: 'RLS denied' } }) }) }),
+        upsert: async () => ({ data: null, error: null }),
+      }),
+      rpc: vi.fn().mockResolvedValue({ data: true, error: null }),
+    }
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [] }) }
+      if (url.includes('autocomplete.clearbit.com')) return { ok: true, json: async () => ([]) }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    await enrichCompany('apollo-key', 'Acme Ltd', supabase)
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('company_enrichment cache lookup failed'), 'RLS denied')
+    consoleSpy.mockRestore()
     vi.unstubAllGlobals()
   })
 
@@ -1407,5 +1486,39 @@ describe('createTimeoutFetch (2026-08-24 scan-now-background.js stall fix)', () 
     const resp = await timeoutFetch('https://example.supabase.co/rest/v1/x')
     expect(resp.ok).toBe(true)
     vi.unstubAllGlobals()
+  })
+})
+
+describe('getLearnedSources — error handling (2026-08-26 audit fix)', () => {
+  // The error was already checked (correctly falls back to `empty` instead
+  // of mistaking a query-level failure for "no learned sources yet"), but
+  // never logged — silently indistinguishable in Netlify's own logs from
+  // the genuinely-empty case. This pins that it's now logged too.
+  it('logs a query-level read failure instead of silently swallowing it', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const supabase = {
+      from: () => ({
+        select: () => ({
+          in: () => ({
+            in: () => ({
+              order: () => ({
+                limit: async () => ({ data: null, error: { message: 'db down' } }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    }
+    const result = await getLearnedSources(supabase, ['Legal'], ['United Kingdom'])
+    expect(result).toEqual({ companies: {}, sources: {} })
+    expect(consoleSpy).toHaveBeenCalledWith('[scanShared] failed to read annie_learned_sources', 'db down')
+    consoleSpy.mockRestore()
+  })
+
+  it('returns an empty result without querying anything when there are no sectors', async () => {
+    const fromSpy = vi.fn()
+    const result = await getLearnedSources({ from: fromSpy }, [], ['United Kingdom'])
+    expect(result).toEqual({ companies: {}, sources: {} })
+    expect(fromSpy).not.toHaveBeenCalled()
   })
 })

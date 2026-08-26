@@ -91,18 +91,28 @@ describe('markItemDone', () => {
   beforeEach(() => { supabase = makeFakeSupabase() })
 
   it('is a no-op when itemKey is missing', async () => {
-    await markItemDone(supabase, 'u1', null)
+    const result = await markItemDone(supabase, 'u1', null)
     expect(supabase._calls.upsert).toHaveLength(0)
+    expect(result).toEqual({ error: null })
   })
 
   it('upserts a done row with a done_at timestamp, without ignoring duplicates', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-24T10:00:00.000Z'))
-    await markItemDone(supabase, 'u1', 'signal:s1')
+    const result = await markItemDone(supabase, 'u1', 'signal:s1')
     expect(supabase._calls.upsert[0].rows).toEqual({
       user_id: 'u1', item_key: 'signal:s1', status: 'done', done_at: '2026-08-24T10:00:00.000Z',
     })
     expect(supabase._calls.upsert[0].opts).toEqual({ onConflict: 'user_id,item_key' })
+    expect(result).toEqual({ error: null })
     vi.useRealTimers()
+  })
+
+  // 2026-08-26 audit fix: the write's result used to be discarded entirely
+  // — callers had no way to tell a failed upsert from a successful one.
+  it('surfaces the error instead of swallowing it when the upsert fails', async () => {
+    supabase.from = () => ({ upsert: () => Promise.resolve({ data: null, error: { message: 'db down' } }) })
+    const result = await markItemDone(supabase, 'u1', 'signal:s1')
+    expect(result).toEqual({ error: { message: 'db down' } })
   })
 })

@@ -42,6 +42,14 @@ describe('listCompanies', () => {
   it('returns an empty array rather than null when there are no rows', async () => {
     expect(await listCompanies('user_1')).toEqual([])
   })
+
+  // 2026-08-26 audit fix: a real Supabase error used to look identical to
+  // "no rows" — both fell through to `data || []`.
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listCompanies('user_1')).rejects.toEqual({ message: 'db down' })
+  })
 })
 
 describe('createCompany', () => {

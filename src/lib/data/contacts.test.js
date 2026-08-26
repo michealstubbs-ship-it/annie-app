@@ -57,6 +57,14 @@ describe('listContacts', () => {
     fromMock.mockReturnValue(builder)
     expect(await listContacts('user_1')).toEqual([])
   })
+
+  // 2026-08-26 audit fix: a real Supabase error used to look identical to
+  // "no rows" — both fell through to `data || []`.
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listContacts('user_1')).rejects.toEqual({ message: 'db down' })
+  })
 })
 
 describe('listContactsWithCompany', () => {
@@ -64,6 +72,12 @@ describe('listContactsWithCompany', () => {
     await listContactsWithCompany('user_1')
     expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
     expect(builder.not).toHaveBeenCalledWith('company_id', 'is', null)
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listContactsWithCompany('user_1')).rejects.toEqual({ message: 'db down' })
   })
 })
 
@@ -100,6 +114,12 @@ describe('listContactsMinimal', () => {
     expect(builder.order).toHaveBeenCalledWith('name')
     expect(result).toEqual([{ id: 'c1' }])
   })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listContactsMinimal('user_1')).rejects.toEqual({ message: 'db down' })
+  })
 })
 
 describe('listContactsForMatching', () => {
@@ -107,5 +127,11 @@ describe('listContactsForMatching', () => {
     await listContactsForMatching('user_1')
     expect(builder.select).toHaveBeenCalledWith('id, name, title, company, linkedin_url')
     expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listContactsForMatching('user_1')).rejects.toEqual({ message: 'db down' })
   })
 })

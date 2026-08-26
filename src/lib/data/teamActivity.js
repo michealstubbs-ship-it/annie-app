@@ -31,10 +31,15 @@ export async function getTeamActivitySummary(memberUserIds) {
 
   const since = new Date(Date.now() - ACTIVITY_WINDOW_MS).toISOString()
 
-  const [{ data: signals }, { data: actionState }] = await Promise.all([
+  // 2026-08-26 audit fix: both errors used to be discarded — a failed
+  // query here silently produced an all-zero summary row indistinguishable
+  // from a team that's genuinely had no activity this week.
+  const [{ data: signals, error: signalsError }, { data: actionState, error: actionStateError }] = await Promise.all([
     supabase.from('intelligence_signals').select('user_id, status').in('user_id', ids).gte('found_at', since),
     supabase.from('todays_action_state').select('user_id, status').in('user_id', ids),
   ])
+  if (signalsError) throw signalsError
+  if (actionStateError) throw actionStateError
 
   for (const s of signals || []) {
     const row = summary.get(s.user_id)

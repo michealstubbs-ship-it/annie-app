@@ -20,6 +20,10 @@ import { createTimeoutFetch } from './lib/scanShared.js'
 // Pulls the fields subscriptions actually needs off a Stripe Subscription
 // object, resolving tier/interval from the live price ID rather than any
 // metadata that could have gone stale — see stripeShared.js for why.
+// free_month_code IS trusted from metadata (unlike tier/interval) — it's
+// only ever set by start-trial-checkout.js itself, at session-creation
+// time, never user-editable input, and it's what lets that endpoint count
+// real redemptions against its cap (see its own header).
 function fieldsFromSubscription(sub) {
   const item = sub.items?.data?.[0]
   const { tier, interval } = resolveTierFromPriceId(item?.price?.id)
@@ -32,6 +36,7 @@ function fieldsFromSubscription(sub) {
     seats: item?.quantity || 1,
     current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
     cancel_at_period_end: !!sub.cancel_at_period_end,
+    free_month_code: sub.metadata?.free_month_code || null,
     updated_at: new Date().toISOString(),
   }
 }
@@ -72,11 +77,28 @@ export default async (req) => {
   // resend from the dashboard). The subscriptions writes below are already
   // idempotent-safe via onConflict, but invoice.payment_failed's email send
   // is not — a redelivered event would re-send "your payment failed" to a
-  // customer who already got it once. Recording event.id here makes the
-  // WHOLE handler idempotent, not just that one branch.
-  const { data: already } = await supabase.from('stripe_webhook_events').select('event_id').eq('event_id', event.id).maybeSingle()
-  if (already) {
-    return new Response('ok (already processed)', { status: 200 })
+  // customer who already got it once. Reserving event.id here (before any
+  // handling runs) makes the WHOLE handler idempotent, not just that one
+  // branch.
+  //
+  // 2026-08-26 audit fix: this used to be a plain SELECT check here, with
+  // the event_id only INSERTed at the very end, on the success path. That
+  // left a real TOCTOU window — if Stripe genuinely redelivers the same
+  // event close enough in time that the second delivery's SELECT runs
+  // before the first delivery's end-of-handler INSERT, both proceed, and
+  // for invoice.payment_failed/trial_will_end that means a duplicate
+  // customer email with no guard (unlike the subscriptions writes, which
+  // are protected by onConflict). event_id is this table's PRIMARY KEY, so
+  // reserving it via a single INSERT is atomic: a concurrent duplicate
+  // hits a real unique-violation instead of a race, and this is treated
+  // exactly like "already processed" — same external behaviour, no gap.
+  const { error: reserveError } = await supabase.from('stripe_webhook_events').insert({ event_id: event.id, event_type: event.type })
+  if (reserveError) {
+    if (reserveError.code === '23505') {
+      return new Response('ok (already processed)', { status: 200 })
+    }
+    await reportServerError('stripe-webhook', new Error(`event reservation failed: ${reserveError.message}`), { eventType: event.type, eventId: event.id })
+    return new Response('Webhook handler error', { status: 500 })
   }
 
   try {
@@ -160,16 +182,39 @@ export default async (req) => {
       case 'customer.subscription.updated':
       case 'customer.subscription.deleted': {
         const sub = event.data.object
-        const { error } = await supabase
+        // 2026-08-26 audit fix: this used to assume a zero-row match set
+        // `error`, so it could fall back to matching by customer id — that
+        // premise is false. PostgREST/Postgres don't error on an UPDATE
+        // that matches zero rows (only a genuine query failure sets
+        // `error`), so the "no matching row yet, fall back" comment
+        // described a path the code couldn't actually reach: any case
+        // where the subscription_id match legitimately misses (e.g. this
+        // event races ahead of checkout.session.completed) silently
+        // dropped the update entirely, with no fallback, no log, nothing.
+        // `.select('id')` on the update surfaces the real "did anything
+        // match" signal so the fallback can actually run when it's needed.
+        const { data, error } = await supabase
           .from('subscriptions')
           .update(fieldsFromSubscription(sub))
           .eq('stripe_subscription_id', sub.id)
-        if (error) {
-          // No matching row yet (e.g. this event raced ahead of
-          // checkout.session.completed) — fall back to matching on
-          // customer id, or give up quietly rather than throw, since a
-          // later event will reconcile the row anyway.
-          await supabase.from('subscriptions').update(fieldsFromSubscription(sub)).eq('stripe_customer_id', sub.customer)
+          .select('id')
+        if (error) throw new Error(`subscription update by stripe_subscription_id failed: ${error.message}`)
+        if (!data || data.length === 0) {
+          const { data: fallbackData, error: fallbackError } = await supabase
+            .from('subscriptions')
+            .update(fieldsFromSubscription(sub))
+            .eq('stripe_customer_id', sub.customer)
+            .select('id')
+          if (fallbackError) throw new Error(`subscription update by stripe_customer_id failed: ${fallbackError.message}`)
+          if (!fallbackData || fallbackData.length === 0) {
+            // Genuinely no row matched either way — most likely this event
+            // raced ahead of checkout.session.completed, which will create
+            // the row and a later event will reconcile it. Logged (not
+            // thrown) since this is an expected, recoverable ordering
+            // case, not a failure — but now at least visible instead of
+            // silent.
+            console.error('[stripe-webhook] no subscriptions row matched for', sub.id, sub.customer, '— expected if checkout.session.completed hasn\'t landed yet, otherwise worth a look')
+          }
         }
         break
       }
@@ -255,13 +300,15 @@ export default async (req) => {
     // every case this file handles — see fieldsFromSubscription's onConflict
     // usage), which is strictly better recovery than relying on a human to
     // read error_logs before the customer notices anything's wrong.
+    //
+    // 2026-08-26: the event_id reservation now happens BEFORE handling (see
+    // above), so a failed attempt needs to explicitly release it — without
+    // this delete, Stripe's retry (a fresh delivery of the same event.id)
+    // would hit the unique-violation "already processed" path above and
+    // never actually get a real second attempt.
+    await supabase.from('stripe_webhook_events').delete().eq('event_id', event.id).then(() => {}, () => {})
     return new Response('Webhook handler error', { status: 500 })
   }
-
-  // Only recorded on the success path — a failed attempt returns 500 above
-  // without reaching here, so Stripe's retry actually gets a fresh attempt
-  // instead of being silently marked "already processed."
-  await supabase.from('stripe_webhook_events').insert({ event_id: event.id, event_type: event.type }).then(() => {}, () => {})
 
   return new Response('ok', { status: 200 })
 }

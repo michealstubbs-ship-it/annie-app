@@ -61,6 +61,7 @@ function makeBuilder(result) {
     upsert: vi.fn(chain),
     update: vi.fn(chain),
     insert: vi.fn(chain),
+    delete: vi.fn(chain),
     then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
   })
   return builder
@@ -171,11 +172,18 @@ describe('signature verification', () => {
   })
 })
 
+// 2026-08-26 audit fix: the dedup check used to be a plain SELECT (checked
+// here), with the event_id only INSERTed at the very end on the success
+// path — a real TOCTOU window if Stripe genuinely redelivers the same
+// event close enough in time that a second delivery's SELECT runs before
+// the first delivery's end-of-handler INSERT. Reserving event_id via a
+// single INSERT up front (event_id is this table's PRIMARY KEY) makes the
+// check-and-claim atomic instead.
 describe('idempotency', () => {
-  it('short-circuits a redelivered event without re-running any handler logic', async () => {
+  it('short-circuits a redelivered event when the event_id reservation hits a unique-constraint conflict', async () => {
     mockConstructEvent.mockReturnValue(CHECKOUT_EVENT)
     mockCreateClient.mockReturnValue(makeSupabaseMock({
-      stripe_webhook_events: { data: { event_id: CHECKOUT_EVENT.id }, error: null },
+      stripe_webhook_events: { data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint "stripe_webhook_events_pkey"' } },
     }))
     const res = await handler(makeRequest(CHECKOUT_EVENT))
     expect(res.status).toBe(200)
@@ -183,7 +191,20 @@ describe('idempotency', () => {
     expect(mockSubscriptionsRetrieve).not.toHaveBeenCalled()
   })
 
-  it('only records the idempotency row on the success path, not inside the catch block', async () => {
+  it('reserves the event_id up front, before any handler logic runs — not just on the success path', async () => {
+    mockConstructEvent.mockReturnValue(CHECKOUT_EVENT)
+    const supabase = makeSupabaseMock()
+    mockCreateClient.mockReturnValue(supabase)
+    await handler(makeRequest(CHECKOUT_EVENT))
+    const webhookEventBuilders = supabase.from.mock.results
+      .filter((_, i) => supabase.from.mock.calls[i][0] === 'stripe_webhook_events')
+      .map(r => r.value)
+    const insertCalls = webhookEventBuilders.flatMap(b => b.insert.mock.calls)
+    expect(insertCalls.length).toBe(1)
+    expect(insertCalls[0][0]).toMatchObject({ event_id: CHECKOUT_EVENT.id })
+  })
+
+  it('releases the reservation on failure, so a genuine Stripe retry is not blocked by its own earlier failed attempt', async () => {
     mockConstructEvent.mockReturnValue(CHECKOUT_EVENT)
     const supabase = makeSupabaseMock({
       subscriptions: { data: null, error: { message: 'upsert failed' } },
@@ -191,14 +212,22 @@ describe('idempotency', () => {
     mockCreateClient.mockReturnValue(supabase)
     const res = await handler(makeRequest(CHECKOUT_EVENT))
     expect(res.status).toBe(500)
-    // stripe_webhook_events.insert is only ever reached on the success path;
-    // on a thrown error the handler returns from inside the catch block
-    // before that line runs.
     const webhookEventBuilders = supabase.from.mock.results
       .filter((_, i) => supabase.from.mock.calls[i][0] === 'stripe_webhook_events')
       .map(r => r.value)
-    const insertCalls = webhookEventBuilders.flatMap(b => b.insert.mock.calls)
-    expect(insertCalls.length).toBe(0)
+    const deleteCalls = webhookEventBuilders.flatMap(b => b.delete.mock.calls)
+    expect(deleteCalls.length).toBe(1)
+  })
+
+  it('returns 500 and reports the error when reserving the event_id fails for a reason other than a duplicate', async () => {
+    mockConstructEvent.mockReturnValue(CHECKOUT_EVENT)
+    mockCreateClient.mockReturnValue(makeSupabaseMock({
+      stripe_webhook_events: { data: null, error: { code: '57P01', message: 'connection terminated' } },
+    }))
+    const res = await handler(makeRequest(CHECKOUT_EVENT))
+    expect(res.status).toBe(500)
+    expect(mockSubscriptionsRetrieve).not.toHaveBeenCalled()
+    expect(mockReportServerError).toHaveBeenCalled()
   })
 })
 
@@ -325,7 +354,7 @@ describe('checkout.session.completed', () => {
 describe('customer.subscription.updated / deleted', () => {
   it('re-syncs the subscription row from the live Stripe object', async () => {
     mockConstructEvent.mockReturnValue(SUBSCRIPTION_UPDATED_EVENT)
-    const supabase = makeSupabaseMock()
+    const supabase = makeSupabaseMock({ subscriptions: { data: [{ id: 'sub_row_1' }], error: null } })
     mockCreateClient.mockReturnValue(supabase)
     const res = await handler(makeRequest(SUBSCRIPTION_UPDATED_EVENT))
     expect(res.status).toBe(200)
@@ -334,6 +363,44 @@ describe('customer.subscription.updated / deleted', () => {
     ).value
     expect(subscriptionsBuilder.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'active' }))
     expect(subscriptionsBuilder.eq).toHaveBeenCalledWith('stripe_subscription_id', 'sub_123')
+  })
+
+  // 2026-08-26 audit fix regression test: the old code assumed a zero-row
+  // update set `error` — it doesn't, in PostgREST/Postgres, so this
+  // fallback was previously dead code that could never actually run.
+  // `.select('id')` on the update makes "did anything match" a real,
+  // checkable signal instead.
+  it('falls back to matching by stripe_customer_id when nothing matches by stripe_subscription_id yet (event raced ahead of checkout.session.completed)', async () => {
+    mockConstructEvent.mockReturnValue(SUBSCRIPTION_UPDATED_EVENT)
+    let subscriptionsCallCount = 0
+    const supabase = makeSupabaseMock()
+    supabase.from = vi.fn((table) => {
+      if (table !== 'subscriptions') return makeBuilder(DEFAULT_TABLE_RESULTS[table] ?? { data: null, error: null })
+      subscriptionsCallCount++
+      // First update (by stripe_subscription_id) matches nothing; the
+      // fallback (by stripe_customer_id) matches the row.
+      return makeBuilder(subscriptionsCallCount === 1 ? { data: [], error: null } : { data: [{ id: 'sub_row_1' }], error: null })
+    })
+    mockCreateClient.mockReturnValue(supabase)
+    const res = await handler(makeRequest(SUBSCRIPTION_UPDATED_EVENT))
+    expect(res.status).toBe(200)
+    expect(subscriptionsCallCount).toBe(2)
+  })
+
+  it('logs but does not throw when genuinely no row matches either way (event races ahead of checkout.session.completed entirely — a later event reconciles it)', async () => {
+    mockConstructEvent.mockReturnValue(SUBSCRIPTION_UPDATED_EVENT)
+    const supabase = makeSupabaseMock({ subscriptions: { data: [], error: null } })
+    mockCreateClient.mockReturnValue(supabase)
+    const res = await handler(makeRequest(SUBSCRIPTION_UPDATED_EVENT))
+    expect(res.status).toBe(200)
+  })
+
+  it('returns 500 when the update itself errors (a genuine DB failure, not just a zero-row match)', async () => {
+    mockConstructEvent.mockReturnValue(SUBSCRIPTION_UPDATED_EVENT)
+    const supabase = makeSupabaseMock({ subscriptions: { data: null, error: { message: 'db unreachable' } } })
+    mockCreateClient.mockReturnValue(supabase)
+    const res = await handler(makeRequest(SUBSCRIPTION_UPDATED_EVENT))
+    expect(res.status).toBe(500)
   })
 })
 

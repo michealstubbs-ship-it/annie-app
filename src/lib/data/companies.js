@@ -8,8 +8,12 @@ import { supabase } from '../supabase'
 // restricts every row to the caller's active team, so no client-side
 // user_id filter is added on top of it. `userId` is kept as a parameter
 // only for createCompany, which still needs to stamp who created a row.
+// 2026-08-26 audit fix: throws on a Supabase error instead of silently
+// falling back to `data || []` — see contacts.js's header comment for the
+// full reasoning (same fix, same pattern, applied file-by-file).
 export async function listCompanies(userId) {
-  const { data } = await supabase.from('companies').select('*').order('name')
+  const { data, error } = await supabase.from('companies').select('*').order('name')
+  if (error) throw error
   return data || []
 }
 

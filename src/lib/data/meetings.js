@@ -5,11 +5,15 @@ import { supabase } from '../supabase'
 
 // 2026-08-24: meetings is team-scoped — RLS already restricts every row to
 // the caller's active team, so no client-side user_id filter on top of it.
+// 2026-08-26 audit fix: throws on a Supabase error instead of silently
+// falling back to `data || []` — see contacts.js's header comment for the
+// full reasoning (same fix, same pattern, applied file-by-file).
 export async function listMeetingsWithContacts(userId) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('meetings')
     .select('*, contacts(name, company)')
     .order('meeting_date', { ascending: false })
+  if (error) throw error
   return data || []
 }
 

@@ -36,12 +36,26 @@ async function fetchScanStatus() {
  * @param {number} [opts.intervalMs=5000] - delay between subsequent checks
  * @param {boolean} [opts.autoDetectExisting=false] - on mount (or when `user` changes), resume polling if a not-yet-expired flag is already set, e.g. onboarding started a scan before this page was open
  * @param {(result: object) => void} [opts.onDone] - called once, with the final scan-status result, whether the scan genuinely finished or this poll's own window ran out first
+ * @param {(status: object) => void} [opts.onTick] - called on every poll response, including the final one, before onDone fires — for a caller that wants to show live progress while a multi-round scan is still chaining (e.g. "14 of 20 found so far"), not just the end result
  */
-export function useScanStatusPoll({ user, windowMs, initialDelayMs = 3000, intervalMs = 5000, autoDetectExisting = false, onDone }) {
+export function useScanStatusPoll({ user, windowMs, initialDelayMs = 3000, intervalMs = 5000, autoDetectExisting = false, onDone, onTick }) {
   const [polling, setPolling] = useState(false)
   const [result, setResult] = useState(null)
   const onDoneRef = useRef(onDone)
   onDoneRef.current = onDone
+  const onTickRef = useRef(onTick)
+  onTickRef.current = onTick
+
+  // 2026-08-26 audit fix: generalizes the token-superseding pattern
+  // Overview.jsx used to hand-roll itself (pollTokenRef) into the shared
+  // hook, so both call sites get it "for free" — without this, a poll
+  // resumed automatically on mount (autoDetectExisting) and a poll started
+  // manually moments later (e.g. the user clicks "look again" before the
+  // auto-resumed poll finished) would tick independently and race each
+  // other's setResult/setPolling calls. Only the most recently started
+  // poll is ever allowed to write state; an older one silently stops on
+  // its next tick instead.
+  const activeTokenRef = useRef(null)
 
   const finish = useCallback((userId, finalResult) => {
     setPolling(false)
@@ -51,13 +65,16 @@ export function useScanStatusPoll({ user, windowMs, initialDelayMs = 3000, inter
   }, [])
 
   const poll = useCallback((userId, startedAt) => {
+    const token = {}
+    activeTokenRef.current = token
     setPolling(true)
-    let cancelled = false
     let timer
 
     async function tick() {
+      if (activeTokenRef.current !== token) return
       const status = await fetchScanStatus()
-      if (cancelled) return
+      if (activeTokenRef.current !== token) return
+      onTickRef.current?.(status)
 
       if (status?.status === 'done') {
         finish(userId, status)
@@ -71,7 +88,7 @@ export function useScanStatusPoll({ user, windowMs, initialDelayMs = 3000, inter
     }
 
     timer = setTimeout(tick, initialDelayMs)
-    return () => { cancelled = true; clearTimeout(timer) }
+    return () => { if (activeTokenRef.current === token) activeTokenRef.current = null; clearTimeout(timer) }
   }, [windowMs, intervalMs, initialDelayMs, finish])
 
   // Manual start — Settings.jsx calls this right after firing

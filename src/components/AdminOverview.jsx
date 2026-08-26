@@ -133,9 +133,13 @@ export default function AdminOverview({ onOpenErrors }) {
           <p className="text-xs text-gray-400 mb-3">Share of {money(accounts.mrr)} MRR</p>
           <div className="space-y-3">
             {TIERS.map(t => {
-              const tierMrr = accounts.tierCounts[t.key] * (t.key === 'team'
-                ? 0 // team is per-seat; approximated via mrr share below since seat counts vary per account
-                : (t.monthly))
+              // 2026-08-26 audit fix: this used to approximate each tier's
+              // revenue as `tierCounts[t.key] * t.monthly` — always the
+              // full, non-discounted monthly price, and literally 0 for
+              // Team (per-seat, so no single flat price applies). Now reads
+              // summarizeAccounts' own real, billing_interval- and
+              // seat-aware per-tier sum instead of a second, wrong guess.
+              const tierMrr = accounts.tierMrr[t.key]
               const share = accounts.mrr > 0 ? Math.round((tierMrr / accounts.mrr) * 100) : 0
               return (
                 <div key={t.key} className="flex items-center gap-2.5">
@@ -149,7 +153,6 @@ export default function AdminOverview({ onOpenErrors }) {
               )
             })}
           </div>
-          <p className="text-[10.5px] text-gray-400 mt-3">Team's share is approximate: MRR there depends on seats per account, not shown per-tier here.</p>
         </div>
       </div>
 

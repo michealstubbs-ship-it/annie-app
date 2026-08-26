@@ -27,6 +27,16 @@ describe('extractJson', () => {
     expect(extractJson(text)).toEqual([{ company: 'Acme', headline: 'Raises $10M' }])
   })
 
+  // 2026-08-26 audit fix: narration BEFORE the array, when that narration
+  // itself contains a bracket character, used to make this give up
+  // entirely — the first '[' (inside the narration) balanced to a
+  // syntactically-closed-but-invalid slice, JSON.parse threw, and the whole
+  // call returned [] without ever trying the real array right after it.
+  it('skips past bracketed narration BEFORE the real array and still finds it', () => {
+    const text = 'I checked their competitors [Acme, Beta] first.\n[{"company":"Acme","headline":"Raises $10M"}]'
+    expect(extractJson(text)).toEqual([{ company: 'Acme', headline: 'Raises $10M' }])
+  })
+
   it('ignores bracket characters inside a quoted string value', () => {
     const text = '[{"company":"Acme","headline":"Wins [Redacted] contract"}]'
     expect(extractJson(text)).toEqual([{ company: 'Acme', headline: 'Wins [Redacted] contract' }])

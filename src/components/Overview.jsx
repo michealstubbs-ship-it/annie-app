@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { useScanStatusPoll } from '../lib/useScanStatusPoll'
 import {
   IconZap, IconCalendar, IconRadio, IconBriefcase, IconSparkles, IconArrowRight, IconPlus, IconMessageCircle, IconBuilding, IconUsers,
 } from './icons'
@@ -26,7 +27,9 @@ import {
 const JOB_STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled', lost: 'Lost' }
 const JOB_STATUS_COLOR = { active: '#2f9e5b', onhold: '#d99a2b', filled: '#c9a84c', lost: '#9ca0ac' }
 
-const SCAN_FLAG_PREFIX = 'annie_scan_started_'
+// 2026-08-26: the localStorage scan-started flag itself is now owned by
+// useScanStatusPoll.js (shared with Settings.jsx) — no longer read/written
+// directly here.
 // scan-now-background.js can now chain across several rounds for Growth/
 // Team accounts (2026-08-25 — see that file's own header), up to that
 // tier's own maxWallClockMs (20 minutes) before it stops. scan-status.js's
@@ -130,9 +133,8 @@ export default function Overview() {
   const [meetings, setMeetings] = useState([])
   const [tasks, setTasks] = useState([])
   const [contactsCount, setContactsCount] = useState(null) // null = not checked yet, avoids a flash of the reminder
-  const [researching, setResearching] = useState(false)
   const [scanOutcome, setScanOutcome] = useState(null) // set once scan-status.js reports the scan is actually done, tells us WHY there's nothing (or something) to show
-  const [chainProgress, setChainProgress] = useState(null) // live counts while a chained scan is still running — see checkScanStatus/tick below
+  const [chainProgress, setChainProgress] = useState(null) // live counts while a chained scan is still running — updated on every poll tick via useScanStatusPoll's onTick
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState('')
   // Starter-only upgrade nudge (2026-08-25, confirmed with Michael): shown
@@ -146,85 +148,37 @@ export default function Overview() {
   const [tier, setTier] = useState('starter')
   const [upgradeNudgeDismissed, setUpgradeNudgeDismissed] = useState(false)
 
-  // Identifies the "in-flight" poll loop so a stale one (from an earlier
-  // mount, or a scan that was already being polled when the user clicked
-  // "ask Annie to look again") never overwrites state from whichever poll
-  // is actually current — see beginResearchPolling below.
-  const pollTokenRef = useRef(null)
-
   useEffect(() => { load() }, [user])
 
-  // Starts (or restarts) the same "poll scan-status.js until it says done"
-  // loop from two places: automatically on mount, if onboarding stamped the
-  // scan-started flag within SCAN_WINDOW_MS (see the effect below), and
-  // on-demand from runAnotherScanNow when the customer asks Annie to try
-  // again from right here on the dashboard — previously that second path
-  // didn't exist at all: the only self-serve retry lived on the Settings
-  // page, several clicks away from the empty dashboard it was meant to fix,
-  // which is not the same thing as "it loads automatically."
-  function beginResearchPolling(startedAt) {
-    const token = {}
-    pollTokenRef.current = token
-    setResearching(true)
-    setScanOutcome(null)
-
-    async function tick() {
-      if (pollTokenRef.current !== token) return // superseded by a newer poll
-      const result = await checkScanStatus()
-      if (pollTokenRef.current !== token) return
-      // Captured on every tick, running or done, so the banner can show
-      // live counts ("14 of 20 found so far") while a chained scan is still
-      // in progress, not just once it's finished — see the researching
-      // banner's own render for how this is used.
-      setChainProgress(result)
-
-      if (result?.status === 'done') {
-        setResearching(false)
-        setScanOutcome(result)
-        try { localStorage.removeItem(SCAN_FLAG_PREFIX + user.id) } catch {}
-        if (result.signalsFound > 0) await pollSignals()
-        return
-      }
-
-      if (Date.now() - startedAt > SCAN_WINDOW_MS) {
-        setResearching(false)
-        return
-      }
-      setTimeout(tick, 5000)
-    }
-
-    setTimeout(tick, 3000)
-  }
-
-  // Onboarding fires a background research scan for the account and stamps
-  // this flag (see Onboarding.jsx). Rather than just waiting out a fixed
-  // window and hoping, we poll scan-status.js for the real state — the scan
-  // itself often finishes in well under a minute (sometimes finding
-  // nothing, which is a legitimate outcome, not a failure), and a spinner
-  // that keeps saying "researching" for minutes after it already finished
-  // reads as broken. The fixed window is now only a last-resort cutoff in
-  // case the status check itself never resolves.
-  useEffect(() => {
-    if (!user) return
-    let startedAt = 0
-    try { startedAt = Number(localStorage.getItem(SCAN_FLAG_PREFIX + user.id)) || 0 } catch {}
-    if (!startedAt || Date.now() - startedAt > SCAN_WINDOW_MS) return
-    beginResearchPolling(startedAt)
-    return () => { pollTokenRef.current = null }
-  }, [user])
-
-  async function checkScanStatus() {
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) return { status: 'unknown' }
-      const resp = await fetch('/.netlify/functions/scan-status', {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      })
-      return await resp.json().catch(() => ({ status: 'unknown' }))
-    } catch {
-      return { status: 'unknown' }
-    }
-  }
+  // 2026-08-26 audit fix: this used to hand-roll its own copy of the exact
+  // fetch + localStorage-flag + recursive-setTimeout + "supersede a stale
+  // poll" logic useScanStatusPoll.js already existed to share with
+  // Settings.jsx — routed through the real hook now instead of a second,
+  // drifting copy. The hook's `autoDetectExisting` covers what the old
+  // manual useEffect below did (resume watching a scan onboarding already
+  // started, via the same localStorage flag), its token-superseding
+  // (generalized into the hook itself) covers what pollTokenRef did by
+  // hand, and its `onTick` covers the live "N found so far" progress this
+  // page specifically needs while a chained scan is still running.
+  const { polling: researching, start: startResearchPoll } = useScanStatusPoll({
+    user,
+    windowMs: SCAN_WINDOW_MS,
+    autoDetectExisting: true,
+    onTick: (result) => setChainProgress(result),
+    onDone: (result) => {
+      setScanOutcome(result)
+      // 2026-08-26 audit fix: this used to call the narrower pollSignals()
+      // (just the "Latest intelligence" signal list + 7-day count), which
+      // left "Needs your attention" (topActions/totalActions) stuck showing
+      // whatever it computed on the last full load — a newly-found signal
+      // that should now show up there didn't, until the customer manually
+      // reloaded the page. load() reruns the exact same pools ->
+      // selectDailyItems -> resolveTodaysActions pipeline pollSignals never
+      // touched, so a fresh scan result now refreshes everything this page
+      // shows, not just the signal list.
+      if (result.signalsFound > 0) load()
+    },
+  })
 
   // 2026-08-25: the dashboard-native counterpart to Settings' "Run a new
   // scan" button. That button fixed the underlying "no way to ever retry"
@@ -240,6 +194,7 @@ export default function Overview() {
     if (!user) return
     setRetrying(true)
     setRetryError('')
+    setScanOutcome(null)
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) throw new Error('Your session has expired. Please log in again.')
@@ -249,9 +204,7 @@ export default function Overview() {
         headers: { Authorization: `Bearer ${session.access_token}` },
       }).catch(() => {})
 
-      const startedAt = Date.now()
-      try { localStorage.setItem(SCAN_FLAG_PREFIX + user.id, String(startedAt)) } catch {}
-      beginResearchPolling(startedAt)
+      startResearchPoll()
     } catch (err) {
       setRetryError(err.message || 'Could not start a new scan. Please try again.')
     } finally {
@@ -259,19 +212,6 @@ export default function Overview() {
     }
   }
 
-  async function pollSignals() {
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-    // 2026-08-24: intelligence_signals is PERSONAL, not team-scoped — see
-    // lib/data/signals.js's header comment. A previous pass here incorrectly
-    // dropped this filter; restored, since different recruiters on the same
-    // team can be working entirely different markets.
-    const [{ data: signalRows }, { data: signalCountRows }] = await Promise.all([
-      supabase.from('intelligence_signals').select('id, company_name, company_logo_url, headline, found_at').eq('user_id', user.id).neq('status', 'actioned').order('found_at', { ascending: false }).limit(3),
-      supabase.from('intelligence_signals').select('id').eq('user_id', user.id).gte('found_at', sevenDaysAgo),
-    ])
-    setSignals(signalRows || [])
-    setNewSignalsCount(signalCountRows?.length || 0)
-  }
 
   async function load() {
     setLoading(true)

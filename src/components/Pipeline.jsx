@@ -52,13 +52,21 @@ export default function Pipeline() {
 
   async function load() {
     setLoading(true)
+    setError('')
     // 2026-08-24 Task 2: routed through lib/data/deals.js (previously
     // duplicated inline here) so this table's query shape lives in exactly
     // one place.
-    const data = await listDeals(user.id)
-    setDeals(data)
-    await loadCurrency()
-    setLoading(false)
+    // 2026-08-26 audit fix: listDeals now throws on a real Supabase error
+    // instead of quietly returning [] — previously that looked identical
+    // to "you have no deals yet".
+    try {
+      setDeals(await listDeals(user.id))
+      await loadCurrency()
+    } catch (err) {
+      setError(err.message || 'Could not load your pipeline. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   // Target market lives in the `onboarding` table (locations column, an
@@ -78,10 +86,17 @@ export default function Pipeline() {
   function openAdd() { setForm(EMPTY); setEditId(null); setShowModal(true) }
   function openEdit(d) { setForm({ company: d.company, role: d.role || '', stage: d.stage, value: d.value || '', probability: d.probability || 25, notes: d.notes || '', next_action: d.next_action || '', next_action_date: d.next_action_date || '' }); setEditId(d.id); setShowModal(true) }
 
-  async function save() {
+  async function save(e) {
+    e?.preventDefault()
+    // 2026-08-26 audit fix: the form's "Company *" label has always implied
+    // this is required, but nothing enforced it — the DB happily accepted
+    // an empty-string company, producing a blank, unidentifiable deal card.
+    // Matches the required-field check already used in ContactFormModal.jsx/
+    // JobFormModal.jsx.
+    if (!form.company.trim()) { setError('Company is required'); return }
     setSaving(true)
     setError('')
-    const payload = { ...form, value: parseFloat(form.value) || 0, probability: parseInt(form.probability) || 0 }
+    const payload = { ...form, company: form.company.trim(), value: parseFloat(form.value) || 0, probability: parseInt(form.probability) || 0 }
     const { error: err } = editId
       ? await updateDeal(editId, { ...payload, updated_at: new Date().toISOString() })
       : await createDeal(payload, user.id)
@@ -173,9 +188,15 @@ export default function Pipeline() {
       )}
 
       <Modal open={showModal} onClose={() => setShowModal(false)} title={editId ? 'Edit Deal' : 'Add Deal'} maxWidth="max-w-lg">
+        {/* A real <form onSubmit> so the `required` constraint on Company
+            actually fires — matches the fix already applied to
+            ContactFormModal.jsx/JobFormModal.jsx, where "Save" previously
+            called save() directly via onClick instead of submitting a form,
+            leaving `required` inert. */}
+        <form onSubmit={save}>
             <div className="space-y-3">
-              {[['company','Company *','text'],['role','Role/Position','text'],['next_action','Next Action','text']].map(([f,l,t]) => (
-                <div key={f}><label className="label" htmlFor={`pipeline-${f}`}>{l}</label><input id={`pipeline-${f}`} className="input" type={t} value={form[f]} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} /></div>
+              {[['company','Company *','text',true],['role','Role/Position','text',false],['next_action','Next Action','text',false]].map(([f,l,t,req]) => (
+                <div key={f}><label className="label" htmlFor={`pipeline-${f}`}>{l}</label><input id={`pipeline-${f}`} className="input" type={t} value={form[f]} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} required={req} /></div>
               ))}
               <div className="grid grid-cols-2 gap-3">
                 <div><label className="label" htmlFor="pipeline-value">Value ({currencyLabel(currency)})</label><input id="pipeline-value" className="input" type="number" value={form.value} onChange={e => setForm(p => ({ ...p, value: e.target.value }))} /></div>
@@ -190,9 +211,10 @@ export default function Pipeline() {
               <div><label className="label" htmlFor="pipeline-notes">Notes</label><textarea id="pipeline-notes" className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
             </div>
             <div className="flex gap-3 justify-end mt-5">
-              <button onClick={() => setShowModal(false)} className="btn-ghost">Cancel</button>
-              <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
+              <button type="button" onClick={() => setShowModal(false)} className="btn-ghost">Cancel</button>
+              <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
             </div>
+        </form>
       </Modal>
 
       <ConfirmDialog

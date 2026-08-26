@@ -75,19 +75,7 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: 'Upgrade to the Team plan to add teammates' }), { status: 402, headers: { 'Content-Type': 'application/json' } })
     }
 
-    const { count: seatsUsed } = await supabase
-      .from('team_members')
-      .select('id', { count: 'exact', head: true })
-      .eq('team_id', teamId)
-      .in('status', ['active', 'invited'])
-
     const seatLimit = sub.seats || 3
-    if ((seatsUsed || 0) >= seatLimit) {
-      return new Response(
-        JSON.stringify({ error: `Your plan includes ${seatLimit} seats, all in use or invited. Add seats in Billing to invite more.` }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } },
-      )
-    }
 
     // Already on this team, either a pending invite by this email or an
     // already-active member whose account happens to use this email?
@@ -120,26 +108,35 @@ export default async (req) => {
         return new Response(JSON.stringify({ error: 'That person already belongs to a team and can\'t be added to another.' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
       }
 
-      const { error } = await supabase.from('team_members').insert({
-        team_id: teamId,
-        user_id: existingProfile.id,
-        role: 'member',
-        status: 'active',
-        activated_at: new Date().toISOString(),
+      // 2026-08-26 audit fix: seat-count-then-insert used to be two
+      // separate round-trips (see this migration's own header for the
+      // TOCTOU this closes) — now one atomic, per-team-locked RPC call.
+      const { data: addResult, error: addError } = await supabase.rpc('team_invite_add_active_member', {
+        p_team_id: teamId, p_user_id: existingProfile.id, p_seat_limit: seatLimit,
       })
-      if (error) throw new Error(`team_members insert failed: ${error.message}`)
+      if (addError) throw new Error(`team_invite_add_active_member failed: ${addError.message}`)
+      if (addResult === 'seat_limit_reached') {
+        return new Response(
+          JSON.stringify({ error: `Your plan includes ${seatLimit} seats, all in use or invited. Add seats in Billing to invite more.` }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
 
       return new Response(JSON.stringify({ status: 'added' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
 
     // No account yet — create the pending seat, then send the real invite.
-    const { error: pendingError } = await supabase.from('team_members').insert({
-      team_id: teamId,
-      invited_email: email,
-      role: 'member',
-      status: 'invited',
+    // Same atomic, per-team-locked RPC as the existing-user path above.
+    const { data: pendingResult, error: pendingError } = await supabase.rpc('team_invite_add_pending_member', {
+      p_team_id: teamId, p_invited_email: email, p_seat_limit: seatLimit,
     })
-    if (pendingError) throw new Error(`pending team_members insert failed: ${pendingError.message}`)
+    if (pendingError) throw new Error(`team_invite_add_pending_member failed: ${pendingError.message}`)
+    if (pendingResult === 'seat_limit_reached') {
+      return new Response(
+        JSON.stringify({ error: `Your plan includes ${seatLimit} seats, all in use or invited. Add seats in Billing to invite more.` }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
 
     const { error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email, {
       redirectTo: `${appUrl}/onboarding`,

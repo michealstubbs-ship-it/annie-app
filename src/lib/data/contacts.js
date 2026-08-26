@@ -12,18 +12,27 @@ import { supabase } from '../supabase'
 // the caller's active team, so none of the reads below add a client-side
 // user_id filter on top of it. userId is kept as a parameter only where a
 // write still needs to stamp who created a row.
+// 2026-08-26 audit fix: every read below now throws on a Supabase error
+// instead of silently falling back to `data || []` — a real outage or
+// permissions issue used to look identical to "this table is genuinely
+// empty" everywhere in the app. Callers (each page's load()) already wrap
+// their Promise.all in try/catch and surface it via their existing
+// listError state, matching the precedent set by loadActionState in
+// lib/todaysActions/state.js.
 export async function listContacts(userId) {
-  const { data } = await supabase.from('contacts').select('*').order('created_at', { ascending: false })
+  const { data, error } = await supabase.from('contacts').select('*').order('created_at', { ascending: false })
+  if (error) throw error
   return data || []
 }
 
 // Companies.jsx's own read: every contact that belongs to SOME company,
 // for building each company's contact list client-side (see contactsFor()).
 export async function listContactsWithCompany(userId) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('contacts')
     .select('id, name, title, email, status, company_id')
     .not('company_id', 'is', null)
+  if (error) throw error
   return data || []
 }
 
@@ -43,7 +52,8 @@ export function deleteContact(id) {
 // to show a name (and company, for disambiguating two "John"s) in a
 // dropdown, not the full contact record.
 export async function listContactsMinimal(userId) {
-  const { data } = await supabase.from('contacts').select('id, name, company').order('name')
+  const { data, error } = await supabase.from('contacts').select('id, name, company').order('name')
+  if (error) throw error
   return data || []
 }
 
@@ -51,6 +61,7 @@ export async function listContactsMinimal(userId) {
 // contact, just enough fields to match a signal's company against and to
 // show if a match is found.
 export async function listContactsForMatching(userId) {
-  const { data } = await supabase.from('contacts').select('id, name, title, company, linkedin_url')
+  const { data, error } = await supabase.from('contacts').select('id, name, title, company, linkedin_url')
+  if (error) throw error
   return data || []
 }

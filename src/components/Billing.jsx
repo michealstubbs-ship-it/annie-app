@@ -63,37 +63,50 @@ export default function Billing() {
   }
 
   async function loadTeam() {
-    const { data: members } = await supabase
-      .from('team_members')
-      .select('id, user_id, invited_email, role, status, created_at')
-      .order('created_at', { ascending: true })
+    setTeamError('')
+    // 2026-08-26 audit fix: getTeamActivitySummary now throws on a real
+    // Supabase error instead of quietly returning an all-zero summary —
+    // previously that looked identical to "no activity this week". The
+    // roster reads above it aren't routed through lib/data (no dedicated
+    // list endpoint needed — see the comment on teamMembers state), so
+    // their own errors are checked directly here too, for the same reason.
+    try {
+      const { data: members, error: membersError } = await supabase
+        .from('team_members')
+        .select('id, user_id, invited_email, role, status, created_at')
+        .order('created_at', { ascending: true })
+      if (membersError) throw membersError
 
-    // team_members.user_id references auth.users, not profiles directly, so
-    // there's no PostgREST embed to lean on here — a second lookup by id is
-    // simpler and clearer than forcing a foreign-table embed that doesn't
-    // exist. Names/emails are just display copy for the roster.
-    const userIds = (members || []).map(m => m.user_id).filter(Boolean)
-    const { data: profileRows } = userIds.length
-      ? await supabase.from('profiles').select('id, email, full_name').in('id', userIds)
-      : { data: [] }
-    const profileById = new Map((profileRows || []).map(p => [p.id, p]))
+      // team_members.user_id references auth.users, not profiles directly, so
+      // there's no PostgREST embed to lean on here — a second lookup by id is
+      // simpler and clearer than forcing a foreign-table embed that doesn't
+      // exist. Names/emails are just display copy for the roster.
+      const userIds = (members || []).map(m => m.user_id).filter(Boolean)
+      const { data: profileRows, error: profilesError } = userIds.length
+        ? await supabase.from('profiles').select('id, email, full_name').in('id', userIds)
+        : { data: [], error: null }
+      if (profilesError) throw profilesError
+      const profileById = new Map((profileRows || []).map(p => [p.id, p]))
 
-    const enriched = (members || []).map(m => ({ ...m, profile: m.user_id ? profileById.get(m.user_id) : null }))
-    setTeamMembers(enriched)
-    const role = enriched.find(m => m.user_id === user.id)?.role || null
-    setMyRole(role)
+      const enriched = (members || []).map(m => ({ ...m, profile: m.user_id ? profileById.get(m.user_id) : null }))
+      setTeamMembers(enriched)
+      const role = enriched.find(m => m.user_id === user.id)?.role || null
+      setMyRole(role)
 
-    // Owner-only "what's everyone working on" view — the "Team admin &
-    // insights view" already named in the pricing copy below. Skipped
-    // entirely for a non-owner rather than fetched-and-discarded, since the
-    // RLS policies backing this only ever return anything for an owner
-    // anyway (see teamActivity.js's header comment).
-    if (role === 'owner') {
-      const activeMemberIds = enriched.filter(m => m.status === 'active' && m.user_id).map(m => m.user_id)
-      const activity = await getTeamActivitySummary(activeMemberIds)
-      setTeamActivity(activity)
-    } else {
-      setTeamActivity(new Map())
+      // Owner-only "what's everyone working on" view — the "Team admin &
+      // insights view" already named in the pricing copy below. Skipped
+      // entirely for a non-owner rather than fetched-and-discarded, since the
+      // RLS policies backing this only ever return anything for an owner
+      // anyway (see teamActivity.js's header comment).
+      if (role === 'owner') {
+        const activeMemberIds = enriched.filter(m => m.status === 'active' && m.user_id).map(m => m.user_id)
+        const activity = await getTeamActivitySummary(activeMemberIds)
+        setTeamActivity(activity)
+      } else {
+        setTeamActivity(new Map())
+      }
+    } catch (err) {
+      setTeamError(err.message || 'Could not load your team. Please try again.')
     }
   }
 
@@ -170,6 +183,17 @@ export default function Billing() {
   }
 
   const isActive = subscription && ['active', 'trialing'].includes(subscription.status)
+  // 2026-08-26 audit finding: past_due/unpaid means Stripe is still trying
+  // to charge an existing, live subscription (the card was declined, not
+  // cancelled) — stripe-portal.js already opens the billing portal for any
+  // row with a stripe_customer_id regardless of status, so it already
+  // supports fixing this correctly. This page just never offered that path:
+  // needsPaymentFix used to fall into the same "!isActive" branch as a
+  // genuinely lapsed/cancelled subscription, which showed the pricing grid
+  // and "Choose a plan to resubscribe" — clicking that started a BRAND NEW
+  // Stripe subscription (see stripe-checkout.js's choosePlan path) instead
+  // of fixing the existing one, risking a duplicate active subscription.
+  const needsPaymentFix = subscription && ['past_due', 'unpaid'].includes(subscription.status)
   const checkoutStatus = searchParams.get('checkout')
 
   return (
@@ -212,6 +236,19 @@ export default function Billing() {
             {openingPortal ? 'Opening...' : 'Manage billing'}
           </button>
           <p className="text-xs text-gray-400 mt-3">Update your card, change plans, view invoices, or cancel, all handled securely by Stripe.</p>
+        </div>
+      ) : needsPaymentFix ? (
+        <div className="card p-6 border border-amber-200 bg-amber-50/40">
+          <h2 className="text-lg font-bold text-navy mb-1 capitalize">{subscription.tier || 'Annie'} plan — payment needs attention</h2>
+          <p className="text-sm text-gray-600 mb-4">
+            {subscription.status === 'past_due'
+              ? "Your last payment didn't go through and Stripe is still retrying. Update your card to keep your plan active."
+              : 'Your subscription is unpaid. Update your card to reactivate it — your account and data are still here.'}
+          </p>
+          <button onClick={manageBilling} disabled={openingPortal} className="btn-primary">
+            {openingPortal ? 'Opening...' : 'Update payment method'}
+          </button>
+          <p className="text-xs text-gray-400 mt-3">This opens Stripe's billing portal for your existing subscription — it won't start a new one or charge you again for the same period.</p>
         </div>
       ) : null}
 
@@ -279,14 +316,18 @@ export default function Billing() {
         </div>
       )}
 
-      {!isActive && (
+      {!isActive && !needsPaymentFix && (
         <>
           {/* Matches the trial-eligibility rule in stripe-checkout.js: a
               customer with no subscriptions row at all gets 7 days free on
               their first plan. A returning customer (this row exists but is
               e.g. cancelled) has already had that trial once, so this
               messaging — and the discount it implies — doesn't show for
-              them, and their next checkout starts billing immediately. */}
+              them, and their next checkout starts billing immediately.
+              past_due/unpaid never reach this branch at all now — see
+              needsPaymentFix above — so "Choose a plan to resubscribe"
+              only ever shows for a genuinely lapsed subscription, never one
+              Stripe is still actively trying to charge. */}
           {!subscription ? (
             <p className="text-sm text-gray-600 mb-4">Every plan starts with a <span className="font-semibold text-navy">7-day free trial</span>. Cancel anytime before it ends and you won't be charged.</p>
           ) : (

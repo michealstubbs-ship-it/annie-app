@@ -10,6 +10,7 @@ import { trackEvent } from '../lib/analytics'
 import { resolveSignalContact } from '../lib/resolveSignalContact'
 import { SIGNAL_TYPE_META as TYPE_META, RACY_SIGNAL_TYPES as RACY_TYPES, NEWS_SIGNAL_TYPES } from '../lib/signalTypes'
 import Spinner from './Spinner'
+import ErrorBanner from './ErrorBanner'
 
 function timeAgo(dateStr) {
   if (!dateStr) return null
@@ -37,7 +38,12 @@ async function loadFeedPageData(userId) {
 export default function IntelligenceFeed() {
   const { user } = useAuth()
   const navigate = useNavigate()
-  const { data: { signals }, loading, setData: setFeedPageData } = useSupabaseQuery(
+  // 2026-08-26 audit fix: listActiveSignals now throws on a real Supabase
+  // error instead of quietly returning [] — useSupabaseQuery already
+  // catches that into its own `error` state, this just needed to actually
+  // be surfaced (see the `error` state below, shared with the mark-seen/
+  // mark-actioned/add-to-actions write failures).
+  const { data: { signals }, loading, error: loadError, setData: setFeedPageData } = useSupabaseQuery(
     () => loadFeedPageData(user.id), [user], { signals: [] },
   )
   // M&A, regulatory, and public commentary are market intel, not something
@@ -57,6 +63,7 @@ export default function IntelligenceFeed() {
   // that's said honestly instead of the button just looking broken.
   const [resolvingId, setResolvingId] = useState(null)
   const [noContactId, setNoContactId] = useState(null)
+  const [error, setError] = useState('')
 
   function setSignals(updater) {
     setFeedPageData(prev => ({ ...prev, signals: updater(prev.signals) }))
@@ -82,13 +89,22 @@ export default function IntelligenceFeed() {
 
   async function markSeen(s) {
     if (s.status !== 'new') return
-    await markSignalSeen(s.id)
+    // 2026-08-26 audit fix: this write's result was never checked — a
+    // failed update (RLS denial, dropped connection) silently left the
+    // signal marked 'new' server-side while the UI still said 'seen'.
+    const { error: err } = await markSignalSeen(s.id)
+    if (err) { setError(err.message || 'Could not update this signal. Please try again.'); return }
     setSignals(prev => prev.map(x => x.id === s.id ? { ...x, status: 'seen' } : x))
     logSignalOutcome(user, s, 'seen')
   }
 
   async function markActioned(s) {
-    await markSignalActioned(s.id)
+    // 2026-08-26 audit fix: same as markSeen above — an unchecked failure
+    // here removed the card from view even though the row was never
+    // actually marked 'actioned', so it would reappear (or be reported as
+    // 'actioned' in analytics) out of sync with the database.
+    const { error: err } = await markSignalActioned(s.id)
+    if (err) { setError(err.message || 'Could not update this signal. Please try again.'); return }
     setSignals(prev => prev.filter(x => x.id !== s.id))
     trackEvent('signal_actioned', { signal_type: s.signal_type, source_verified: !!s.source_verified })
   }
@@ -132,7 +148,12 @@ export default function IntelligenceFeed() {
       setSignals(prev => prev.map(x => x.id === s.id ? { ...x, ...resolved } : x))
       s = { ...s, ...resolved }
     }
-    await markSignalManuallyAdded(s.id)
+    // 2026-08-26 audit fix: unchecked write — a failure here used to still
+    // show the "Added!" confirmation and navigate to Today's Actions, where
+    // the signal would then be missing since manually_added_at was never
+    // actually set.
+    const { error: err } = await markSignalManuallyAdded(s.id)
+    if (err) { setError(err.message || 'Could not add this to Today\'s Actions. Please try again.'); return }
     setSignals(prev => prev.map(x => x.id === s.id ? { ...x, manually_added_at: new Date().toISOString() } : x))
     logSignalOutcome(user, s, 'added_to_bd_actions')
     trackEvent('signal_added_to_bd_actions', { signal_type: s.signal_type })
@@ -152,6 +173,8 @@ export default function IntelligenceFeed() {
         </div>
         {newCount > 0 && <span className="bg-navy text-gold text-xs font-bold px-3.5 py-2 rounded-full whitespace-nowrap">{newCount} new</span>}
       </div>
+
+      <ErrorBanner>{error || (loadError && (loadError.message || 'Could not load your feed. Please try again.'))}</ErrorBanner>
 
       {/* The "this feed is just the news" explainer — matches Today's Actions
           having the same signal available manually, tells the person up
@@ -263,7 +286,13 @@ export default function IntelligenceFeed() {
 
                     <div className="mt-1.5">
                       <span className={`inline-block text-[10.5px] font-bold px-2 py-0.5 rounded-full mr-1.5 ${meta.feedTopicColor || 'bg-[#eef1fb] text-navy-light'}`}>{meta.icon} {meta.label}</span>
-                      {s.event_at && <span className="text-[11px] font-semibold text-gray-400">📅 {timeSensitive ? 'Happened' : 'Happened'} {timeAgo(s.event_at)}</span>}
+                      {/* 2026-08-26 audit fix: dead ternary — both branches said
+                          'Happened', so whatever distinct wording this was meant
+                          to carry for a time-sensitive signal never actually
+                          existed. Left as one honest label rather than inventing
+                          new copy; the amber "time-sensitive" callout right below
+                          already carries the urgency distinction. */}
+                      {s.event_at && <span className="text-[11px] font-semibold text-gray-400">📅 Happened {timeAgo(s.event_at)}</span>}
                     </div>
 
                     <p className="text-gray-800 text-[14.5px] leading-snug mt-1">{s.headline}</p>

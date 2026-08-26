@@ -37,6 +37,12 @@ describe('listJobsMinimal', () => {
     expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
     expect(result).toEqual([])
   })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listJobsMinimal('user_1')).rejects.toEqual({ message: 'db down' })
+  })
 })
 
 describe('listActiveJobsForPicker', () => {
@@ -45,6 +51,12 @@ describe('listActiveJobsForPicker', () => {
     expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
     expect(builder.in).toHaveBeenCalledWith('status', ['active', 'onhold'])
     expect(builder.order).toHaveBeenCalledWith('title')
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listActiveJobsForPicker('user_1')).rejects.toEqual({ message: 'db down' })
   })
 })
 
@@ -62,6 +74,12 @@ describe('listJobsWithCompanies', () => {
 
   it('returns an empty array rather than null when there are no rows', async () => {
     expect(await listJobsWithCompanies('user_1')).toEqual([])
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listJobsWithCompanies('user_1')).rejects.toEqual({ message: 'db down' })
   })
 })
 

@@ -28,14 +28,36 @@ function loadResend() {
 // true/false rather than throwing so a caller can decide whether a failed
 // send is worth noting (e.g. reportServerError) without it ever being able
 // to break the request that triggered it.
+//
+// 2026-08-26 audit finding: this used to swallow a real send failure (a
+// revoked/rotated RESEND_API_KEY, a lapsed domain, Resend rate-limiting or
+// an outage) with zero logging at all — no console.error, no
+// reportServerError, nothing. Contrast with every other fail-open helper
+// in this codebase (aiUsage.js, scanShared.js's reserve* functions), which
+// always at least console.errors on failure. Checking who actually reads
+// the returned boolean: save-onboarding.js and stripe-webhook.js's payment/
+// trial-ending emails only `.catch(() => {})`, which guards a REJECTED
+// promise — this function never rejects, it resolves `false` — so those
+// call sites never actually saw a failure either. Only support-escalate.js
+// checked the boolean and reported it. Logging here (not in every caller)
+// means every future caller gets this for free, matching the file's own
+// stated "callers can log or ignore the result" comment — that promise
+// only actually holds now that there's something to see if they don't.
+// The "not configured" case stays a silent no-op on purpose — that's an
+// expected dev-environment state, not a failure.
 export async function sendEmail({ to, subject, html }) {
   if (!process.env.RESEND_API_KEY) return false // not configured — silently a no-op, same as analytics.js with no key
   try {
     const resend = await loadResend()
     if (!resend) return false
     const { error } = await resend.emails.send({ from: FROM_ADDRESS, to, subject, html })
-    return !error
-  } catch {
+    if (error) {
+      console.error('[email] Resend rejected a send to', to, ':', error.message || error)
+      return false
+    }
+    return true
+  } catch (err) {
+    console.error('[email] send threw for', to, ':', err.message)
     return false
   }
 }

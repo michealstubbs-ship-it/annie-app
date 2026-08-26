@@ -33,26 +33,36 @@ describe('sendEmail', () => {
     await expect(sendEmail({ to: 'a@b.com', subject: 'hi', html: '<p>hi</p>' })).resolves.toBe(true)
   })
 
-  it('returns false, never throws, when Resend reports an error', async () => {
+  // 2026-08-26 audit fix: a real send failure (a revoked key, a lapsed
+  // domain, Resend rate-limiting) used to be completely invisible — no
+  // log, no alert, nothing. Every other fail-open helper in this codebase
+  // at least console.errors on failure; this closes that gap.
+  it('returns false, never throws, when Resend reports an error — and now logs it', async () => {
     process.env.RESEND_API_KEY = 're_test'
     vi.doMock('resend', () => ({
       Resend: vi.fn().mockImplementation(function () {
         return { emails: { send: vi.fn().mockResolvedValue({ data: null, error: { message: 'invalid domain' } }) } }
       }),
     }))
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const { sendEmail } = await import('./email.js')
     await expect(sendEmail({ to: 'a@b.com', subject: 'hi', html: '<p>hi</p>' })).resolves.toBe(false)
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('[email]'), 'a@b.com', ':', 'invalid domain')
+    consoleSpy.mockRestore()
   })
 
-  it('returns false, never throws, when the SDK itself throws', async () => {
+  it('returns false, never throws, when the SDK itself throws — and now logs it', async () => {
     process.env.RESEND_API_KEY = 're_test'
     vi.doMock('resend', () => ({
       Resend: vi.fn().mockImplementation(function () {
         return { emails: { send: vi.fn().mockRejectedValue(new Error('network down')) } }
       }),
     }))
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const { sendEmail } = await import('./email.js')
     await expect(sendEmail({ to: 'a@b.com', subject: 'hi', html: '<p>hi</p>' })).resolves.toBe(false)
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('[email]'), 'a@b.com', ':', 'network down')
+    consoleSpy.mockRestore()
   })
 })
 
