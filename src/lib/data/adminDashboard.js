@@ -99,12 +99,34 @@ export async function getAdminOpex(days = 30) {
   return data || []
 }
 
+// Not a Postgres RPC like everything above — the daily caps the OpEx panel
+// compares spend against live in application code (resolveResourceCaps()
+// in netlify/functions/lib/entitlements.js) and Netlify env vars, not in
+// the database, so this goes through the one endpoint that can actually
+// read them: admin-resource-caps.js. Same is_admin gate as every RPC above,
+// just enforced server-side in JS instead of inside a SECURITY DEFINER
+// function, because that's where the data actually lives. Exists so the
+// dashboard never holds its own separate copy of these numbers again (see
+// that function's own header for the stale-hardcoded-constants bug this
+// replaced).
+export async function getAdminResourceCaps() {
+  const { data: { session } } = await supabase.auth.getSession()
+  const token = session?.access_token
+  if (!token) throw new Error('Your session has expired. Please log in again.')
+  const res = await fetch('/.netlify/functions/admin-resource-caps', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const body = await res.json()
+  if (!res.ok) throw new Error(body?.error || 'Could not load resource caps.')
+  return body
+}
+
 // Everything the Overview tab needs, fetched together. Any single failed
 // call throws (Promise.all), same "fail loud, don't render a half-true
 // dashboard" choice Insights.jsx's own load() already makes for its three
 // existing RPCs.
 export async function loadAdminOverview() {
-  const [accounts, funnel, signupTrend, teamSeats, dataQuality, errorHealth, opex] = await Promise.all([
+  const [accounts, funnel, signupTrend, teamSeats, dataQuality, errorHealth, opex, resourceCaps] = await Promise.all([
     getAdminAccountSummary(),
     getAdminFunnel(),
     getAdminSignupTrend(30),
@@ -112,6 +134,7 @@ export async function loadAdminOverview() {
     getAdminDataQuality(),
     getAdminErrorHealth(),
     getAdminOpex(30),
+    getAdminResourceCaps(),
   ])
-  return { accounts, funnel, signupTrend, teamSeats, dataQuality, errorHealth, opex }
+  return { accounts, funnel, signupTrend, teamSeats, dataQuality, errorHealth, opex, resourceCaps }
 }

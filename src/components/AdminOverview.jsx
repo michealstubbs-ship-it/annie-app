@@ -71,13 +71,15 @@ export default function AdminOverview({ onOpenErrors }) {
   if (error) return <ErrorBanner>{error}</ErrorBanner>
   if (!data) return null
 
-  const { accounts, funnel, signupTrend, teamSeats, dataQuality, errorHealth, opex } = data
+  const { accounts, funnel, signupTrend, teamSeats, dataQuality, errorHealth, opex, resourceCaps } = data
   const errorDelta = errorHealth.last_24h - errorHealth.prior_24h
   const maxSignups = Math.max(1, ...signupTrend.map(d => Number(d.signups)))
   const funnelTotal = funnel?.total_signups || 0
-  const opexToday = opex[opex.length - 1] || { apollo_credits: 0, anthropic_tokens: 0 }
-  const APOLLO_DAILY_CAP = 500 // mirrors DEFAULT_APOLLO_DAILY_CAP in scanShared.js — display only, not enforcement
-  const ANTHROPIC_DAILY_CAP = 2_000_000 // mirrors DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP in chat.js/intelligence-scan.js/scan-now-background.js
+  const opexToday = opex[opex.length - 1] || { apollo_credits: 0, theirstack_credits: 0, anthropic_tokens: 0 }
+  // Live daily ceilings from entitlements.js's own resolveResourceCaps(),
+  // fetched via admin-resource-caps.js — never hardcoded here again, see
+  // that function's header for the stale-constants bug this replaced.
+  const caps = resourceCaps || { apollo: 1, theirStack: 1, anthropicTokens: 1 }
 
   return (
     <div className="space-y-4">
@@ -172,14 +174,18 @@ export default function AdminOverview({ onOpenErrors }) {
         {/* opex */}
         <div className="card p-4">
           <h2 className="text-sm font-bold text-navy">OpEx today</h2>
-          <p className="text-xs text-gray-400 mb-3">Apollo &amp; Anthropic spend</p>
+          <p className="text-xs text-gray-400 mb-3">Apollo, TheirStack &amp; Anthropic spend</p>
           <div className="mb-3">
-            <div className="flex justify-between text-[13px] mb-1"><span className="font-semibold">Apollo credits</span><span className="font-bold text-navy tabular-nums">{opexToday.apollo_credits} / {APOLLO_DAILY_CAP}</span></div>
-            <div className="bg-page-bg rounded-full h-1.5 overflow-hidden"><div className="h-full bg-series-1 rounded-full" style={{ width: `${Math.min((opexToday.apollo_credits / APOLLO_DAILY_CAP) * 100, 100)}%` }} /></div>
+            <div className="flex justify-between text-[13px] mb-1"><span className="font-semibold">Apollo credits</span><span className="font-bold text-navy tabular-nums">{opexToday.apollo_credits} / {caps.apollo}</span></div>
+            <div className="bg-page-bg rounded-full h-1.5 overflow-hidden"><div className="h-full bg-series-1 rounded-full" style={{ width: `${Math.min((opexToday.apollo_credits / caps.apollo) * 100, 100)}%` }} /></div>
+          </div>
+          <div className="mb-3">
+            <div className="flex justify-between text-[13px] mb-1"><span className="font-semibold">TheirStack credits</span><span className="font-bold text-navy tabular-nums">{opexToday.theirstack_credits} / {caps.theirStack}</span></div>
+            <div className="bg-page-bg rounded-full h-1.5 overflow-hidden"><div className="h-full bg-series-1 rounded-full" style={{ width: `${Math.min((opexToday.theirstack_credits / caps.theirStack) * 100, 100)}%` }} /></div>
           </div>
           <div>
-            <div className="flex justify-between text-[13px] mb-1"><span className="font-semibold">Anthropic tokens</span><span className="font-bold text-navy tabular-nums">{(opexToday.anthropic_tokens / 1e6).toFixed(2)}M / {(ANTHROPIC_DAILY_CAP / 1e6).toFixed(1)}M</span></div>
-            <div className="bg-page-bg rounded-full h-1.5 overflow-hidden"><div className="h-full bg-series-1 rounded-full" style={{ width: `${Math.min((opexToday.anthropic_tokens / ANTHROPIC_DAILY_CAP) * 100, 100)}%` }} /></div>
+            <div className="flex justify-between text-[13px] mb-1"><span className="font-semibold">Anthropic tokens</span><span className="font-bold text-navy tabular-nums">{(opexToday.anthropic_tokens / 1e6).toFixed(2)}M / {(caps.anthropicTokens / 1e6).toFixed(1)}M</span></div>
+            <div className="bg-page-bg rounded-full h-1.5 overflow-hidden"><div className="h-full bg-series-1 rounded-full" style={{ width: `${Math.min((opexToday.anthropic_tokens / caps.anthropicTokens) * 100, 100)}%` }} /></div>
           </div>
         </div>
 

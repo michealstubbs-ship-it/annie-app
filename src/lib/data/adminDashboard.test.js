@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-const { rpcMock } = vi.hoisted(() => ({ rpcMock: vi.fn() }))
-vi.mock('../supabase', () => ({ supabase: { rpc: rpcMock } }))
+const { rpcMock, getSessionMock } = vi.hoisted(() => ({ rpcMock: vi.fn(), getSessionMock: vi.fn() }))
+vi.mock('../supabase', () => ({ supabase: { rpc: rpcMock, auth: { getSession: getSessionMock } } }))
 
 import {
   summarizeAccounts,
@@ -12,11 +12,23 @@ import {
   getAdminDataQuality,
   getAdminErrorHealth,
   getAdminOpex,
+  getAdminResourceCaps,
   loadAdminOverview,
 } from './adminDashboard.js'
 
+const originalFetch = global.fetch
+
 beforeEach(() => {
   vi.clearAllMocks()
+  getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok_admin' } } })
+  global.fetch = vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({ apollo: 1200, theirStack: 500, anthropicTokens: 4_000_000 }),
+  })
+})
+
+afterEach(() => {
+  global.fetch = originalFetch
 })
 
 describe('summarizeAccounts', () => {
@@ -160,14 +172,34 @@ describe('RPC wrappers', () => {
     await getAdminOpex(14)
     expect(rpcMock).toHaveBeenCalledWith('get_admin_opex', { p_days: 14 })
   })
+
+  it('getAdminResourceCaps calls the admin-resource-caps endpoint with the caller\'s own session token', async () => {
+    const result = await getAdminResourceCaps()
+    expect(global.fetch).toHaveBeenCalledWith('/.netlify/functions/admin-resource-caps', {
+      headers: { Authorization: 'Bearer tok_admin' },
+    })
+    expect(result).toEqual({ apollo: 1200, theirStack: 500, anthropicTokens: 4_000_000 })
+  })
+
+  it('getAdminResourceCaps throws when there is no session to authenticate with', async () => {
+    getSessionMock.mockResolvedValue({ data: { session: null } })
+    await expect(getAdminResourceCaps()).rejects.toThrow('session has expired')
+    expect(global.fetch).not.toHaveBeenCalled()
+  })
+
+  it('getAdminResourceCaps throws the server\'s own error message on a non-admin caller', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'Not authorized' }) })
+    await expect(getAdminResourceCaps()).rejects.toThrow('Not authorized')
+  })
 })
 
 describe('loadAdminOverview', () => {
-  it('fetches all seven pieces together and shapes them under named keys', async () => {
+  it('fetches all eight pieces together and shapes them under named keys', async () => {
     rpcMock.mockResolvedValue({ data: [], error: null })
     const result = await loadAdminOverview()
     expect(rpcMock).toHaveBeenCalledTimes(7)
-    expect(Object.keys(result).sort()).toEqual(['accounts', 'dataQuality', 'errorHealth', 'funnel', 'opex', 'signupTrend', 'teamSeats'].sort())
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect(Object.keys(result).sort()).toEqual(['accounts', 'dataQuality', 'errorHealth', 'funnel', 'opex', 'resourceCaps', 'signupTrend', 'teamSeats'].sort())
   })
 
   it('rejects the whole load if any single RPC fails, rather than rendering a partly-true dashboard', async () => {
@@ -176,5 +208,11 @@ describe('loadAdminOverview', () => {
       return Promise.resolve({ data: [], error: null })
     })
     await expect(loadAdminOverview()).rejects.toThrow('boom')
+  })
+
+  it('rejects the whole load if the resource-caps fetch fails too, same "fail loud" rule', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'Not authorized' }) })
+    rpcMock.mockResolvedValue({ data: [], error: null })
+    await expect(loadAdminOverview()).rejects.toThrow('Not authorized')
   })
 })
