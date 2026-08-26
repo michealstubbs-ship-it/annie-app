@@ -149,6 +149,20 @@ export default async (req, context) => {
 
   const { messages, systemOverride, webSearch = false } = body
 
+  // 2026-08-26 fix: chat.js used to ALWAYS request stream:true from
+  // Anthropic and ALWAYS respond with NDJSON, regardless of who was
+  // calling. That broke every caller still using the plain callChat()
+  // client helper (the support widget, Today's Actions' candidate-pitch
+  // batch, the writing-style analyser) — they do resp.json() on what is
+  // now an NDJSON body, which throws a parse error and lands in their own
+  // catch block, which is exactly why the support widget started replying
+  // "That didn't go through on my end" on every message the day this
+  // shipped. Streaming is now opt-in per request: only callChatStream()
+  // (used by Chat.jsx/"Ask Annie") sends stream:true in the body. Every
+  // other caller gets back exactly the { text, citations } JSON shape it
+  // always has.
+  const wantsStream = body.stream === true
+
   // Server-enforced ceilings. A real, logged-in customer can still send a
   // very large or search-heavy request, this just bounds what any single
   // authenticated call can cost, regardless of what the client sends.
@@ -166,7 +180,7 @@ export default async (req, context) => {
       model,
       max_tokens: maxTokens,
       messages,
-      stream: true,
+      stream: wantsStream,
       ...(systemOverride && { system: systemOverride }),
       ...(webSearch && {
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxSearchUses }],
@@ -219,12 +233,37 @@ export default async (req, context) => {
       return new Response(JSON.stringify({ error: errText || 'Anthropic request failed' }), { status: resp.status, headers: { 'Content-Type': 'application/json' } })
     }
 
-    // Anthropic's own SSE body streams straight through to the caller as
-    // NDJSON — see streamAnthropicReplyAsNdjson above. Nothing here waits
-    // for the reply to finish before responding.
-    return new Response(streamAnthropicReplyAsNdjson(resp.body), {
+    if (wantsStream) {
+      // Anthropic's own SSE body streams straight through to the caller as
+      // NDJSON — see streamAnthropicReplyAsNdjson above. Nothing here waits
+      // for the reply to finish before responding.
+      return new Response(streamAnthropicReplyAsNdjson(resp.body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+      })
+    }
+
+    // Non-streaming path — unchanged shape every existing caller besides
+    // Chat.jsx still expects.
+    const data = await resp.json()
+
+    // Collect every text block (web search runs interleave tool_use / tool_result / text blocks)
+    const textBlocks = (data.content || []).filter(b => b.type === 'text').map(b => b.text)
+    const text = textBlocks.join('\n')
+
+    // Collect citations if the model cited web search results, so the frontend can show real sources
+    const citations = []
+    for (const block of data.content || []) {
+      if (block.type === 'text' && Array.isArray(block.citations)) {
+        for (const c of block.citations) {
+          if (c.url) citations.push({ url: c.url, title: c.title || c.url })
+        }
+      }
+    }
+
+    return new Response(JSON.stringify({ text, citations }), {
       status: 200,
-      headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+      headers: { 'Content-Type': 'application/json' },
     })
   } catch (err) {
     await reportServerError('chat', err)

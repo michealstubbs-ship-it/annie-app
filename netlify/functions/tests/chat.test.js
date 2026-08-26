@@ -56,10 +56,15 @@ vi.mock('../lib/aiUsage.js', () => ({
 vi.mock('../lib/reportError.js', () => ({ reportServerError: mockReportServerError }))
 vi.mock('@supabase/supabase-js', () => ({ createClient: mockCreateClient }))
 
+// Defaults to stream:true since most of this file's existing tests target
+// the streaming path (callChatStream/Chat.jsx). The 2026-08-26 fix made
+// streaming opt-in per request rather than unconditional — see the
+// dedicated "non-streaming path" describe block below for callChat()'s
+// plain-JSON callers (support widget, candidate-pitch batch, etc.).
 function makeRequest(body, { method = 'POST', invalidJson = false } = {}) {
   const init = { method }
   if (method !== 'GET' && method !== 'HEAD') {
-    init.body = invalidJson ? '{not json' : JSON.stringify(body ?? { messages: [{ role: 'user', content: 'hi' }] })
+    init.body = invalidJson ? '{not json' : JSON.stringify(body ?? { messages: [{ role: 'user', content: 'hi' }], stream: true })
   }
   return new Request('https://annie.example/api/chat', init)
 }
@@ -83,6 +88,12 @@ function anthropicOkResponse(text = 'hello there') {
 
 function anthropicErrorResponse(status, body = 'upstream error') {
   return new Response(body, { status })
+}
+
+// The plain (non-streaming) shape Anthropic returns when stream isn't set —
+// what chat.js's non-streaming branch (every caller besides Chat.jsx) parses.
+function anthropicNonStreamResponse(text = 'hello there') {
+  return new Response(JSON.stringify({ content: [{ type: 'text', text }] }), { status: 200 })
 }
 
 // Reads chat.js's NDJSON response body to completion and returns the
@@ -172,6 +183,32 @@ describe('the successful path', () => {
     expect(text).toBe('hello there')
     expect(lines[lines.length - 1]).toEqual({ type: 'done', citations: [] })
     expect(mockReportServerError).not.toHaveBeenCalled()
+  })
+})
+
+describe('the non-streaming path — every caller besides Chat.jsx', () => {
+  // 2026-08-26 regression target: chat.js used to always request stream:true
+  // and always respond with NDJSON, which broke every caller still using
+  // plain callChat() (support widget, Today's Actions candidate pitches,
+  // the writing-style analyser) — they call resp.json() on what had become
+  // an NDJSON body and it silently threw. Streaming is now opt-in via
+  // `stream: true` in the request body; omitting it (as callChat() does)
+  // must still get back the original { text, citations } JSON shape.
+  it('returns plain JSON { text, citations } when stream is not requested', async () => {
+    global.fetch = vi.fn().mockResolvedValue(anthropicNonStreamResponse('hello there'))
+    const resp = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
+    expect(resp.status).toBe(200)
+    expect(resp.headers.get('Content-Type')).toContain('application/json')
+    const data = await resp.json()
+    expect(data).toEqual({ text: 'hello there', citations: [] })
+    expect(mockReportServerError).not.toHaveBeenCalled()
+  })
+
+  it('sends stream:false through to Anthropic when the caller omits stream', async () => {
+    global.fetch = vi.fn().mockResolvedValue(anthropicNonStreamResponse())
+    await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
+    const sentPayload = JSON.parse(global.fetch.mock.calls[0][1].body)
+    expect(sentPayload.stream).toBe(false)
   })
 })
 

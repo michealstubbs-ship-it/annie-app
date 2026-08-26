@@ -56,7 +56,11 @@ export async function callChatStream({ messages, systemOverride, maxTokens, mode
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ messages, systemOverride, maxTokens, model, webSearch, maxSearchUses }),
+    // stream:true is what tells chat.js to send back NDJSON instead of its
+    // normal { text, citations } JSON body — see chat.js's 2026-08-26 fix
+    // comment. Every other caller of callChat() above omits this and keeps
+    // getting plain JSON.
+    body: JSON.stringify({ messages, systemOverride, maxTokens, model, webSearch, maxSearchUses, stream: true }),
   })
 
   if (!resp.ok) {
