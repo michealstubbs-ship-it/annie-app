@@ -27,15 +27,16 @@ const JOB_STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled'
 const JOB_STATUS_COLOR = { active: '#2f9e5b', onhold: '#d99a2b', filled: '#c9a84c', lost: '#9ca0ac' }
 
 const SCAN_FLAG_PREFIX = 'annie_scan_started_'
-// scan-now-background.js has up to a 15-minute wall-clock budget, and
-// scan-status.js itself only starts treating a "running" status as timed
-// out after 14 minutes — this window has to be at least that long, or the
-// "researching" banner can vanish while the real scan is still genuinely
-// working, dropping a brand-new customer onto generic "nothing new yet"
-// copy on the single highest-stakes trust moment in the product. Was 6
-// minutes, which raced against a scan the backend itself documents as
-// taking up to 15.
-const SCAN_WINDOW_MS = 16 * 60 * 1000
+// scan-now-background.js can now chain across several rounds for Growth/
+// Team accounts (2026-08-25 — see that file's own header), up to that
+// tier's own maxWallClockMs (20 minutes) before it stops. scan-status.js's
+// own timeout matches that ceiling plus a margin (see its header) — this
+// window has to be at least as generous, or the "researching" banner can
+// vanish while a legitimately still-chaining scan is genuinely working,
+// dropping a customer onto generic "nothing new yet" copy on the single
+// highest-stakes trust moment in the product. Was 16 minutes, sized only
+// for the old single-pass scan.
+const SCAN_WINDOW_MS = 24 * 60 * 1000
 
 // 2026-08-25: what a first scan's outcome actually means, and whether the
 // customer can do anything about it right now. Centralised here instead of
@@ -72,6 +73,18 @@ function scanOutcomeCopy(scanOutcome) {
           ? `You can ask her to look again after ${new Date(scanOutcome.retryAfter).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}.`
           : 'You can ask her to look again shortly.',
         canRetryNow: false,
+      }
+    // 2026-08-25: Annie now keeps researching on her own across several
+    // rounds instead of stopping after one pass (see scan-now-background.js's
+    // chaining) — this is what she reports when she genuinely ran out of
+    // rounds/time for a real, narrow market rather than hitting the tier's
+    // target. Deliberately honest rather than implying the dashboard is
+    // fully populated: never padded to hit a number — real signals only.
+    case 'partial_ceiling':
+      return {
+        headline: `Annie found ${scanOutcome.signalsFound || 'some'} real signal${scanOutcome.signalsFound === 1 ? '' : 's'} so far — still building out your first week of intelligence.`,
+        detail: 'Some markets and niches genuinely have less breaking news than others on any given day. She keeps checking automatically, and you can ask her to look again any time.',
+        canRetryNow: true,
       }
     default:
       return null
@@ -119,8 +132,19 @@ export default function Overview() {
   const [contactsCount, setContactsCount] = useState(null) // null = not checked yet, avoids a flash of the reminder
   const [researching, setResearching] = useState(false)
   const [scanOutcome, setScanOutcome] = useState(null) // set once scan-status.js reports the scan is actually done, tells us WHY there's nothing (or something) to show
+  const [chainProgress, setChainProgress] = useState(null) // live counts while a chained scan is still running — see checkScanStatus/tick below
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState('')
+  // Starter-only upgrade nudge (2026-08-25, confirmed with Michael): shown
+  // once this account's own first scan has actually finished, so it reads
+  // as a real contrast the customer can feel ("here's what you got"), not a
+  // sales pitch shown before they've seen anything. Never shown to Growth/
+  // Team — there's nothing to upgrade to that changes this. Defaults to
+  // 'starter' the same way getEntitlements does server-side (see
+  // entitlements.js) — an unrecognised or missing subscription degrades to
+  // Starter-level rather than hiding the nudge incorrectly.
+  const [tier, setTier] = useState('starter')
+  const [upgradeNudgeDismissed, setUpgradeNudgeDismissed] = useState(false)
 
   // Identifies the "in-flight" poll loop so a stale one (from an earlier
   // mount, or a scan that was already being polled when the user clicked
@@ -148,6 +172,11 @@ export default function Overview() {
       if (pollTokenRef.current !== token) return // superseded by a newer poll
       const result = await checkScanStatus()
       if (pollTokenRef.current !== token) return
+      // Captured on every tick, running or done, so the banner can show
+      // live counts ("14 of 20 found so far") while a chained scan is still
+      // in progress, not just once it's finished — see the researching
+      // banner's own render for how this is used.
+      setChainProgress(result)
 
       if (result?.status === 'done') {
         setResearching(false)

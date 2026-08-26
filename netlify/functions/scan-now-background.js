@@ -30,6 +30,7 @@ import { getStore } from '@netlify/blobs'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { reserveAnthropicTokens } from './lib/aiUsage.js'
+import { getEntitlements, SCAN_TIER_CONFIG } from './lib/entitlements.js'
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, splitToKeywords, extractJson,
   discoverHotCompanies, discoverAdzunaJobs, discoverTheirStackJobs, fetchWithRetry, mapLocationsToAdzunaCountries,
@@ -42,11 +43,30 @@ import {
   splitLearnedEntries,
 } from './lib/scanShared.js'
 
-// How many sector groups to research in parallel, and the minimum number of
-// unique signals we want back before we're willing to show a brand new
-// customer their first dashboard without trying harder first.
+// How many sector groups to research in parallel.
 const MAX_SECTOR_GROUPS = 4
-const MIN_SIGNAL_TARGET = 3
+// 2026-08-25: replaced the old flat MIN_SIGNAL_TARGET = 3 with the real,
+// tier-specific targets in SCAN_TIER_CONFIG (entitlements.js) — Michael's
+// call: Starter gets one solid scan, Growth/Team chase a materially fuller
+// dashboard (20 feed signals, 3 with a real contact), and daily scans stay
+// tier-different permanently, not just on day one. See that file's own
+// header for the full reasoning and the exact numbers.
+//
+// Chaining mechanism: this function still only ever does ONE round's worth
+// of research per invocation — round 1 is the existing parallel-sector-
+// groups-plus-broaden pass below, unchanged in shape. If a round finishes
+// still short of the account's tier targets, and there's ceiling left
+// (round count, wall clock since the chain started), this fires a fresh,
+// unawaited invocation of ITSELF to run the next round, authenticated via
+// INTERNAL_SCAN_SECRET rather than a user session token (there usually
+// isn't a live browser session by round 3, and never one at all when a
+// chain is seeded by the Stripe upgrade webhook instead of onboarding) —
+// see resolveCaller below. Each invocation staying comfortably inside its
+// own WALL_CLOCK_BUDGET_MS is what keeps this safe against Netlify's
+// 15-minute per-invocation hard kill regardless of how many rounds a slow
+// niche needs.
+const INTERNAL_SCAN_SECRET = process.env.INTERNAL_SCAN_SECRET
+
 // Was 12 — an arbitrary number that had nothing to do with how many genuine
 // signals a first scan can actually find, and was silently dropping real,
 // already-found signals with zero logging of how many or which ones. Up to
@@ -267,11 +287,31 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
 // they're a short, linear sequence of early returns that's clearer left
 // where the returns actually happen. No change to what any step does.
 
+// Every subsequent round (2+) in a chained scan — see the chaining comment
+// above MIN_SIGNAL_TARGET's old spot. Deliberately cheaper than round 1
+// (one wider-net call instead of up to 4 parallel sector-group calls): by
+// round 2 the account already has real coverage from round 1, so this is
+// about filling gaps, not re-covering everything from scratch. recentNames
+// is passed straight into the prompt's "avoid repeating" line so a chained
+// round actually searches for NEW real signals instead of re-finding (or
+// worse, being tempted to pad with near-duplicates of) what round 1 already
+// wrote.
+async function runAdditionalRound(ob, tierConfig, recentNames, round, learned) {
+  const text = await callAnthropic(process.env.ANTHROPIC_API_KEY, buildScanPrompt(ob, recentNames, {
+    broaden: true,
+    broadenReason: `this is chained research round ${round} for this account — the earlier round(s) already found real signals, so widen further still (older lookback, adjacent function connections) to find genuinely NEW ones rather than repeating what's already been found`,
+    learned,
+  }), { maxUses: tierConfig.anthropicBroadenMaxUses, maxTokens: tierConfig.anthropicMaxTokens })
+  const { learned: learnedFound, rest } = splitLearnedEntries(extractJson(text))
+  return { found: rest, learnedFound, rawText: text }
+}
+
 // Runs every sector-group research call in parallel, merges the results,
 // then — if that came up thin and there's still wall-clock budget — runs
 // one broader pass and merges that in too. Returns everything the handler
-// needs to log and to decide what to enrich.
-async function runResearchPhase(ob, ctx) {
+// needs to log and to decide what to enrich. This is round 1 of a chained
+// scan — see the chaining comment above MIN_SIGNAL_TARGET's old spot.
+async function runResearchPhase(ob, tierConfig, ctx) {
   const { userId, anthropicKey, apolloKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase, startedAt } = ctx
 
   // Adzuna has no coverage at all for some markets this recruiter can
@@ -314,7 +354,7 @@ async function runResearchPhase(ob, ctx) {
         promptOpts.broaden = true
         promptOpts.broadenReason = "this recruiter's market has no live-jobs-board coverage to seed leads from (e.g. UAE/GCC), so cast a wide net from this very first pass rather than waiting to come back thin first"
       }
-      const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], promptOpts), { supabase, maxUses: noAdzunaCoverage ? 10 : 8 })
+      const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], promptOpts), { supabase, maxUses: noAdzunaCoverage ? tierConfig.anthropicBroadenMaxUses : tierConfig.anthropicMaxUses, maxTokens: tierConfig.anthropicMaxTokens })
       const { learned: learnedFound, rest } = splitLearnedEntries(extractJson(text))
       learnedEntries.push(...learnedFound)
       return { sectorGroup, found: rest, rawText: text }
@@ -352,12 +392,12 @@ async function runResearchPhase(ob, ctx) {
   // and moving straight to enrichment is what actually gets this customer a
   // working dashboard instead of a hard-killed function.
   const elapsedBeforeBroaden = Date.now() - startedAt
-  if (merged.length < MIN_SIGNAL_TARGET && elapsedBeforeBroaden > WALL_CLOCK_BUDGET_MS) {
+  if (merged.length < tierConfig.feedSignalTarget && elapsedBeforeBroaden > WALL_CLOCK_BUDGET_MS) {
     console.log('[scan-now] skipping broaden pass for', userId, '- already', Math.round(elapsedBeforeBroaden / 1000) + 's into the run')
-  } else if (merged.length < MIN_SIGNAL_TARGET) {
+  } else if (merged.length < tierConfig.feedSignalTarget) {
     await setStatus(userId, { status: 'running', stage: 'broadening', startedAt })
     try {
-      const broadenText = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { broaden: true, learned }), { maxUses: 10, supabase })
+      const broadenText = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { broaden: true, learned }), { maxUses: tierConfig.anthropicBroadenMaxUses, maxTokens: tierConfig.anthropicMaxTokens, supabase })
       const { learned: broadenLearned, rest: broadenFound } = splitLearnedEntries(extractJson(broadenText))
       learnedEntries.push(...broadenLearned)
       broadened = true
@@ -400,11 +440,33 @@ async function runResearchPhase(ob, ctx) {
   return { groups, capped, broadened, broadenPreview, noAdzunaCoverage }
 }
 
+// Real, current progress for this account against its tier's targets —
+// read straight from intelligence_signals rather than tracked as a running
+// counter in memory, so it's correct across chained invocations regardless
+// of dedup/merge details, and correct even if this is round 1 of a chain
+// seeded by the upgrade webhook (see resolveCaller below) where no prior
+// invocation's counts are available to hand forward. actionsEligible
+// mirrors src/lib/todaysActions/eligibility.js's BD_ACTION_SIGNAL_TYPES and
+// sourcedPool.js's contact gate — kept in sync by hand since one lives in
+// the frontend bundle and one here; if that whitelist changes, update both.
+async function checkTierProgress(supabase, userId) {
+  const { data } = await supabase
+    .from('intelligence_signals')
+    .select('signal_type, contact_verified, contact_candidates')
+    .eq('user_id', userId)
+  const rows = data || []
+  const actionsEligible = rows.filter(r =>
+    ['leadership_change', 'live_job'].includes(r.signal_type) &&
+    (r.contact_verified || (Array.isArray(r.contact_candidates) && r.contact_candidates.length > 0))
+  ).length
+  return { feedTotal: rows.length, actionsEligible }
+}
+
 // Dedupes the research phase's results against this customer's existing
 // signals, enriches what's genuinely new, and writes it. Returns the rows
 // actually written (may be empty) and any write error.
 async function enrichAndWriteSignals(capped, ctx) {
-  const { userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints } = ctx
+  const { userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints, apolloContactRetry } = ctx
 
   // Dedupe against this customer's existing signals BEFORE spending Apollo
   // credits, not after. For a brand new account this set is normally empty,
@@ -426,7 +488,7 @@ async function enrichAndWriteSignals(capped, ctx) {
   // is ambiguous (e.g. "Stitch") and Apollo has no single exact-name match
   // — see pickBestOrgMatch in scanShared.js for the full reasoning behind
   // why this exists (a real wrong-company match this fixes).
-  const rows = await buildEnrichedSignalRows(newEntries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix: '[scan-now]', locationHints })
+  const rows = await buildEnrichedSignalRows(newEntries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix: '[scan-now]', locationHints, apolloContactRetry })
 
   // The exact bug that made a live customer's first scan report success
   // with zero signals actually written: the upsert's own `error` was never
@@ -447,6 +509,50 @@ async function enrichAndWriteSignals(capped, ctx) {
   return { rows, writeError }
 }
 
+// Two ways this function can legitimately be invoked: (a) a real customer's
+// own browser session (onboarding's "Launch Annie", Settings' "Run a new
+// scan") — verified the normal way, via their own Supabase session token,
+// never trusting a user id from the request body; (b) an internal
+// continuation of a chain already in progress — a fresh invocation firing
+// itself for round 2+ (see the chaining comment near the top of this file),
+// or a chain freshly seeded by stripe-webhook.js on a tier upgrade, where
+// there is no live customer session to present at all. (b) is verified by a
+// shared secret header instead, and DOES trust the userId in the body,
+// since nothing about that path is customer-supplied — it's this same
+// codebase calling itself, or another server-side function calling it.
+async function resolveCaller(req, body, supabaseUrl, anonKey) {
+  const internalSecret = req.headers.get('x-internal-scan-secret')
+  if (INTERNAL_SCAN_SECRET && internalSecret && internalSecret === INTERNAL_SCAN_SECRET && body?.userId) {
+    return { userId: body.userId, internal: true }
+  }
+  const { user, error } = await getAuthedUser(req, supabaseUrl, anonKey)
+  if (error) return { userId: null, internal: false, error }
+  return { userId: user.id, internal: false }
+}
+
+// Fire-and-forget continuation to the next round — deliberately not
+// awaited, this invocation's own job ends the moment it kicks this off. See
+// resolveCaller above for why this is auth'd by shared secret rather than a
+// user token, and the chaining comment near MAX_SECTOR_GROUPS for why a new
+// invocation (not a loop inside this one) is what keeps this safe against
+// Netlify's per-invocation execution limit.
+function fireNextRound(userId, round, chainStartedAt) {
+  if (!INTERNAL_SCAN_SECRET) {
+    console.error('[scan-now] INTERNAL_SCAN_SECRET not configured — cannot chain to round', round, 'for', userId, '(this account will stop short of its tier target)')
+    return
+  }
+  const baseUrl = process.env.URL || process.env.DEPLOY_PRIME_URL
+  if (!baseUrl) {
+    console.error('[scan-now] no site URL available to chain to round', round, 'for', userId)
+    return
+  }
+  fetch(`${baseUrl}/.netlify/functions/scan-now-background`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-internal-scan-secret': INTERNAL_SCAN_SECRET },
+    body: JSON.stringify({ userId, round, chainStartedAt }),
+  }).catch(err => console.error('[scan-now] failed to fire round', round, 'for', userId, ':', err.message))
+}
+
 export default async (req) => {
   if (req.method !== 'POST') return
 
@@ -461,12 +567,13 @@ export default async (req) => {
   const theirStackApiKey = process.env.THEIRSTACK_API_KEY
   if (!supabaseUrl || !anonKey || !serviceKey || !anthropicKey) { console.error('[scan-now] not configured'); return }
 
-  // Identify the caller from their OWN token first. Never trust a user id
-  // passed in the request body, that would let anyone trigger a scan (and
-  // spend Anthropic/Apollo credit) against a different customer's account.
-  const { user, error: authError } = await getAuthedUser(req, supabaseUrl, anonKey)
-  if (authError) { console.error('[scan-now] auth failed:', authError); return }
-  const userId = user.id
+  let body = null
+  try { body = await req.json() } catch { /* fine — a real browser trigger sends no body at all */ }
+
+  const { userId, internal, error: authError } = await resolveCaller(req, body, supabaseUrl, anonKey)
+  if (!userId) { console.error('[scan-now] auth failed:', authError); return }
+  const round = internal ? (Number(body?.round) || 1) : 1
+  const chainStartedAt = internal && body?.chainStartedAt ? Number(body.chainStartedAt) : Date.now()
 
   // The scan's writes use the service role, same as the scheduled cron —
   // these are Annie's own findings, not user-authored data, and RLS on
@@ -485,17 +592,24 @@ export default async (req) => {
 
   try {
     // Guard against duplicate triggers (a retried request, a second tab)
-    // kicking off an expensive scan twice in quick succession.
-    const { data: recentBatch } = await supabase
-      .from('intelligence_signals')
-      .select('id')
-      .eq('user_id', userId)
-      .gte('found_at', new Date(Date.now() - 10 * 60 * 1000).toISOString())
-      .limit(1)
-    if (recentBatch?.length) {
-      console.log('[scan-now] recent signals already exist for', userId, 'skipping')
-      await setStatus(userId, { status: 'done', reason: 'recent_signals_exist', signalsFound: recentBatch.length, startedAt, finishedAt: Date.now() })
-      return
+    // kicking off an expensive scan twice in quick succession — real
+    // customer triggers only (round 1, not internal). An internal chain
+    // continuation (round 2+, or a chain freshly seeded by the Stripe
+    // upgrade webhook) is never a duplicate of itself by definition, and
+    // skipping this guard for it is what lets a chain actually finish
+    // multiple rounds within its own account's cooldown window.
+    if (!internal) {
+      const { data: recentBatch } = await supabase
+        .from('intelligence_signals')
+        .select('id')
+        .eq('user_id', userId)
+        .gte('found_at', new Date(Date.now() - 10 * 60 * 1000).toISOString())
+        .limit(1)
+      if (recentBatch?.length) {
+        console.log('[scan-now] recent signals already exist for', userId, 'skipping')
+        await setStatus(userId, { status: 'done', reason: 'recent_signals_exist', signalsFound: recentBatch.length, startedAt, finishedAt: Date.now() })
+        return
+      }
     }
 
     const { data: ob } = await supabase
@@ -527,7 +641,7 @@ export default async (req) => {
     // instead: still blocks rapid re-fires, but doesn't lock a customer out
     // permanently. Tune RESCAN_COOLDOWN_MS if this cadence is wrong for your
     // Anthropic/Apollo budget.
-    if (ob.initial_scan_triggered_at) {
+    if (!internal && ob.initial_scan_triggered_at) {
       const sinceLast = Date.now() - new Date(ob.initial_scan_triggered_at).getTime()
       if (sinceLast < RESCAN_COOLDOWN_MS) {
         console.log('[scan-now] scan ran too recently for', userId, 'at', ob.initial_scan_triggered_at, '- skipping')
@@ -551,11 +665,20 @@ export default async (req) => {
     // stripe-webhook.js fixes earlier in this audit — logged, not thrown,
     // since a failed cooldown write shouldn't abort an otherwise-successful
     // scan already in flight.
-    const { error: cooldownError } = await supabase.from('onboarding').update({ initial_scan_triggered_at: new Date().toISOString() }).eq('user_id', userId)
-    if (cooldownError) {
-      console.error('[scan-now] failed to persist scan cooldown for', userId, ':', cooldownError.message)
-      await reportServerError('scan-now-background', new Error(cooldownError.message), { userId, stage: 'cooldown-write' })
+    if (!internal) {
+      const { error: cooldownError } = await supabase.from('onboarding').update({ initial_scan_triggered_at: new Date().toISOString() }).eq('user_id', userId)
+      if (cooldownError) {
+        console.error('[scan-now] failed to persist scan cooldown for', userId, ':', cooldownError.message)
+        await reportServerError('scan-now-background', new Error(cooldownError.message), { userId, stage: 'cooldown-write' })
+      }
     }
+
+    // Tier resolution (2026-08-25): what this account gets — feed/actions
+    // targets, chain ceiling, per-call search budget, Apollo retry depth —
+    // is entirely driven from here on. See SCAN_TIER_CONFIG in
+    // entitlements.js for the actual numbers and the reasoning behind them.
+    const { tier } = await getEntitlements(supabase, userId)
+    const tierConfig = SCAN_TIER_CONFIG[tier] || SCAN_TIER_CONFIG.starter
 
     // Phase-tagged status from here on (2026-08-24): if this function ever
     // stalls again, `stage` on the status blob says exactly which phase it
@@ -563,44 +686,95 @@ export default async (req) => {
     // it after the fact from what did or didn't get written. See
     // createTimeoutFetch and WALL_CLOCK_BUDGET_MS above for the actual fix
     // — this is purely visibility, not a second line of defense on its own.
-    await setStatus(userId, { status: 'running', stage: 'researching', startedAt })
+    await setStatus(userId, { status: 'running', stage: 'researching', round, tier, startedAt: chainStartedAt })
 
-    // Pass 1 (+ optional broaden pass): research each sector group in
-    // parallel, each with its own full search budget, instead of one call
-    // rationing searches across everything the customer picked. See
-    // runResearchPhase's own comment for the full flow.
-    const { groups, capped, broadened, broadenPreview, noAdzunaCoverage } = await runResearchPhase(ob, {
-      userId, anthropicKey, apolloKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase, startedAt,
-    })
+    // Round 1 is the existing parallel-sector-groups-plus-broaden pass,
+    // unchanged in shape (just tier-aware budgets now). Round 2+ is one
+    // additional, wider-net call per round — see runAdditionalRound's own
+    // header for why it's deliberately cheaper than repeating round 1's
+    // full parallel sweep every time.
+    let groups, capped, broadened, broadenPreview, noAdzunaCoverage
+    if (round === 1) {
+      ;({ groups, capped, broadened, broadenPreview, noAdzunaCoverage } = await runResearchPhase(ob, tierConfig, {
+        userId, anthropicKey, apolloKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase, startedAt,
+      }))
+    } else {
+      const { data: existingRows } = await supabase.from('intelligence_signals').select('company_name').eq('user_id', userId)
+      const recentNames = [...new Set((existingRows || []).map(r => r.company_name).filter(Boolean))].slice(0, 60)
+      const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
+      const { found, learnedFound, rawText } = await runAdditionalRound(ob, tierConfig, recentNames, round, learned)
+      if (learnedFound.length) recordLearnedDiscoveries(supabase, learnedFound).catch(() => {})
+      groups = [ob.sectors || []]
+      capped = dropGenericHiringWhereLiveJobsExist(found).slice(0, MAX_TOTAL_SIGNALS)
+      broadened = true
+      broadenPreview = capped.length ? null : (rawText || '').trim().slice(0, 400)
+      noAdzunaCoverage = mapLocationsToAdzunaCountries(ob.locations).length === 0
+    }
 
     if (!capped.length) {
-      console.log('[scan-now] nothing found for', userId, '| sectors scanned:', groups.map(g => g?.join('/') || 'general').join(' | '), '| broadened:', broadened, '| noAdzunaCoverage:', noAdzunaCoverage, '| broaden preview:', broadenPreview || '(n/a)')
+      console.log('[scan-now] round', round, 'found nothing new for', userId, '| sectors scanned:', groups.map(g => g?.join('/') || 'general').join(' | '), '| broadened:', broadened, '| noAdzunaCoverage:', noAdzunaCoverage, '| preview:', broadenPreview || '(n/a)')
+    } else {
+      await setStatus(userId, { status: 'running', stage: 'enriching', round, tier, startedAt: chainStartedAt })
+    }
+
+    // Dedupe against existing signals, enrich what's genuinely new, write
+    // it — see enrichAndWriteSignals's own comment. Safe to call even when
+    // capped is empty (newEntries just resolves to []).
+    const { rows, writeError } = await enrichAndWriteSignals(capped, {
+      userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints: ob.locations || [], apolloContactRetry: tierConfig.apolloContactRetry,
+    })
+
+    // Real, current progress against this account's tier targets — see
+    // checkTierProgress's own header for why this is a fresh DB read rather
+    // than a running in-memory count.
+    const progress = writeError ? null : await checkTierProgress(supabase, userId)
+    const targetHit = progress && progress.feedTotal >= tierConfig.feedSignalTarget && progress.actionsEligible >= tierConfig.actionsEligibleTarget
+    const elapsedSinceChainStart = Date.now() - chainStartedAt
+    const underCeiling = round < tierConfig.maxRounds && elapsedSinceChainStart < tierConfig.maxWallClockMs
+    const shouldChain = !writeError && !targetHit && underCeiling
+
+    if (shouldChain) {
       await setStatus(userId, {
-        status: 'done',
-        reason: 'no_results',
-        signalsFound: 0,
-        startedAt,
-        finishedAt: Date.now(),
-        sectorsScanned: ob.sectors || [],
-        groupsRun: groups.length,
-        broadened,
-        rawPreview: broadenPreview || null,
+        status: 'running',
+        stage: 'chaining',
+        round,
+        tier,
+        signalsFound: progress.feedTotal,
+        actionsEligible: progress.actionsEligible,
+        feedSignalTarget: tierConfig.feedSignalTarget,
+        actionsEligibleTarget: tierConfig.actionsEligibleTarget,
+        startedAt: chainStartedAt,
       })
+      fireNextRound(userId, round + 1, chainStartedAt)
       return
     }
 
-    await setStatus(userId, { status: 'running', stage: 'enriching', startedAt })
-
-    // Dedupe against existing signals, enrich what's genuinely new, write
-    // it — see enrichAndWriteSignals's own comment.
-    const { rows, writeError } = await enrichAndWriteSignals(capped, { userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints: ob.locations || [] })
+    // Stopping here — either the target was genuinely hit, or the ceiling
+    // (rounds or wall clock) was reached first. Both are legitimate,
+    // reportable outcomes — the honest-degrade case (ceiling hit, still
+    // short) gets its own reason so the dashboard can say so plainly
+    // ("still building your first week of intelligence") instead of
+    // implying the account is simply done and fully populated when it
+    // isn't. Never padded to hit a number — see buildScanPrompt's own
+    // "never invent, always cite a real source" instruction, confirmed with
+    // Michael (2026-08-25) as the one rule this chaining work must not
+    // compromise for any tier.
+    const reason = writeError ? 'error'
+      : targetHit ? 'ok'
+      : progress && progress.feedTotal > 0 ? 'partial_ceiling'
+      : 'no_results'
 
     await setStatus(userId, {
       status: 'done',
-      reason: writeError ? 'error' : rows.length ? 'ok' : 'no_results',
+      reason,
       errorMessage: writeError?.message,
-      signalsFound: writeError ? 0 : rows.length,
-      startedAt,
+      round,
+      tier,
+      signalsFound: progress?.feedTotal ?? rows.length,
+      actionsEligible: progress?.actionsEligible ?? 0,
+      feedSignalTarget: tierConfig.feedSignalTarget,
+      actionsEligibleTarget: tierConfig.actionsEligibleTarget,
+      startedAt: chainStartedAt,
       finishedAt: Date.now(),
       sectorsScanned: ob.sectors || [],
       groupsRun: groups.length,

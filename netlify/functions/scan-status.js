@@ -6,6 +6,7 @@
 import { getStore } from '@netlify/blobs'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
+import { SCAN_TIER_CONFIG } from './lib/entitlements.js'
 
 export default async (req) => {
   const unknown = () => new Response(JSON.stringify({ status: 'unknown' }), {
@@ -23,16 +24,25 @@ export default async (req) => {
     const store = getStore({ name: 'annie-scan-status', consistency: 'strong' })
     const record = await store.get(user.id, { type: 'json' })
 
-    // scan-now-background.js has a 15-minute wall-clock budget. If it gets
-    // hard-killed mid-run (a hung external call, an unhandled error before
-    // the catch block), it can leave the status blob stuck on "running"
-    // forever, with no terminal status ever written — which otherwise means
-    // the dashboard's "Annie is researching" state never resolves. Treat a
-    // "running" status older than that budget as timed out rather than
-    // trusting it verbatim.
+    // scan-now-background.js can now chain across several invocations
+    // (2026-08-25 — see that file's own header), each with its own 15-
+    // minute Netlify budget, so `startedAt` on the blob is the whole
+    // CHAIN's start, not one invocation's. If a chain gets hard-killed
+    // mid-run (a hung external call, an unhandled error, or the internal
+    // continuation call itself failing to fire), it can leave the status
+    // blob stuck on "running" forever, with no terminal status ever
+    // written — which otherwise means the dashboard's "Annie is
+    // researching" state never resolves. Treat a "running" status older
+    // than that account's own tier ceiling (plus a margin for the final
+    // round's own processing time) as timed out rather than trusting it
+    // verbatim — using the tier-specific ceiling here, not a flat number,
+    // is what stops this from flagging a legitimately still-chaining
+    // Growth/Team scan as dead partway through its longer allowance.
     if (record?.status === 'running' && record?.startedAt) {
+      const tierCeilingMs = SCAN_TIER_CONFIG[record.tier]?.maxWallClockMs ?? 10 * 60 * 1000
+      const timeoutMs = tierCeilingMs + 4 * 60 * 1000
       const ageMs = Date.now() - record.startedAt
-      if (ageMs > 14 * 60 * 1000) {
+      if (ageMs > timeoutMs) {
         return new Response(JSON.stringify({ ...record, status: 'done', reason: 'timed_out' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },

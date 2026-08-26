@@ -326,6 +326,30 @@ export function splitToKeywords(label) {
     .filter(Boolean)
 }
 
+// 2026-08-26, real bug found live against Michael's own account: Adzuna and
+// TheirStack both used to build ONE combined [...sectorKeywords,
+// ...functionKeywords] list and slice it to a flat cap — sectors always
+// went in first, so any customer with enough sectors to fill the cap on
+// their own (Michael has 6, which alone split into 8 fragments) got a
+// search that was 100% sector words and NEVER included a single function
+// word — not just their weakest function, every one of them, silently.
+// verified: with the old code, none of "Strategy", "Policy", "Finance", or
+// "Investment" ever reached the actual Adzuna/TheirStack query for his
+// account. Interleaving instead of concatenating guarantees every customer
+// gets real representation from both lists regardless of how many sectors
+// or functions they picked — this is a general fix, not a Strategy-specific
+// patch, since the old bug had nothing to do with which function it was.
+export function buildSearchKeywords(sectors, functions, max = 6) {
+  const sectorKw = (sectors || []).flatMap(splitToKeywords)
+  const functionKw = (functions || []).flatMap(splitToKeywords)
+  const merged = []
+  for (let i = 0; merged.length < max && (i < sectorKw.length || i < functionKw.length); i++) {
+    if (i < sectorKw.length && merged.length < max) merged.push(sectorKw[i])
+    if (i < functionKw.length && merged.length < max) merged.push(functionKw[i])
+  }
+  return merged
+}
+
 // Validates a model-reported eventDate is plausible before it's trusted:
 // not in the future (a hallucinated or misread date), and not so far in the
 // past that it can't genuinely be what a "signals from the last N days"
@@ -389,7 +413,7 @@ export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, lo
   const countries = mapLocationsToAdzunaCountries(locations)
   if (!countries.length) return []
 
-  const keywords = [...(sectors || []).flatMap(splitToKeywords), ...(functions || []).flatMap(splitToKeywords)].slice(0, 6)
+  const keywords = buildSearchKeywords(sectors, functions)
   if (!keywords.length) return []
 
   const results = []
@@ -494,7 +518,7 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
   const countries = mapLocationsToTheirStackCountries(locations)
   if (!countries.length) return []
 
-  const keywords = [...(sectors || []).flatMap(splitToKeywords), ...(functions || []).flatMap(splitToKeywords)].slice(0, 6)
+  const keywords = buildSearchKeywords(sectors, functions)
 
   const limit = 10
   if (!(await reserveTheirStackCredits(supabase, limit))) return []
@@ -852,6 +876,23 @@ const FUNCTION_TITLE_BUCKETS = {
   commercial: ['Commercial Director', 'VP Sales', 'Head of Business Development'],
 }
 
+// A second, wider net — tried only for tiers with apolloContactRetry
+// enabled (Growth/Team, see SCAN_TIER_CONFIG in entitlements.js) when the
+// standard multi-function fallback below still comes back with nobody for
+// a leadership_change/live_job signal. Kept separate from
+// FUNCTION_TITLE_BUCKETS rather than merged into it, since that constant's
+// default export is also used unconditionally for every funding/expansion
+// signal regardless of tier — folding these in there would have quietly
+// widened (and re-costed) that path too. Real GCC production data
+// (25 Aug 2026) showed the standard fallback still comes back empty on
+// these two signal types more often than search budget alone explains —
+// this is a second real attempt for the tiers that pay for one, not a
+// bigger Anthropic search budget.
+const EXTENDED_FUNCTION_TITLE_BUCKETS = {
+  operations: ['COO', 'Head of Operations', 'VP Operations'],
+  general_management: ['Managing Director', 'General Manager', 'Country Manager'],
+}
+
 // Searches several functional title-buckets at once for the same company,
 // instead of the single title-keyword search verifyContact normally does.
 // Deliberately reuses verifyContact itself rather than a parallel lookup
@@ -865,9 +906,9 @@ const FUNCTION_TITLE_BUCKETS = {
 // doesn't spend its whole run's worth of Apollo credit budget in one burst;
 // each bucket search still goes through the same reserveApolloCredits cap
 // verifyContact itself already enforces.
-export async function verifyContactsAcrossFunctions(apolloKey, company, supabase, apolloOrgId, functions = Object.keys(FUNCTION_TITLE_BUCKETS)) {
+export async function verifyContactsAcrossFunctions(apolloKey, company, supabase, apolloOrgId, functions = Object.keys(FUNCTION_TITLE_BUCKETS), bucketMap = FUNCTION_TITLE_BUCKETS) {
   const results = await mapWithConcurrency(functions, 2, async (fn) => {
-    const contact = await verifyContact(apolloKey, company, FUNCTION_TITLE_BUCKETS[fn] || [fn], supabase, apolloOrgId)
+    const contact = await verifyContact(apolloKey, company, bucketMap[fn] || [fn], supabase, apolloOrgId)
     return contact ? { function: fn, ...contact } : null
   })
   return results.filter(Boolean)
@@ -1173,7 +1214,7 @@ function sanitizeCandidateProfile(profile) {
 // entryType field for live_job entries, never trusted to the AI's own
 // signalType choice — see dropGenericHiringWhereLiveJobsExist above and
 // both scan files' prompts.
-export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints = [] }) {
+export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints = [], apolloContactRetry = false }) {
   // enrichCompany runs first, not in parallel with verifyContact: Apollo's
   // people-search now requires a resolved organization_id (see
   // verifyContact's header), which only enrichCompany's own company lookup
@@ -1230,6 +1271,18 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
     contact = await verifyContact(apolloKey, s.company, s.titleKeywords, supabase, companyInfo?.apolloOrgId, signalType === 'leadership_change' ? s.appointedName : null)
     if (!contact && companyInfo?.apolloOrgId) {
       contactCandidates = await verifyContactsAcrossFunctions(apolloKey, s.company, supabase, companyInfo.apolloOrgId)
+    }
+    // Growth/Team only (2026-08-25, see SCAN_TIER_CONFIG in
+    // entitlements.js): one more, wider attempt across a different set of
+    // title buckets before accepting "no contact" — see
+    // EXTENDED_FUNCTION_TITLE_BUCKETS's own header for why this is gated by
+    // tier rather than always on. Never runs for Starter, so its Apollo
+    // credit cost per signal stays exactly where it's always been.
+    if (!contact && !contactCandidates.length && apolloContactRetry && companyInfo?.apolloOrgId) {
+      contactCandidates = await verifyContactsAcrossFunctions(
+        apolloKey, s.company, supabase, companyInfo.apolloOrgId,
+        Object.keys(EXTENDED_FUNCTION_TITLE_BUCKETS), EXTENDED_FUNCTION_TITLE_BUCKETS,
+      )
     }
   }
 
@@ -1316,7 +1369,7 @@ export async function mapWithConcurrency(items, limit, fn) {
 // Output order becomes "grouped by company" rather than strict input order
 // — harmless, since the result is only ever used as a set for a bulk
 // upsert, never rendered in array order.
-export async function buildEnrichedSignalRows(entries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, concurrency = 4, locationHints = [] }) {
+export async function buildEnrichedSignalRows(entries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, concurrency = 4, locationHints = [], apolloContactRetry = false }) {
   const groups = new Map()
   for (const s of entries) {
     const key = normalizeCompanyKey(s.company)
@@ -1327,7 +1380,7 @@ export async function buildEnrichedSignalRows(entries, { userId, apolloKey, comp
   const groupRows = await mapWithConcurrency([...groups.values()], concurrency, async (group) => {
     const rows = []
     for (const s of group) {
-      rows.push(await buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints }))
+      rows.push(await buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints, apolloContactRetry }))
     }
     return rows
   })

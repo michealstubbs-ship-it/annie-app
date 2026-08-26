@@ -20,6 +20,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { reportServerError } from './lib/reportError.js'
 import { reserveAnthropicTokens } from './lib/aiUsage.js'
+import { getEntitlements, SCAN_TIER_CONFIG } from './lib/entitlements.js'
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, extractJson,
   discoverAdzunaJobs, discoverTheirStackJobs, fetchWithRetry, alertIfConfigured,
@@ -137,12 +138,20 @@ Return a single JSON array mixing all three kinds of entries, each tagged with i
 
 const DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP = 2_000_000
 
-async function callAnthropic(apiKey, systemPrompt, supabase) {
+// maxTokens/maxUses now come from the calling customer's own tier (see
+// SCAN_TIER_CONFIG in entitlements.js) instead of being fixed at 4096/8 for
+// everyone — Michael's explicit call (2026-08-25): the daily recurring scan
+// stays permanently different by tier, the same as the onboarding/upgrade
+// scan, not just a one-time signup bonus. Defaults here match Starter's
+// numbers exactly, so a caller that doesn't pass them (a unit test, or any
+// future call site that doesn't care about tiering) behaves exactly as this
+// function always has.
+async function callAnthropic(apiKey, systemPrompt, supabase, { maxTokens = 4096, maxUses = 8 } = {}) {
   // Anthropic spend had no cap anywhere in this codebase — mirrors the
   // existing Apollo daily-credit-cap pattern (reserveApolloCredits in
   // scanShared.js). Checked before the network call fires, same as Apollo's.
   const dailyTokenCap = parseInt(process.env.ANTHROPIC_DAILY_TOKEN_CAP, 10) || DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP
-  if (!(await reserveAnthropicTokens(supabase, 4096, dailyTokenCap))) {
+  if (!(await reserveAnthropicTokens(supabase, maxTokens, dailyTokenCap))) {
     throw new Error('Anthropic daily token cap reached — skipping this call')
   }
   // retries=1, not the fetchWithRetry default of 2: this call already has a
@@ -155,10 +164,10 @@ async function callAnthropic(apiKey, systemPrompt, supabase) {
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 4096,
+      max_tokens: maxTokens,
       system: systemPrompt,
       messages: [{ role: 'user', content: 'Scan for signals now.' }],
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxUses }],
     }),
   }, 90000, 1) // web search runs multiple search round-trips, needs far more than the 12s default
   if (!resp.ok) throw new Error(`Anthropic ${resp.status}`)
@@ -239,6 +248,12 @@ async function fetchExistingDedupKeys(supabase, userId) {
 async function scanOneCustomer(ob, ctx) {
   const { anthropicKey, apolloKey, companiesHouseKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase } = ctx
 
+  // 2026-08-25: resolved per customer, not once for the whole run — tier is
+  // an account-level fact, and this loop scans every customer in one pass.
+  // See SCAN_TIER_CONFIG in entitlements.js for the actual numbers.
+  const { tier } = await getEntitlements(supabase, ob.user_id)
+  const tierConfig = SCAN_TIER_CONFIG[tier] || SCAN_TIER_CONFIG.starter
+
   const recentCompanies = await fetchRecentCompanies(supabase, ob.user_id)
   const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
   // TheirStack fills the gap Adzuna leaves for UAE/GCC — see
@@ -249,7 +264,7 @@ async function scanOneCustomer(ob, ctx) {
   const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase)
   const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
 
-  const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned }), supabase)
+  const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned }), supabase, { maxTokens: tierConfig.anthropicMaxTokens, maxUses: tierConfig.anthropicMaxUses })
   const { learned: learnedFound, rest: rawFound } = splitLearnedEntries(extractJson(text))
   // Fire-and-forget on purpose — this is Annie's own research memory
   // growing for next time (see getLearnedSources/recordLearnedDiscoveries's
@@ -287,7 +302,7 @@ async function scanOneCustomer(ob, ctx) {
   // lets enrichCompany prefer an Apollo org whose country matches this
   // customer's monitored markets when a company name alone is ambiguous
   // (see pickBestOrgMatch in scanShared.js).
-  const rows = await buildEnrichedSignalRows(newSignals, { userId: ob.user_id, apolloKey, companiesHouseKey, supabase, logPrefix: '[intelligence-scan]', locationHints: ob.locations || [] })
+  const rows = await buildEnrichedSignalRows(newSignals, { userId: ob.user_id, apolloKey, companiesHouseKey, supabase, logPrefix: '[intelligence-scan]', locationHints: ob.locations || [], apolloContactRetry: tierConfig.apolloContactRetry })
   if (!rows.length) return 0
 
   // Throwing here (rather than swallowing) is deliberate: this function's

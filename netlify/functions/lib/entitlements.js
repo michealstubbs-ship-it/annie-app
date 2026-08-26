@@ -23,6 +23,52 @@ export const TIER_LIMITS = {
   team: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true, linkedinReimportOnDemand: true },
 }
 
+// The actual numbers behind deepOnboardingResearch above (2026-08-25,
+// confirmed with Michael). Starter gets one solid, honest scan; Growth and
+// Team get a materially deeper one — both the chained onboarding/upgrade
+// scan AND the ongoing daily cron, permanently, not a one-time signup
+// bonus that quietly fades back to parity the next day. Read by
+// scan-now-background.js (feedSignalTarget/actionsEligibleTarget/maxRounds/
+// maxWallClockMs drive the chained onboarding+upgrade scan) and
+// intelligence-scan.js (anthropicMaxTokens/anthropicMaxUses drive the
+// daily per-user call — that file never chains, it's one call per user per
+// scheduled run by design, so maxRounds/maxWallClockMs don't apply there).
+// apolloContactRetry drives verifyContact's extra retry pass in
+// scanShared.js — the real lever for Actions-eligibility (see that file),
+// not just search budget.
+export const SCAN_TIER_CONFIG = {
+  starter: {
+    feedSignalTarget: 10,
+    actionsEligibleTarget: 1,
+    maxRounds: 2,
+    maxWallClockMs: 10 * 60 * 1000,
+    anthropicMaxTokens: 4096,
+    anthropicMaxUses: 8,
+    anthropicBroadenMaxUses: 10,
+    apolloContactRetry: false,
+  },
+  growth: {
+    feedSignalTarget: 20,
+    actionsEligibleTarget: 3,
+    maxRounds: 6,
+    maxWallClockMs: 20 * 60 * 1000,
+    anthropicMaxTokens: 12000,
+    anthropicMaxUses: 12,
+    anthropicBroadenMaxUses: 15,
+    apolloContactRetry: true,
+  },
+  team: {
+    feedSignalTarget: 20,
+    actionsEligibleTarget: 3,
+    maxRounds: 6,
+    maxWallClockMs: 20 * 60 * 1000,
+    anthropicMaxTokens: 12000,
+    anthropicMaxUses: 12,
+    anthropicBroadenMaxUses: 15,
+    apolloContactRetry: true,
+  },
+}
+
 const DEFAULT_TIER = 'starter'
 
 // { tier, status, teamId, limits }. `tier` is always one of the real keys

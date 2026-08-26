@@ -5,7 +5,7 @@
 // pulled it out of the two scan functions in the first place.
 import { describe, it, expect, vi } from 'vitest'
 import {
-  extractJson, normalizeKey, toEventIso, resolveSignalType, splitToKeywords,
+  extractJson, normalizeKey, toEventIso, resolveSignalType, splitToKeywords, buildSearchKeywords,
   mapLocationsToAdzunaCountries, SIGNAL_TYPES, reserveApolloCredits,
   normalizeCompanyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
@@ -145,6 +145,41 @@ describe('splitToKeywords', () => {
   it('handles empty input without throwing', () => {
     expect(splitToKeywords('')).toEqual([])
     expect(splitToKeywords(null)).toEqual([])
+  })
+})
+
+describe('buildSearchKeywords', () => {
+  // The real bug, reproduced with Michael's own onboarding data: 6 sectors
+  // split into 8 keyword fragments on their own, so the old
+  // [...sectors, ...functions].slice(0, 6) never let a single function
+  // keyword through — not just his weakest function, every one of them.
+  it("doesn't let a customer with many sectors crowd out every function keyword", () => {
+    const sectors = ['Financial Services', 'Technology', 'Energy & Utilities', 'Real Estate', 'Private Equity', 'Government & Public Sector']
+    const functions = ['Strategy & Corporate Development', 'Policy & Government Affairs', 'Finance & Accounting', 'Investment & Asset Management']
+    const keywords = buildSearchKeywords(sectors, functions)
+    expect(keywords).toHaveLength(6)
+    // At least one fragment from every selected function must survive, not
+    // just the first one — this is what "not Strategy-specific" means.
+    expect(keywords).toContain('Strategy')
+    expect(keywords.some(k => ['Strategy', 'Corporate Development'].includes(k))).toBe(true)
+    expect(keywords.some(k => ['Policy', 'Government Affairs'].includes(k))).toBe(true)
+  })
+
+  it('still returns sector-only keywords when no functions are set, same as before', () => {
+    expect(buildSearchKeywords(['Financial Services', 'Technology'], [])).toEqual(['Financial Services', 'Technology'])
+  })
+
+  it('still returns function-only keywords when no sectors are set', () => {
+    expect(buildSearchKeywords([], ['Strategy & Corporate Development'])).toEqual(['Strategy', 'Corporate Development'])
+  })
+
+  it('handles empty input on both sides without throwing', () => {
+    expect(buildSearchKeywords([], [])).toEqual([])
+    expect(buildSearchKeywords(null, null)).toEqual([])
+  })
+
+  it('respects a custom max', () => {
+    expect(buildSearchKeywords(['Financial Services', 'Technology', 'Real Estate'], ['Strategy'], 2)).toEqual(['Financial Services', 'Strategy'])
   })
 })
 
