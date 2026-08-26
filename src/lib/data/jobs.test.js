@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
 
-import { listJobsMinimal, listActiveJobsForPicker, listJobsWithCompanies, createJob, updateJob, deleteJob } from './jobs.js'
+import { listJobsMinimal, listActiveJobsForPicker, listJobsWithCompanies, listJobsForCompany, createJob, updateJob, deleteJob } from './jobs.js'
 
 function makeBuilder(result) {
   const builder = {}
@@ -80,6 +80,25 @@ describe('listJobsWithCompanies', () => {
     builder = makeBuilder({ data: null, error: { message: 'db down' } })
     fromMock.mockReturnValue(builder)
     await expect(listJobsWithCompanies('user_1')).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+describe('listJobsForCompany', () => {
+  it('filters to the given company, includes fee_value, newest first', async () => {
+    builder = makeBuilder({ data: [{ id: 'job1', fee_value: 15000 }], error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await listJobsForCompany('co1')
+    expect(fromMock).toHaveBeenCalledWith('jobs')
+    expect(builder.select).toHaveBeenCalledWith('id, title, status, fee_value')
+    expect(builder.eq).toHaveBeenCalledWith('company_id', 'co1')
+    expect(builder.order).toHaveBeenCalledWith('created_at', { ascending: false })
+    expect(result).toEqual([{ id: 'job1', fee_value: 15000 }])
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listJobsForCompany('co1')).rejects.toEqual({ message: 'db down' })
   })
 })
 

@@ -4,6 +4,8 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { callChat } from '../lib/callChat'
 import { useScanStatusPoll } from '../lib/useScanStatusPoll'
+import { getInvoicingDetails, saveInvoicingDetails } from '../lib/data/invoicingDetails'
+import { CURRENCY_OPTIONS } from '../lib/invoiceCalc'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBanner from './ErrorBanner'
 
@@ -66,11 +68,60 @@ export default function Settings() {
   const { polling: scanRunning, result: scanResult, start: startScanPoll } = useScanStatusPoll({ user, windowMs: LOCAL_POLL_WINDOW_MS })
   const scanState = starting ? 'starting' : scanRunning ? 'running' : scanResult ? 'done' : 'idle'
 
+  // Invoicing details: the firm's own business/bank info that goes on
+  // every invoice — one row per team (see invoicingDetails.js), loaded
+  // and saved independently of the profile form above since it lives in
+  // its own table, not on `profiles`.
+  const EMPTY_INVOICING = {
+    business_name: '', business_address: '', business_email: '', business_phone: '', tax_number: '',
+    bank_account_name: '', bank_name: '', bank_account_number: '', bank_sort_code: '', bank_iban: '', bank_swift_bic: '',
+    default_currency: 'AED', default_payment_terms_days: 14, invoice_footer_note: '',
+  }
+  const [invoicingForm, setInvoicingForm] = useState(EMPTY_INVOICING)
+  const [invoicingLoaded, setInvoicingLoaded] = useState(false)
+  const [invoicingSaving, setInvoicingSaving] = useState(false)
+  const [invoicingSaved, setInvoicingSaved] = useState(false)
+  const [invoicingError, setInvoicingError] = useState('')
+
   useEffect(() => {
     if (profile) setForm({ full_name: profile.full_name || '', firm_name: profile.firm_name || '', job_title: profile.job_title || '', phone: profile.phone || '' })
     loadOnboarding()
     loadAccountRequests()
+    loadInvoicingDetails()
   }, [profile])
+
+  async function loadInvoicingDetails() {
+    if (!user) return
+    try {
+      const data = await getInvoicingDetails()
+      if (data) setInvoicingForm({ ...EMPTY_INVOICING, ...data })
+    } catch {
+      // Best-effort load — an empty form (falling back to EMPTY_INVOICING
+      // defaults) is a safe, harmless failure state here; saving still
+      // works and simply creates the row on first save.
+    } finally {
+      setInvoicingLoaded(true)
+    }
+  }
+
+  async function saveInvoicing() {
+    setInvoicingSaving(true)
+    setInvoicingError('')
+    try {
+      const fields = {
+        ...invoicingForm,
+        default_payment_terms_days: Number(invoicingForm.default_payment_terms_days) || 14,
+      }
+      const saved = await saveInvoicingDetails(fields, user.id)
+      setInvoicingForm({ ...EMPTY_INVOICING, ...saved })
+      setInvoicingSaved(true)
+      setTimeout(() => setInvoicingSaved(false), 3000)
+    } catch (err) {
+      setInvoicingError(err.message || 'Could not save your invoicing details. Please try again.')
+    } finally {
+      setInvoicingSaving(false)
+    }
+  }
 
   async function loadAccountRequests() {
     if (!user) return
@@ -214,6 +265,53 @@ Only return the style profile text, nothing else.`
         <h2 className="text-lg font-bold text-navy mb-1">LinkedIn contacts</h2>
         <p className="text-sm text-gray-500 mb-4">Import or re-import your LinkedIn connections. Annie only adds contacts matching the filters you set.</p>
         <button onClick={() => navigate('/dashboard/import-linkedin')} className="btn-primary">Import LinkedIn contacts</button>
+      </div>
+
+      <div className="card p-6 mb-6">
+        <h2 className="text-lg font-bold text-navy mb-1">Invoicing details</h2>
+        <p className="text-sm text-gray-500 mb-4">These details appear on every invoice you send from Annie — your business info at the top, your bank details for clients to pay into. Fill this in once before sending your first invoice.</p>
+
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div><label className="label" htmlFor="inv-business-name">Business name</label><input id="inv-business-name" className="input" value={invoicingForm.business_name || ''} onChange={e => setInvoicingForm(p => ({ ...p, business_name: e.target.value }))} /></div>
+            <div><label className="label" htmlFor="inv-tax-number">Tax / VAT number</label><input id="inv-tax-number" className="input" value={invoicingForm.tax_number || ''} onChange={e => setInvoicingForm(p => ({ ...p, tax_number: e.target.value }))} /></div>
+          </div>
+          <div><label className="label" htmlFor="inv-business-address">Business address</label><textarea id="inv-business-address" className="input resize-none" rows={2} value={invoicingForm.business_address || ''} onChange={e => setInvoicingForm(p => ({ ...p, business_address: e.target.value }))} /></div>
+          <div className="grid grid-cols-2 gap-4">
+            <div><label className="label" htmlFor="inv-business-email">Business email</label><input id="inv-business-email" type="email" className="input" value={invoicingForm.business_email || ''} onChange={e => setInvoicingForm(p => ({ ...p, business_email: e.target.value }))} /></div>
+            <div><label className="label" htmlFor="inv-business-phone">Business phone</label><input id="inv-business-phone" className="input" value={invoicingForm.business_phone || ''} onChange={e => setInvoicingForm(p => ({ ...p, business_phone: e.target.value }))} /></div>
+          </div>
+
+          <div className="border-t border-gray-100 pt-4">
+            <h3 className="text-sm font-bold text-navy mb-3">Bank details</h3>
+            <p className="text-xs text-gray-400 mb-3">Annie doesn't collect payment itself — invoices are paid by bank transfer straight to you, using the details below.</p>
+            <div className="grid grid-cols-2 gap-4">
+              <div><label className="label" htmlFor="inv-bank-account-name">Account name</label><input id="inv-bank-account-name" className="input" value={invoicingForm.bank_account_name || ''} onChange={e => setInvoicingForm(p => ({ ...p, bank_account_name: e.target.value }))} /></div>
+              <div><label className="label" htmlFor="inv-bank-name">Bank name</label><input id="inv-bank-name" className="input" value={invoicingForm.bank_name || ''} onChange={e => setInvoicingForm(p => ({ ...p, bank_name: e.target.value }))} /></div>
+              <div><label className="label" htmlFor="inv-bank-account-number">Account number</label><input id="inv-bank-account-number" className="input" value={invoicingForm.bank_account_number || ''} onChange={e => setInvoicingForm(p => ({ ...p, bank_account_number: e.target.value }))} /></div>
+              <div><label className="label" htmlFor="inv-bank-sort-code">Sort code</label><input id="inv-bank-sort-code" className="input" value={invoicingForm.bank_sort_code || ''} onChange={e => setInvoicingForm(p => ({ ...p, bank_sort_code: e.target.value }))} /></div>
+              <div><label className="label" htmlFor="inv-bank-iban">IBAN</label><input id="inv-bank-iban" className="input" value={invoicingForm.bank_iban || ''} onChange={e => setInvoicingForm(p => ({ ...p, bank_iban: e.target.value }))} /></div>
+              <div><label className="label" htmlFor="inv-bank-swift">SWIFT / BIC</label><input id="inv-bank-swift" className="input" value={invoicingForm.bank_swift_bic || ''} onChange={e => setInvoicingForm(p => ({ ...p, bank_swift_bic: e.target.value }))} /></div>
+            </div>
+          </div>
+
+          <div className="border-t border-gray-100 pt-4 grid grid-cols-2 gap-4">
+            <div>
+              <label className="label" htmlFor="inv-default-currency">Default currency</label>
+              <select id="inv-default-currency" className="input" value={invoicingForm.default_currency || 'AED'} onChange={e => setInvoicingForm(p => ({ ...p, default_currency: e.target.value }))}>
+                {CURRENCY_OPTIONS.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
+              </select>
+            </div>
+            <div><label className="label" htmlFor="inv-payment-terms">Default payment terms (days)</label><input id="inv-payment-terms" type="number" min="0" className="input" value={invoicingForm.default_payment_terms_days ?? 14} onChange={e => setInvoicingForm(p => ({ ...p, default_payment_terms_days: e.target.value }))} /></div>
+          </div>
+          <div><label className="label" htmlFor="inv-footer-note">Invoice footer note</label><textarea id="inv-footer-note" className="input resize-none" rows={2} placeholder="e.g. Thank you for your business." value={invoicingForm.invoice_footer_note || ''} onChange={e => setInvoicingForm(p => ({ ...p, invoice_footer_note: e.target.value }))} /></div>
+        </div>
+
+        <ErrorBanner>{invoicingError}</ErrorBanner>
+        <div className="flex items-center gap-3 mt-5">
+          <button onClick={saveInvoicing} disabled={invoicingSaving || !invoicingLoaded} className="btn-primary">{invoicingSaving ? 'Saving...' : 'Save invoicing details'}</button>
+          {invoicingSaved && <span className="text-green-600 text-sm font-medium">Saved!</span>}
+        </div>
       </div>
 
       <div className="card p-6 mb-6">

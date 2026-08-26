@@ -41,6 +41,21 @@ export async function listJobsWithCompanies(userId) {
   return data || []
 }
 
+// Invoices.jsx's job picker — every job for the invoice's selected company,
+// including fee_value so the invoice form can prefill a line item from it
+// (see JobFormModal's own feeValue calc for where fee_value comes from in
+// the first place). Any status, not just open ones — the whole point of
+// invoicing is billing for jobs that are usually already filled/closed.
+export async function listJobsForCompany(companyId) {
+  const { data, error } = await supabase
+    .from('jobs')
+    .select('id, title, status, fee_value')
+    .eq('company_id', companyId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
 export function createJob(row, userId) {
   return supabase.from('jobs').insert({ ...row, user_id: userId }).select().single()
 }

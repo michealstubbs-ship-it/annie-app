@@ -59,3 +59,15 @@ export async function listCandidatesMinimal(userId) {
   if (error) throw error
   return data || []
 }
+
+// Invoices.jsx's "candidate placed" picker — every candidate with enough
+// fields to filter to the ones linked to the invoice's selected job and to
+// show which one is actually marked 'placed'. Any candidate on the job can
+// still be picked, not just 'placed' ones — a recruiter sometimes raises
+// the invoice before formally flipping the status, and this shouldn't
+// block that.
+export async function listCandidatesForInvoicePicker() {
+  const { data, error } = await supabase.from('candidates').select('id, name, job_id, status').order('name')
+  if (error) throw error
+  return data || []
+}

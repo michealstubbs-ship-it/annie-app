@@ -64,6 +64,35 @@ describe('sendEmail', () => {
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('[email]'), 'a@b.com', ':', 'network down')
     consoleSpy.mockRestore()
   })
+
+  // 2026-08-26 — send-invoice.js's own attachment support: Resend's API
+  // takes the array as-is, so this only needs to confirm sendEmail passes
+  // it straight through unchanged, and doesn't accidentally send an empty
+  // `attachments: []` key when a caller omits it entirely (every other
+  // existing email in this file never attaches anything, so that path
+  // stays exercised by the tests above with no attachments key at all).
+  it('passes attachments straight through to Resend when given', async () => {
+    process.env.RESEND_API_KEY = 're_test'
+    const sendMock = vi.fn().mockResolvedValue({ data: { id: 'x' }, error: null })
+    vi.doMock('resend', () => ({
+      Resend: vi.fn().mockImplementation(function () { return { emails: { send: sendMock } } }),
+    }))
+    const { sendEmail } = await import('./email.js')
+    const attachments = [{ filename: 'invoice.pdf', content: 'YmFzZTY0' }]
+    await sendEmail({ to: 'a@b.com', subject: 'hi', html: '<p>hi</p>', attachments })
+    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ attachments }))
+  })
+
+  it('omits the attachments key entirely when none are given, rather than sending an empty array', async () => {
+    process.env.RESEND_API_KEY = 're_test'
+    const sendMock = vi.fn().mockResolvedValue({ data: { id: 'x' }, error: null })
+    vi.doMock('resend', () => ({
+      Resend: vi.fn().mockImplementation(function () { return { emails: { send: sendMock } } }),
+    }))
+    const { sendEmail } = await import('./email.js')
+    await sendEmail({ to: 'a@b.com', subject: 'hi', html: '<p>hi</p>' })
+    expect(sendMock.mock.calls[0][0]).not.toHaveProperty('attachments')
+  })
 })
 
 describe('sendWelcomeEmail / sendPaymentFailedEmail', () => {
@@ -124,6 +153,43 @@ describe('sendSupportEscalationEmail', () => {
     const { sendSupportEscalationEmail } = await import('./email.js')
     await sendSupportEscalationEmail('mstubbs@meetannie.ai', { category: 'not_a_real_category', excerpt: 'hi' })
     expect(sendMock.mock.calls[0][0].subject).toContain('Unresolved after repeated attempts')
+  })
+})
+
+describe('sendInvoiceEmail', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    delete process.env.RESEND_API_KEY
+  })
+
+  it('is a no-op-safe call when unconfigured', async () => {
+    const { sendInvoiceEmail } = await import('./email.js')
+    await expect(sendInvoiceEmail('client@acme.com', {
+      firmName: 'Acme Recruiting', senderName: 'Jo', invoiceNumber: 'INV-2026-0001', total: '15000.00', currency: 'AED',
+      dueDate: '2026-09-10', pdfBase64: 'YmFzZTY0', pdfFilename: 'INV-2026-0001.pdf',
+    })).resolves.toBe(false)
+  })
+
+  it('attaches the PDF and names the invoice number/total/firm in the subject and body, from the sending recruiter (not Annie)', async () => {
+    process.env.RESEND_API_KEY = 're_test'
+    const sendMock = vi.fn().mockResolvedValue({ data: { id: 'x' }, error: null })
+    vi.doMock('resend', () => ({
+      Resend: vi.fn().mockImplementation(function () { return { emails: { send: sendMock } } }),
+    }))
+    const { sendInvoiceEmail } = await import('./email.js')
+    await sendInvoiceEmail('client@acme.com', {
+      firmName: 'Acme Recruiting', senderName: 'Jo Recruiter', invoiceNumber: 'INV-2026-0001', total: '15,750.00', currency: 'AED',
+      dueDate: '2026-09-10', pdfBase64: 'YmFzZTY0', pdfFilename: 'INV-2026-0001.pdf',
+    })
+    const call = sendMock.mock.calls[0][0]
+    expect(call.to).toBe('client@acme.com')
+    expect(call.subject).toContain('INV-2026-0001')
+    expect(call.subject).toContain('Acme Recruiting')
+    expect(call.html).toContain('INV-2026-0001')
+    expect(call.html).toContain('AED 15,750.00')
+    expect(call.html).toContain('2026-09-10')
+    expect(call.html).toContain('Jo Recruiter')
+    expect(call.attachments).toEqual([{ filename: 'INV-2026-0001.pdf', content: 'YmFzZTY0' }])
   })
 })
 

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
 
-import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, listCandidateJobLinks, listCandidatesForMatching, listCandidatesMinimal } from './candidates.js'
+import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, listCandidateJobLinks, listCandidatesForMatching, listCandidatesMinimal, listCandidatesForInvoicePicker } from './candidates.js'
 
 function makeBuilder(result) {
   const builder = {}
@@ -119,5 +119,21 @@ describe('listCandidatesMinimal', () => {
     builder = makeBuilder({ data: null, error: { message: 'db down' } })
     fromMock.mockReturnValue(builder)
     await expect(listCandidatesMinimal('user_1')).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+describe('listCandidatesForInvoicePicker', () => {
+  it('selects enough fields for the invoice job/status filter, orders by name, no client-side user_id filter', async () => {
+    await listCandidatesForInvoicePicker()
+    expect(fromMock).toHaveBeenCalledWith('candidates')
+    expect(builder.select).toHaveBeenCalledWith('id, name, job_id, status')
+    expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
+    expect(builder.order).toHaveBeenCalledWith('name')
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listCandidatesForInvoicePicker()).rejects.toEqual({ message: 'db down' })
   })
 })

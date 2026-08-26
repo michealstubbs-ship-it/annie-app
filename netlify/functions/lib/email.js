@@ -45,12 +45,17 @@ function loadResend() {
 // only actually holds now that there's something to see if they don't.
 // The "not configured" case stays a silent no-op on purpose — that's an
 // expected dev-environment state, not a failure.
-export async function sendEmail({ to, subject, html }) {
+// 2026-08-26: `attachments` added for send-invoice.js — Resend's own API
+// takes an array of { filename, content } where content is base64, which
+// is exactly the shape this passes straight through, so a caller building
+// a PDF (invoicePdf.js) only needs to base64-encode the raw bytes once and
+// hand them here, no format translation happening in two places.
+export async function sendEmail({ to, subject, html, attachments }) {
   if (!process.env.RESEND_API_KEY) return false // not configured — silently a no-op, same as analytics.js with no key
   try {
     const resend = await loadResend()
     if (!resend) return false
-    const { error } = await resend.emails.send({ from: FROM_ADDRESS, to, subject, html })
+    const { error } = await resend.emails.send({ from: FROM_ADDRESS, to, subject, html, ...(attachments?.length ? { attachments } : {}) })
     if (error) {
       console.error('[email] Resend rejected a send to', to, ':', error.message || error)
       return false
@@ -170,5 +175,26 @@ export async function sendSupportEscalationEmail(to, { customerEmail, firmName, 
       <div style="margin:0 0 16px;padding:16px;background:#f9fafb;border-radius:8px;white-space:pre-wrap;font-size:14px;color:#374151;">${excerpt || '(no conversation excerpt captured)'}</div>
       <p style="margin:0;color:#6b7280;font-size:13px;">Flagged automatically by Annie support — no reply has been sent to the customer about this yet.</p>
     `),
+  })
+}
+
+// 2026-08-26 — send-invoice.js's outgoing email to the recruiter's own
+// client, with the generated PDF attached. Deliberately plain and short —
+// this is a business-to-business invoice email, not a marketing email; the
+// PDF itself carries every real detail (line items, bank details, totals).
+// senderName/firmName come from the sending recruiter's own profile/team,
+// not from Annie, since this email is from them to their client — Annie's
+// branding stays limited to the footer, same as every other email here.
+export async function sendInvoiceEmail(to, { firmName, senderName, invoiceNumber, total, currency, dueDate, pdfBase64, pdfFilename }) {
+  return sendEmail({
+    to,
+    subject: `Invoice ${invoiceNumber}${firmName ? ` from ${firmName}` : ''}`,
+    html: wrapEmail(`
+      <p style="margin:0 0 16px;">Hi,</p>
+      <p style="margin:0 0 16px;">Please find invoice <strong>${invoiceNumber}</strong> attached${firmName ? ` from ${firmName}` : ''}, for <strong>${currency} ${total}</strong>${dueDate ? `, due ${dueDate}` : ''}.</p>
+      <p style="margin:0 0 16px;">Payment details are on the invoice itself. Let us know if you have any questions.</p>
+      <p style="margin:0;">${senderName || 'Thanks'}</p>
+    `),
+    attachments: [{ filename: pdfFilename, content: pdfBase64 }],
   })
 }
