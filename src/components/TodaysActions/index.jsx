@@ -17,7 +17,15 @@ import Spinner from '../Spinner'
 // src/lib/todaysActions/ for why that's now impossible to get out of sync.
 export default function TodaysActions() {
   const { user, profile } = useAuth()
-  const { actions, loading, refreshing, generated, error, crmAdded, refresh, markDone, addContactToCrm, fullIntroMessage } = useTodaysActions({ user, profile })
+  const { actions, loading, refreshing, generated, error, onboarding, crmAdded, refresh, markDone, addContactToCrm, fullIntroMessage } = useTodaysActions({ user, profile })
+  // 2026-08-26, per Michael: a brand-new account with no CRM history yet
+  // (no dormant contacts, no meetings, no clients — see useTodaysActions'
+  // pool list) and whose earliest signals haven't cleared the mandatory-
+  // contact bar can legitimately see nothing here on day one, even though
+  // Annie found real activity. "Nothing urgent today" reads as Annie coming
+  // up empty; the truth for a new account is closer to "still building" —
+  // same honest framing Overview.jsx already uses for a thin first scan.
+  const isNewAccount = onboarding?.created_at && (Date.now() - new Date(onboarding.created_at).getTime()) < 7 * 86400000
   const [openIndex, setOpenIndex] = useState(null)
   const [copiedIndex, setCopiedIndex] = useState(null)
   const [approachChoice, setApproachChoice] = useState({})
@@ -335,9 +343,13 @@ export default function TodaysActions() {
 
       {generated && actions.length === 0 && !loading && (
         <div className="card p-10 text-center mt-6">
-          <div className="text-4xl mb-3">🔍</div>
-          <h3 className="font-bold text-navy mb-1">Nothing urgent today</h3>
-          <p className="text-gray-500 text-sm max-w-sm mx-auto">Your pipeline is quiet and Annie's ongoing scan hasn't turned up anything strong enough yet. Check back later, she's still watching in the background.</p>
+          <div className="text-4xl mb-3">{isNewAccount ? '🌱' : '🔍'}</div>
+          <h3 className="font-bold text-navy mb-1">{isNewAccount ? 'Still building your first week of intelligence' : 'Nothing urgent today'}</h3>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto">
+            {isNewAccount
+              ? "You're new here, so there's no CRM history yet, and Annie hasn't confirmed a verified contact on an early signal yet either — that's normal this early, not a sign nothing's happening. Check the Intelligence Feed to see what she's already found, and this fills in as she keeps researching and confirming contacts."
+              : "Your pipeline is quiet and Annie's ongoing scan hasn't turned up anything strong enough yet. Check back later, she's still watching in the background."}
+          </p>
         </div>
       )}
     </div>

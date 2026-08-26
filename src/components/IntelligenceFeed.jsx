@@ -7,6 +7,7 @@ import InfoTip from './InfoTip'
 import CompanyLogo from './CompanyLogo'
 import { logSignalOutcome } from '../lib/signalOutcomes'
 import { trackEvent } from '../lib/analytics'
+import { resolveSignalContact } from '../lib/resolveSignalContact'
 import { SIGNAL_TYPE_META as TYPE_META, RACY_SIGNAL_TYPES as RACY_TYPES, NEWS_SIGNAL_TYPES } from '../lib/signalTypes'
 import Spinner from './Spinner'
 
@@ -47,6 +48,15 @@ export default function IntelligenceFeed() {
   const [mainTab, setMainTab] = useState('signals')
   const [typeFilter, setTypeFilter] = useState('all')
   const [addedId, setAddedId] = useState(null)
+  // 2026-08-26: the real flaw Michael flagged — a manual "Add to Today's BD
+  // Actions" click on a signal with no contact used to silently do nothing
+  // (isEligibleSourced/isEligibleRelationship never bypassed the
+  // mandatory-contact requirement, only the type whitelist did). resolvingId
+  // marks the one click currently trying a live, real Apollo re-search;
+  // noContactId marks the one that just tried and genuinely found nobody, so
+  // that's said honestly instead of the button just looking broken.
+  const [resolvingId, setResolvingId] = useState(null)
+  const [noContactId, setNoContactId] = useState(null)
 
   function setSignals(updater) {
     setFeedPageData(prev => ({ ...prev, signals: updater(prev.signals) }))
@@ -102,6 +112,26 @@ export default function IntelligenceFeed() {
   // be found and fully worked from Today's Actions.
   async function addToTodaysActions(s) {
     if (s.manually_added_at || NEWS_SIGNAL_TYPES.includes(s.signal_type)) return
+    const hasContact = s.contact_verified || (Array.isArray(s.contact_candidates) && s.contact_candidates.length > 0)
+    // 2026-08-26: the real fix for the flaw above — before this, a signal
+    // with no contact just quietly never showed up on Today's Actions after
+    // this exact click, with nothing telling the customer why. Now it tries
+    // a real, live Apollo re-search (forcing the widest fallback pass
+    // regardless of tier, see resolve-signal-contact.js) before deciding
+    // whether the add can actually go anywhere.
+    if (!hasContact) {
+      setNoContactId(null)
+      setResolvingId(s.id)
+      const result = await resolveSignalContact(s.id)
+      setResolvingId(null)
+      if (!result?.found) {
+        setNoContactId(s.id)
+        return // no silent failure — the button now says exactly what happened, and doesn't navigate to a list this signal won't appear on
+      }
+      const resolved = { contact_verified: !!result.contact, contact_candidates: result.contactCandidates || null }
+      setSignals(prev => prev.map(x => x.id === s.id ? { ...x, ...resolved } : x))
+      s = { ...s, ...resolved }
+    }
     await markSignalManuallyAdded(s.id)
     setSignals(prev => prev.map(x => x.id === s.id ? { ...x, manually_added_at: new Date().toISOString() } : x))
     logSignalOutcome(user, s, 'added_to_bd_actions')
@@ -262,6 +292,22 @@ export default function IntelligenceFeed() {
                         <span className="flex items-center gap-1.5 text-gray-400 text-xs font-semibold italic">Market intel, not a BD action</span>
                       ) : s.manually_added_at ? (
                         <span className="flex items-center gap-1.5 text-green-700 bg-green-50 border border-green-200 font-bold text-xs px-2.5 py-1.5 rounded-full">✓ In Today's BD Actions</span>
+                      ) : resolvingId === s.id ? (
+                        <span className="flex items-center gap-1.5 text-gray-500 font-bold text-xs px-2.5 py-1.5 rounded-full border border-transparent bg-gray-100">
+                          <span className="w-3 h-3 border-2 border-gold border-t-transparent rounded-full animate-spin" /> Finding a contact…
+                        </span>
+                      ) : noContactId === s.id ? (
+                        // Honest outcome, not a broken button: Annie really did
+                        // try (a live, wider Apollo re-search, not just the
+                        // original scan-time attempt) and genuinely found
+                        // nobody findable. The signal stays right here in the
+                        // Feed either way, and the recurring scan will pick a
+                        // contact up automatically the moment one exists —
+                        // this never silently drops the signal itself, only
+                        // this one attempt to fast-track it into Today's Actions.
+                        <span className="flex items-center gap-1.5 text-gray-500 text-xs font-semibold italic" title="Annie searched Apollo directly and couldn't confirm anyone at this company yet. It'll stay here, and Today's Actions will pick it up automatically the moment a contact's found.">
+                          No verified contact found yet — still watching
+                        </span>
                       ) : (
                         <button
                           onClick={() => addToTodaysActions(s)}

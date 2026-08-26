@@ -1383,6 +1383,57 @@ function sanitizeCandidateProfile(profile) {
 // entryType field for live_job entries, never trusted to the AI's own
 // signalType choice — see dropGenericHiringWhereLiveJobsExist above and
 // both scan files' prompts.
+// 2026-08-26: pulled out of buildEnrichedSignalRow so the exact same
+// three-layer real-Apollo-data cascade can be re-run later, on demand, for
+// ONE already-written signal — see resolve-signal-contact.js. Michael's own
+// framing of why this exists: "we cannot have a situation where there is
+// nothing in today's actions because no contacts were found" for a signal
+// the customer explicitly chose from the Feed ("Add to Today's BD Actions"
+// bypasses the signal-type whitelist already, per eligibility.js, but never
+// bypassed the mandatory-contact requirement — a manual add on a
+// contact-less signal used to silently do nothing, which read as a broken
+// button, not as "Annie hasn't found anyone yet"). This function is what
+// lets that click try harder in real time instead of failing silently:
+// resolve-signal-contact.js calls this again, forcing the wider
+// EXTENDED_FUNCTION_TITLE_BUCKETS pass regardless of the customer's tier
+// (apolloContactRetry=true unconditionally there), since a single deliberate
+// user click justifies the extra Apollo credit the way routine per-signal
+// scanning at Starter tier doesn't.
+//
+// Never asks the AI for a contact, and never did — every layer here is a
+// real Apollo lookup against real data. If a company genuinely has nobody
+// findable across all three layers, this returns nothing found; that's
+// still the honest, correct outcome, not a bug to route around.
+export async function resolveContactForSignal({ apolloKey, company, signalType, titleKeywords, appointedName, supabase, apolloOrgId, userId, apolloContactRetry = false, apolloCaps = {} }) {
+  const isFundingOrExpansion = ['funding', 'expansion'].includes(signalType)
+  let contact = null
+  let contactCandidates = []
+  if (isFundingOrExpansion) {
+    if (apolloOrgId) {
+      contactCandidates = await verifyContactsAcrossFunctions(apolloKey, company, supabase, apolloOrgId, undefined, undefined, userId, apolloCaps)
+    }
+  } else {
+    contact = await verifyContact(apolloKey, company, titleKeywords, supabase, apolloOrgId, appointedName, userId, apolloCaps)
+    if (!contact && apolloOrgId) {
+      contactCandidates = await verifyContactsAcrossFunctions(apolloKey, company, supabase, apolloOrgId, undefined, undefined, userId, apolloCaps)
+    }
+    // Growth/Team only during ordinary scanning (2026-08-25, see
+    // SCAN_TIER_CONFIG in entitlements.js): one more, wider attempt across a
+    // different set of title buckets before accepting "no contact" — see
+    // EXTENDED_FUNCTION_TITLE_BUCKETS's own header for why this is normally
+    // gated by tier. resolve-signal-contact.js's manual-retry path forces
+    // this on for every tier, since that call site is a one-off, explicit
+    // user action, not routine per-signal scan cost.
+    if (!contact && !contactCandidates.length && apolloContactRetry && apolloOrgId) {
+      contactCandidates = await verifyContactsAcrossFunctions(
+        apolloKey, company, supabase, apolloOrgId,
+        Object.keys(EXTENDED_FUNCTION_TITLE_BUCKETS), EXTENDED_FUNCTION_TITLE_BUCKETS, userId, apolloCaps,
+      )
+    }
+  }
+  return { contact, contactCandidates }
+}
+
 export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints = [], apolloContactRetry = false, apolloCaps = {} }) {
   // enrichCompany runs first, not in parallel with verifyContact: Apollo's
   // people-search now requires a resolved organization_id (see
@@ -1429,31 +1480,11 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
   // primary path, falling back to the same multi-function search only if
   // that comes back with nobody, so the "always a contact" guarantee holds
   // for all four types, not just the two with an obvious single person.
-  const isFundingOrExpansion = ['funding', 'expansion'].includes(signalType)
-  let contact = null
-  let contactCandidates = []
-  if (isFundingOrExpansion) {
-    if (companyInfo?.apolloOrgId) {
-      contactCandidates = await verifyContactsAcrossFunctions(apolloKey, s.company, supabase, companyInfo.apolloOrgId, undefined, undefined, userId, apolloCaps)
-    }
-  } else {
-    contact = await verifyContact(apolloKey, s.company, s.titleKeywords, supabase, companyInfo?.apolloOrgId, signalType === 'leadership_change' ? s.appointedName : null, userId, apolloCaps)
-    if (!contact && companyInfo?.apolloOrgId) {
-      contactCandidates = await verifyContactsAcrossFunctions(apolloKey, s.company, supabase, companyInfo.apolloOrgId, undefined, undefined, userId, apolloCaps)
-    }
-    // Growth/Team only (2026-08-25, see SCAN_TIER_CONFIG in
-    // entitlements.js): one more, wider attempt across a different set of
-    // title buckets before accepting "no contact" — see
-    // EXTENDED_FUNCTION_TITLE_BUCKETS's own header for why this is gated by
-    // tier rather than always on. Never runs for Starter, so its Apollo
-    // credit cost per signal stays exactly where it's always been.
-    if (!contact && !contactCandidates.length && apolloContactRetry && companyInfo?.apolloOrgId) {
-      contactCandidates = await verifyContactsAcrossFunctions(
-        apolloKey, s.company, supabase, companyInfo.apolloOrgId,
-        Object.keys(EXTENDED_FUNCTION_TITLE_BUCKETS), EXTENDED_FUNCTION_TITLE_BUCKETS, userId, apolloCaps,
-      )
-    }
-  }
+  const { contact, contactCandidates } = await resolveContactForSignal({
+    apolloKey, company: s.company, signalType, titleKeywords: s.titleKeywords,
+    appointedName: signalType === 'leadership_change' ? s.appointedName : null,
+    supabase, apolloOrgId: companyInfo?.apolloOrgId, userId, apolloContactRetry, apolloCaps,
+  })
 
   return {
     user_id: userId,
