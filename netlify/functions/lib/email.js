@@ -118,3 +118,35 @@ export async function sendAddCardToContinueEmail(to, { endingSoon = false } = {}
     `),
   })
 }
+
+// 2026-08-26 — the support widget (SupportWidget.jsx) can now recognise a
+// handful of things it shouldn't try to resolve itself (a refund ask, a
+// GDPR data request, a reproducible bug, someone asking for a human) and
+// flags them via support-escalate.js. There's no ticketing system yet — per
+// Michael's own call, this goes straight to his inbox in real time rather
+// than only surfacing later in the admin Insights page, since he's the
+// entire support team right now. ESCALATION_LABELS mirrors the category
+// list in src/lib/supportEscalation.js (kept as a plain duplicate constant,
+// not a shared import — frontend and Netlify functions don't share modules
+// anywhere else in this codebase, see chat.js/callChat.js's own separation).
+const ESCALATION_LABELS = {
+  refund_billing: 'Refund / billing dispute',
+  gdpr_data_request: 'Data export or deletion request',
+  bug_report: 'Possible bug report',
+  human_requested: 'Customer asked for a human',
+  unresolved: 'Unresolved after repeated attempts',
+}
+
+export async function sendSupportEscalationEmail(to, { customerEmail, firmName, category, excerpt }) {
+  const label = ESCALATION_LABELS[category] || ESCALATION_LABELS.unresolved
+  return sendEmail({
+    to,
+    subject: `Annie support: ${label}${firmName ? ` — ${firmName}` : ''}`,
+    html: wrapEmail(`
+      <p style="margin:0 0 16px;"><strong>${label}</strong></p>
+      <p style="margin:0 0 16px;">${firmName ? `${firmName} · ` : ''}${customerEmail || 'unknown customer'}</p>
+      <div style="margin:0 0 16px;padding:16px;background:#f9fafb;border-radius:8px;white-space:pre-wrap;font-size:14px;color:#374151;">${excerpt || '(no conversation excerpt captured)'}</div>
+      <p style="margin:0;color:#6b7280;font-size:13px;">Flagged automatically by Annie support — no reply has been sent to the customer about this yet.</p>
+    `),
+  })
+}

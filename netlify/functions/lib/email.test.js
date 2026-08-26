@@ -71,6 +71,50 @@ describe('sendWelcomeEmail / sendPaymentFailedEmail', () => {
     const { sendPaymentFailedEmail } = await import('./email.js')
     await expect(sendPaymentFailedEmail('a@b.com')).resolves.toBe(false)
   })
+
+  it('sendSupportEscalationEmail is a no-op-safe call when unconfigured', async () => {
+    const { sendSupportEscalationEmail } = await import('./email.js')
+    await expect(sendSupportEscalationEmail('mstubbs@meetannie.ai', {
+      customerEmail: 'a@b.com', firmName: 'Acme Recruiting', category: 'refund_billing', excerpt: 'user: I want a refund',
+    })).resolves.toBe(false)
+  })
+})
+
+describe('sendSupportEscalationEmail', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    delete process.env.RESEND_API_KEY
+  })
+
+  it('sends with a subject naming the escalation category and firm', async () => {
+    process.env.RESEND_API_KEY = 're_test'
+    const sendMock = vi.fn().mockResolvedValue({ data: { id: 'x' }, error: null })
+    vi.doMock('resend', () => ({
+      Resend: vi.fn().mockImplementation(function () { return { emails: { send: sendMock } } }),
+    }))
+    const { sendSupportEscalationEmail } = await import('./email.js')
+    await sendSupportEscalationEmail('mstubbs@meetannie.ai', {
+      customerEmail: 'client@acme.com', firmName: 'Acme Recruiting', category: 'refund_billing', excerpt: 'user: I want a refund',
+    })
+    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'mstubbs@meetannie.ai',
+      subject: expect.stringContaining('Refund / billing dispute'),
+    }))
+    expect(sendMock.mock.calls[0][0].subject).toContain('Acme Recruiting')
+    expect(sendMock.mock.calls[0][0].html).toContain('client@acme.com')
+    expect(sendMock.mock.calls[0][0].html).toContain('I want a refund')
+  })
+
+  it('falls back to a generic label for an unrecognized category rather than throwing', async () => {
+    process.env.RESEND_API_KEY = 're_test'
+    const sendMock = vi.fn().mockResolvedValue({ data: { id: 'x' }, error: null })
+    vi.doMock('resend', () => ({
+      Resend: vi.fn().mockImplementation(function () { return { emails: { send: sendMock } } }),
+    }))
+    const { sendSupportEscalationEmail } = await import('./email.js')
+    await sendSupportEscalationEmail('mstubbs@meetannie.ai', { category: 'not_a_real_category', excerpt: 'hi' })
+    expect(sendMock.mock.calls[0][0].subject).toContain('Unresolved after repeated attempts')
+  })
 })
 
 afterAll(() => {
