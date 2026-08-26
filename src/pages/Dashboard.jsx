@@ -20,6 +20,7 @@ const Companies = lazy(() => import('../components/Companies'))
 const Jobs = lazy(() => import('../components/Jobs'))
 const Overview = lazy(() => import('../components/Overview'))
 const Billing = lazy(() => import('../components/Billing'))
+const Invoices = lazy(() => import('../components/Invoices'))
 
 function RoutePageLoader() {
   return (
@@ -69,6 +70,7 @@ export default function Dashboard() {
               <Route path="tasks" element={<Tasks />} />
               <Route path="companies" element={<Companies />} />
               <Route path="jobs" element={<Jobs />} />
+              <Route path="invoices" element={<Invoices />} />
               <Route path="contacts" element={<Contacts />} />
               <Route path="pipeline" element={<Pipeline />} />
               <Route path="chat" element={<Chat />} />

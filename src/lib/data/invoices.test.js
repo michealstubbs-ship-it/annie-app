@@ -1,0 +1,179 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
+vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
+
+import { listInvoices, getInvoice, createInvoice, updateInvoice, replaceLineItems, deleteInvoice, markInvoicePaid, voidInvoice } from './invoices.js'
+
+function makeBuilder(result) {
+  const builder = {}
+  const chain = () => builder
+  Object.assign(builder, {
+    select: vi.fn(chain),
+    eq: vi.fn(chain),
+    order: vi.fn(chain),
+    insert: vi.fn(chain),
+    update: vi.fn(chain),
+    delete: vi.fn(chain),
+    maybeSingle: vi.fn(chain),
+    single: vi.fn(chain),
+    then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
+  })
+  return builder
+}
+
+let builder
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  builder = makeBuilder({ data: null, error: null })
+  fromMock.mockReturnValue(builder)
+})
+
+describe('listInvoices', () => {
+  it('joins company/job/candidate names, team-scoped by RLS, newest first', async () => {
+    builder = makeBuilder({ data: [{ id: 'inv1' }], error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await listInvoices()
+    expect(fromMock).toHaveBeenCalledWith('invoices')
+    expect(builder.select).toHaveBeenCalledWith('*, companies(name), jobs(title), candidates(name)')
+    expect(builder.order).toHaveBeenCalledWith('created_at', { ascending: false })
+    expect(result).toEqual([{ id: 'inv1' }])
+  })
+
+  it('returns an empty array rather than null when there are no rows', async () => {
+    expect(await listInvoices()).toEqual([])
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listInvoices()).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+describe('getInvoice', () => {
+  it('joins the job fee_value and every line item, targets by id', async () => {
+    builder = makeBuilder({ data: { id: 'inv1' }, error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await getInvoice('inv1')
+    expect(builder.select).toHaveBeenCalledWith('*, companies(name), jobs(title, fee_value), candidates(name), invoice_line_items(*)')
+    expect(builder.eq).toHaveBeenCalledWith('id', 'inv1')
+    expect(result).toEqual({ id: 'inv1' })
+  })
+
+  it('throws instead of silently returning null when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(getInvoice('inv1')).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+describe('createInvoice', () => {
+  it('stamps the given user_id onto the invoice row and inserts line items scoped to the new invoice id', async () => {
+    const invoiceBuilder = makeBuilder({ data: { id: 'inv1' }, error: null })
+    const lineItemsBuilder = makeBuilder({ data: null, error: null })
+    fromMock.mockImplementation(table => table === 'invoices' ? invoiceBuilder : lineItemsBuilder)
+
+    const result = await createInvoice({ bill_to_name: 'Acme' }, [{ description: 'Fee', quantity: 1, unitAmount: 100, amount: 100 }], 'user_1')
+
+    expect(invoiceBuilder.insert).toHaveBeenCalledWith({ bill_to_name: 'Acme', user_id: 'user_1' })
+    expect(lineItemsBuilder.insert).toHaveBeenCalledWith([
+      { invoice_id: 'inv1', description: 'Fee', quantity: 1, unit_amount: 100, amount: 100, sort_order: 0 },
+    ])
+    expect(result).toEqual({ id: 'inv1' })
+  })
+
+  it('does not attempt a line-item insert when no line items are given', async () => {
+    const invoiceBuilder = makeBuilder({ data: { id: 'inv1' }, error: null })
+    const lineItemsBuilder = makeBuilder({ data: null, error: null })
+    fromMock.mockImplementation(table => table === 'invoices' ? invoiceBuilder : lineItemsBuilder)
+
+    await createInvoice({ bill_to_name: 'Acme' }, [], 'user_1')
+    expect(lineItemsBuilder.insert).not.toHaveBeenCalled()
+  })
+
+  it('throws if the invoice insert itself fails, before ever attempting line items', async () => {
+    const invoiceBuilder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(invoiceBuilder)
+    await expect(createInvoice({ bill_to_name: 'Acme' }, [], 'user_1')).rejects.toEqual({ message: 'db down' })
+  })
+
+  it('throws if the line-item insert fails, even though the invoice row was already created', async () => {
+    const invoiceBuilder = makeBuilder({ data: { id: 'inv1' }, error: null })
+    const lineItemsBuilder = makeBuilder({ data: null, error: { message: 'line item db down' } })
+    fromMock.mockImplementation(table => table === 'invoices' ? invoiceBuilder : lineItemsBuilder)
+    await expect(createInvoice({ bill_to_name: 'Acme' }, [{ description: 'Fee', quantity: 1, unitAmount: 100, amount: 100 }], 'user_1'))
+      .rejects.toEqual({ message: 'line item db down' })
+  })
+})
+
+describe('updateInvoice', () => {
+  it('targets the row by id', async () => {
+    builder = makeBuilder({ data: { id: 'inv1', status: 'sent' }, error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await updateInvoice('inv1', { status: 'sent' })
+    expect(builder.update).toHaveBeenCalledWith({ status: 'sent' })
+    expect(builder.eq).toHaveBeenCalledWith('id', 'inv1')
+    expect(result).toEqual({ id: 'inv1', status: 'sent' })
+  })
+
+  it('throws instead of silently succeeding when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(updateInvoice('inv1', { status: 'sent' })).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+describe('replaceLineItems', () => {
+  it('deletes every existing line item for the invoice, then inserts the new ones in order', async () => {
+    await replaceLineItems('inv1', [{ description: 'A', quantity: 1, unitAmount: 50, amount: 50 }, { description: 'B', quantity: 2, unitAmount: 25, amount: 50 }])
+    expect(builder.delete).toHaveBeenCalled()
+    expect(builder.eq).toHaveBeenCalledWith('invoice_id', 'inv1')
+    expect(builder.insert).toHaveBeenCalledWith([
+      { invoice_id: 'inv1', description: 'A', quantity: 1, unit_amount: 50, amount: 50, sort_order: 0 },
+      { invoice_id: 'inv1', description: 'B', quantity: 2, unit_amount: 25, amount: 50, sort_order: 1 },
+    ])
+  })
+
+  it('does not insert anything when the new line items array is empty', async () => {
+    await replaceLineItems('inv1', [])
+    expect(builder.insert).not.toHaveBeenCalled()
+  })
+
+  it('throws if the delete fails, before attempting the insert', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(replaceLineItems('inv1', [{ description: 'A', quantity: 1, unitAmount: 50, amount: 50 }])).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+describe('deleteInvoice', () => {
+  it('targets the row by id', async () => {
+    await deleteInvoice('inv1')
+    expect(builder.delete).toHaveBeenCalled()
+    expect(builder.eq).toHaveBeenCalledWith('id', 'inv1')
+  })
+
+  it('throws instead of silently succeeding when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(deleteInvoice('inv1')).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+describe('markInvoicePaid', () => {
+  it('sets status to paid and stamps paid_at', async () => {
+    await markInvoicePaid('inv1')
+    expect(builder.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'paid', paid_at: expect.any(String) }))
+    expect(builder.eq).toHaveBeenCalledWith('id', 'inv1')
+  })
+})
+
+describe('voidInvoice', () => {
+  it('sets status to void', async () => {
+    await voidInvoice('inv1')
+    expect(builder.update).toHaveBeenCalledWith({ status: 'void' })
+    expect(builder.eq).toHaveBeenCalledWith('id', 'inv1')
+  })
+})

@@ -8,6 +8,7 @@ import SectorPicker from '../components/SectorPicker'
 import { withTimeout, TIMEOUT_MESSAGE } from '../lib/withTimeout'
 import { trackEvent } from '../lib/analytics'
 import ErrorBanner from '../components/ErrorBanner'
+import { SIGNAL_TYPE_META } from '../lib/signalTypes'
 
 // Sector and market keywords serve two purposes: (1) matched against a company's real
 // Apollo industry/country data when we have it, confidently excluding a confirmed
@@ -37,10 +38,17 @@ const DEFAULT_MARKETS = ['UAE / GCC', 'United Kingdom']
 const DEFAULT_FUNCTIONS = ['Finance & Accounting', 'Technology, Data & Engineering', 'HR & People', 'Strategy & Corporate Development']
 const DEFAULT_SENIORITY = ['Manager+', 'Director / VP+', 'C-Suite / Partner / MD']
 
-const SIGNAL_TYPES = [
-  'Job moves & promotions', 'Company funding rounds', 'Leadership changes', 'Headcount growth signals',
-  'New market expansions', 'M&A and restructuring', 'Regulatory announcements', 'Open roles at their firm',
-]
+// 2026-08-26 audit fix: this used to be a hand-typed list, independent of
+// the real signal-type taxonomy — two of its eight entries ("Job moves &
+// promotions", "Headcount growth signals") didn't correspond to any actual
+// signalType the scan can produce (see signalTypes.js's SIGNAL_TYPE_META),
+// so this screen promised tracking that would never happen. Deriving the
+// display labels from SIGNAL_TYPE_META directly (the same anti-drift fix
+// already applied elsewhere in this codebase — see that file's own header
+// comment) means this list can only ever show real, currently-tracked
+// types, and picks up new ones automatically instead of silently going
+// stale again.
+const SIGNAL_TYPES = Object.values(SIGNAL_TYPE_META).map(m => m.label)
 
 function parseCSV(text) {
   const rows = []
@@ -156,18 +164,74 @@ export default function LinkedInImport({ embedded = false }) {
     return (name || '').trim().toLowerCase()
   }
 
+  // 2026-08-26 audit fix: Supabase caps a single `.select()` at 1000 rows
+  // by default with no error or warning — a query against a table that's
+  // grown past that silently returns a partial result. Used here (instead
+  // of a single unbounded select) anywhere this screen needs to check
+  // "does this already exist" against the customer's full CRM, so a large,
+  // established team's import doesn't start missing real matches and
+  // creating duplicates purely because their CRM crossed 1000 rows.
+  const PAGE_SIZE = 500
+  async function fetchAllRows(table, columns) {
+    const rows = []
+    let from = 0
+    while (true) {
+      const { data, error } = await supabase.from(table).select(columns).range(from, from + PAGE_SIZE - 1)
+      if (error) throw error
+      rows.push(...(data || []))
+      if (!data || data.length < PAGE_SIZE) break
+      from += PAGE_SIZE
+    }
+    return rows
+  }
+
+  // 2026-08-26 audit fix: every keyword check on this page used plain
+  // `.includes()` against raw title/company text — a substring match with
+  // no word-boundary check at all. Several real taxonomy keywords are
+  // short (functionTaxonomy.js has 'hr', 'pr', 'tax'; sectorTaxonomy.js has
+  // 'ey', 'gas', 'oil') and matched INSIDE unrelated words: 'hr' matches
+  // "Ba-hr-ain", 'ey' (Ernst & Young's own abbreviation) matches "Turk-ey"
+  // or "attorn-ey", 'gas' matches "Ve-gas". A contact at a Bahrain-based
+  // firm could get pulled into an "HR & People" function filter they have
+  // nothing to do with, or a real Ernst & Young contact could get missed
+  // entirely if a keyword collision elsewhere in the same matching pass
+  // produces a false exclusion. Fixed with a boundary check that treats a
+  // keyword's own leading/trailing punctuation as already self-bounding
+  // (so 'fp&a' or 'm&a' still match correctly right up against a following
+  // space) while still requiring a real word boundary on any side that
+  // starts/ends with a letter or digit — this is deliberately NOT a regex
+  // \b check, since \b behaves inconsistently right at a keyword's own
+  // trailing punctuation (e.g. 'strategy&' followed by a space has no \b
+  // between the two non-word characters, which would silently stop
+  // matching a case it should catch).
+  function keywordMatches(text, keyword) {
+    if (!keyword) return false
+    const isWordChar = (ch) => !!ch && /[a-z0-9]/i.test(ch)
+    let from = 0
+    while (true) {
+      const idx = text.indexOf(keyword, from)
+      if (idx === -1) return false
+      const before = text[idx - 1]
+      const after = text[idx + keyword.length]
+      const startOk = !isWordChar(keyword[0]) || !isWordChar(before)
+      const endOk = !isWordChar(keyword[keyword.length - 1]) || !isWordChar(after)
+      if (startOk && endOk) return true
+      from = idx + 1
+    }
+  }
+
   // These two are cheap and reliable, straight off the CSV's title text, no API call needed.
   function passesTitleFilters(contact) {
     const titleText = `${contact.title} ${contact.company}`.toLowerCase()
 
     if (functions.length) {
       const selectedFns = FLAT_FUNCTION_OPTIONS.filter(f => functions.includes(f.label))
-      if (!selectedFns.some(f => f.keywords.some(k => titleText.includes(k)))) return false
+      if (!selectedFns.some(f => f.keywords.some(k => keywordMatches(titleText, k)))) return false
     }
 
     if (seniority.length && !seniority.includes('Any level')) {
       const selectedSen = SENIORITY_OPTIONS.filter(s => seniority.includes(s.label))
-      if (!selectedSen.some(s => s.keywords.some(k => titleText.includes(k)))) return false
+      if (!selectedSen.some(s => s.keywords.some(k => keywordMatches(titleText, k)))) return false
     }
 
     if (contact.connectedOn) {
@@ -188,7 +252,7 @@ export default function LinkedInImport({ embedded = false }) {
   // no enrichment data for that company.
   function softGroupMatch(companyText, options, selectedLabels) {
     if (!selectedLabels.length || selectedLabels.includes('Global')) return true
-    const signaled = options.filter(o => o.keywords.length && o.keywords.some(k => companyText.includes(k)))
+    const signaled = options.filter(o => o.keywords.length && o.keywords.some(k => keywordMatches(companyText, k)))
     if (!signaled.length) return true // no evidence either way, don't exclude
     return signaled.some(o => selectedLabels.includes(o.label))
   }
@@ -198,7 +262,7 @@ export default function LinkedInImport({ embedded = false }) {
   function realGroupMatch(dataText, options, selectedLabels) {
     if (!selectedLabels.length || selectedLabels.includes('Global')) return true
     const selected = options.filter(o => selectedLabels.includes(o.label))
-    return selected.some(o => o.keywords.some(k => dataText.includes(k)))
+    return selected.some(o => o.keywords.some(k => keywordMatches(dataText, k)))
   }
 
   function passesSectorMarket(contact) {
@@ -274,7 +338,19 @@ export default function LinkedInImport({ embedded = false }) {
   // repeat companies across customers cost nothing.
   async function runEnrichment(contacts) {
     const candidates = contacts.filter(passesTitleFilters)
-    const uniqueCompanies = [...new Set(candidates.map(c => c.company).filter(Boolean))]
+    // 2026-08-26 audit fix: same raw-string Set issue already fixed for
+    // company creation below — dedupe by normalized name so two contacts
+    // at a slightly-differently-cased spelling of one company don't send
+    // it to Apollo twice (wasted credit) in the same request.
+    const seenEnrichKeys = new Set()
+    const uniqueCompanies = []
+    for (const c of candidates) {
+      if (!c.company) continue
+      const key = normalizeCompany(c.company)
+      if (seenEnrichKeys.has(key)) continue
+      seenEnrichKeys.add(key)
+      uniqueCompanies.push(c.company)
+    }
     if (!uniqueCompanies.length) return
 
     setEnriching(true)
@@ -295,6 +371,18 @@ export default function LinkedInImport({ embedded = false }) {
         },
         body: JSON.stringify({ companies: uniqueCompanies }),
       })
+      // 2026-08-26 audit fix: a non-ok response (e.g. the endpoint's own
+      // 400 for exceeding its 1,000-company cap) was never checked —
+      // `data.results` would just be undefined, `map` would end up empty,
+      // and apolloConfigured stayed true throughout. The review screen's
+      // "Verified via real company data" section would then silently show
+      // 0 enriched instead of telling the customer the check didn't
+      // actually run.
+      if (!resp.ok) {
+        console.error('[LinkedInImport] apollo-enrich-companies returned', resp.status)
+        setApolloConfigured(false)
+        return
+      }
       const data = await resp.json()
       if (data.configured === false) setApolloConfigured(false)
       const map = {}
@@ -310,11 +398,31 @@ export default function LinkedInImport({ embedded = false }) {
     }
   }
 
+  // 2026-08-26 audit fix: withTimeout races the real import against a
+  // 30s timer — if the timer wins, the customer sees "timed out" and the
+  // Import button re-enables (`importing` goes back to false), but the
+  // ORIGINAL runImport() call is still actually running underneath (a
+  // Promise.race can't cancel the loser, only stop waiting on it). If the
+  // customer then clicked Import again, a second runImport() would start
+  // genuinely concurrently with the first still-in-flight one — a real
+  // company/contact duplication race distinct from (and not fixed by) the
+  // normalized-dedup fix above, since that fix only protects a single
+  // run's own internal list, not two overlapping runs racing each other's
+  // reads of "what already exists." This ref tracks the real run
+  // independently of the UI's own `importing` state, and isn't cleared
+  // until the actual promise settles — so a second click is blocked for as
+  // long as the first import is genuinely still working, even after its
+  // own 30s timeout message has already shown.
+  const importRunningRef = useRef(false)
+
   async function handleImport() {
+    if (importRunningRef.current) return
+    importRunningRef.current = true
     setImporting(true)
     setError('')
+    const runPromise = runImport().finally(() => { importRunningRef.current = false })
     try {
-      await withTimeout(runImport(), 30000, 'linkedin-import')
+      await withTimeout(runPromise, 30000, 'linkedin-import')
     } catch (err) {
       console.error('[LinkedInImport] handleImport failed:', err)
       setError(err.message?.startsWith('TIMEOUT:') ? TIMEOUT_MESSAGE : (err.message || 'Something went wrong during import.'))
@@ -331,6 +439,12 @@ export default function LinkedInImport({ embedded = false }) {
       // No target company list anymore, sectors and markets already shaped who got
       // imported. Within that, the most senior decision-makers get tagged hot.
       const seniorKeywords = SENIORITY_OPTIONS.find(s => s.label === 'C-Suite / Partner / MD').keywords
+      // 2026-08-26 audit fix: this cap was silent — the review screen shows
+      // the uncapped `filtered.length`, so a customer with, say, 1,400
+      // matches saw that number, clicked Import, and got 1,000 with no
+      // indication 400 were dropped. Recorded here so the completion
+      // screen can be honest about it instead.
+      const totalMatched = filtered.length
       const toImport = filtered.slice(0, 1000)
 
       // Every contact's company becomes, or reuses, a real Company record. Same
@@ -339,14 +453,49 @@ export default function LinkedInImport({ embedded = false }) {
       // instead of just carrying a free-text name. Where Apollo enrichment already
       // verified the company (from the filter step above), the new record is
       // seeded with its real industry, location and domain, not left blank.
-      const uniqueNames = [...new Set(toImport.map(c => c.company).filter(Boolean))]
+      // 2026-08-26 audit fix: this used to be `[...new Set(toImport.map(c
+      // => c.company))]` — a Set on the RAW company string. Two contacts
+      // in the SAME import whose CSV rows spell the same company slightly
+      // differently ("Acme Trading" vs "acme trading", or a stray trailing
+      // space — both plausible in real LinkedIn export data) were treated
+      // as two different names by the Set, and the `toCreate` filter below
+      // checked each of them against companyMap independently in one pass
+      // rather than updating companyMap as it went — so the second variant
+      // never saw the first, both got queued, and the batch insert created
+      // TWO company rows for one real company. Both contacts still end up
+      // pointing at whichever one won companyMap's last-write-wins rebuild
+      // after the insert, so nothing broke visibly for the contacts
+      // themselves — but the other row sits in Companies with 0 contacts
+      // forever, exactly the "same client added twice" case Companies.jsx's
+      // own copy ("the same client never gets added twice") promises can't
+      // happen. Deduping by the normalized key up front — not the raw
+      // string — means every casing/whitespace variant of one company
+      // collapses to a single canonical entry (the first one seen) before
+      // it ever reaches the "does this already exist" check.
+      const seenCompanyKeys = new Set()
+      const uniqueNames = []
+      for (const name of toImport.map(c => c.company)) {
+        if (!name) continue
+        const key = normalizeCompany(name)
+        if (seenCompanyKeys.has(key)) continue
+        seenCompanyKeys.add(key)
+        uniqueNames.push(name)
+      }
       const companyMap = {} // normalized name -> company id
       let newCompanyCount = 0
 
       if (uniqueNames.length) {
         // 2026-08-24: companies is team-scoped by RLS — no client-side user_id filter on top of it.
-        const { data: existing } = await supabase.from('companies').select('id, name')
-        for (const co of existing || []) companyMap[normalizeCompany(co.name)] = co.id
+        // 2026-08-26 audit fix: was a single unbounded `.select()` — Supabase
+        // caps a single request at 1000 rows by default, so a team whose
+        // CRM had already grown past 1000 companies would silently see only
+        // the first 1000 here, miss a real existing match for company
+        // #1001+, and re-create it as a duplicate — the exact "same client
+        // added twice" failure mode already fixed above, just reachable a
+        // second way at scale. Paginated the same way team-data-request.mjs
+        // already does for exactly this reason.
+        const existing = await fetchAllRows('companies', 'id, name')
+        for (const co of existing) companyMap[normalizeCompany(co.name)] = co.id
 
         const toCreate = uniqueNames
           .filter(name => !companyMap[normalizeCompany(name)])
@@ -372,21 +521,44 @@ export default function LinkedInImport({ embedded = false }) {
         }
       }
 
-      const toInsert = toImport.map(c => {
-        const text = `${c.title || ''}`.toLowerCase()
-        const isSenior = seniorKeywords.some(k => text.includes(k))
-        return {
-          user_id: user.id,
-          name: c.name,
-          email: c.email || null,
-          company: c.company || null,
-          company_id: c.company ? (companyMap[normalizeCompany(c.company)] || null) : null,
-          title: c.title || null,
-          linkedin_url: c.linkedin_url || null,
-          status: isSenior ? 'hot' : 'warm',
-          tags: ['linkedin-import'],
-        }
-      })
+      // 2026-08-26 audit fix: there was no contact-level dedup at all —
+      // re-uploading the same (or a refreshed) Connections.csv, whether by
+      // accident or as a deliberate "pick up new connections" re-import,
+      // duplicated every contact from the file still matching the current
+      // filters, with nothing in the schema to stop it either (no unique
+      // constraint on contacts.linkedin_url or .email). Matched against the
+      // CRM's real existing contacts by linkedin_url first (LinkedIn's own
+      // profile URL is the closest thing to a real unique key a CSV export
+      // gives us), falling back to email for the rare row with no URL but
+      // a real email. A contact with neither is imported every time — there
+      // is no reliable signal to dedupe it against, and silently dropping a
+      // same-name contact risks merging two different real people.
+      const existingContacts = await fetchAllRows('contacts', 'linkedin_url, email')
+      const existingLinkedinUrls = new Set(existingContacts.map(c => c.linkedin_url).filter(Boolean))
+      const existingEmails = new Set(existingContacts.map(c => c.email?.toLowerCase()).filter(Boolean))
+      const isAlreadyImported = (c) =>
+        (c.linkedin_url && existingLinkedinUrls.has(c.linkedin_url)) ||
+        (c.email && existingEmails.has(c.email.toLowerCase()))
+
+      const alreadyImportedCount = toImport.filter(isAlreadyImported).length
+
+      const toInsert = toImport
+        .filter(c => !isAlreadyImported(c))
+        .map(c => {
+          const text = `${c.title || ''}`.toLowerCase()
+          const isSenior = seniorKeywords.some(k => keywordMatches(text, k))
+          return {
+            user_id: user.id,
+            name: c.name,
+            email: c.email || null,
+            company: c.company || null,
+            company_id: c.company ? (companyMap[normalizeCompany(c.company)] || null) : null,
+            title: c.title || null,
+            linkedin_url: c.linkedin_url || null,
+            status: isSenior ? 'hot' : 'warm',
+            tags: ['linkedin-import'],
+          }
+        })
 
       if (toInsert.length) {
         const { error: insertErr } = await supabase.from('contacts').insert(toInsert)
@@ -395,11 +567,26 @@ export default function LinkedInImport({ embedded = false }) {
 
       const targetCount = toInsert.filter(c => c.status === 'hot').length
 
-      await supabase.from('profiles').update({ linkedin_import_completed: true }).eq('id', user.id)
+      // 2026-08-26 audit fix: this update's result was never checked — a
+      // real failure (an RLS denial, a dropped connection) would silently
+      // leave linkedin_import_completed false while the completion screen
+      // told the customer everything worked, permanently re-showing the
+      // import flow every time they load the dashboard even though their
+      // contacts really did import.
+      const { error: profileErr } = await supabase.from('profiles').update({ linkedin_import_completed: true }).eq('id', user.id)
+      if (profileErr) console.error('[LinkedInImport] failed to mark import completed:', profileErr.message)
       await refreshProfile()
 
-      setDone({ imported: toInsert.length, targets: targetCount, newCompanies: newCompanyCount })
-      trackEvent('linkedin_import_completed', { skipped: false, imported: toInsert.length, targets: targetCount })
+      setDone({
+        imported: toInsert.length,
+        targets: targetCount,
+        newCompanies: newCompanyCount,
+        alreadySkipped: alreadyImportedCount,
+        // Only worth mentioning on the completion screen when the 1,000-per-import
+        // cap actually bit — most imports never get near it.
+        cappedFrom: totalMatched > 1000 ? totalMatched : null,
+      })
+      trackEvent('linkedin_import_completed', { skipped: false, imported: toInsert.length, targets: targetCount, alreadySkipped: alreadyImportedCount })
   }
 
   async function handleSkip() {
@@ -447,9 +634,30 @@ export default function LinkedInImport({ embedded = false }) {
           <h2 className="text-2xl font-bold text-navy mb-2">You're all set</h2>
           <p className="text-gray-500 text-sm mb-6">
             Annie imported <span className="font-semibold text-navy">{done.imported} contacts</span>
-            {done.targets > 0 && <>, <span className="font-semibold text-gold">{done.targets} at your target companies</span></>}.
+            {/* 2026-08-26 audit fix: "at your target companies" described a
+                target-company-list concept that was removed from the
+                product — done.targets is really just a seniority/title tag
+                (hot = C-Suite/Partner/MD-level), unrelated to any company
+                list. Reworded to say what it actually is. */}
+            {done.targets > 0 && <>, <span className="font-semibold text-gold">{done.targets} tagged hot as senior decision-makers</span></>}.
             {done.newCompanies > 0 && <> She also created <span className="font-semibold text-navy">{done.newCompanies} new compan{done.newCompanies === 1 ? 'y' : 'ies'}</span> in your Companies list, linked to their contacts.</>}
-            {' '}She's now monitoring all of them for BD signals.
+            {/* 2026-08-26 audit fix: re-uploading the same or a refreshed
+                export used to silently duplicate every contact still in the
+                file — now skipped and reported here instead. */}
+            {done.alreadySkipped > 0 && <> {done.alreadySkipped} {done.alreadySkipped === 1 ? 'was' : 'were'} already in your CRM from an earlier import, so {done.alreadySkipped === 1 ? 'it was' : 'they were'} skipped rather than added twice.</>}
+            {/* 2026-08-26 audit fix: the 1,000-per-import cap used to be
+                silent — the review screen shows the uncapped match count,
+                so a bigger match total quietly lost the difference with no
+                explanation. */}
+            {done.cappedFrom && <> Only the first 1,000 of your {done.cappedFrom.toLocaleString()} matches were imported this time — re-run the import to pick up the rest.</>}
+            {/* 2026-08-26 audit fix: "monitoring all of them" implied
+                per-contact tracking that doesn't exist — the scan is
+                driven by your onboarding sectors/markets, not by watching
+                individual imported contacts. What's real: any signal it
+                finds does get matched back to these contacts by company
+                (see Contacts/Companies pages), which is what this now
+                says. */}
+            {' '}Any BD signal Annie finds in your sectors will now be matched back to these contacts by company.
           </p>
           <button onClick={() => navigate('/dashboard')} className="btn-primary w-full">Go to my dashboard</button>
         </div>
@@ -488,7 +696,16 @@ export default function LinkedInImport({ embedded = false }) {
                   </button>
                 ))}
               </div>
-              <p className="text-[11px] text-gray-400 mt-1.5">Annie checks each contact's real company location before importing. Where that data isn't available, she only rules out a contact whose company name clearly points to a different market, uncertain cases are kept in.</p>
+              {/* 2026-08-26 audit fix: this copy unconditionally claimed
+                  Apollo-verified company location, but that's only true
+                  when APOLLO_API_KEY is configured — otherwise the match is
+                  name-keyword-only (softGroupMatch), with nothing telling
+                  the user which one happened. Now honest either way. */}
+              <p className="text-[11px] text-gray-400 mt-1.5">
+                {apolloConfigured
+                  ? "Annie checks each contact's real company location before importing. Where that data isn't available, she only rules out a contact whose company name clearly points to a different market, uncertain cases are kept in."
+                  : "Annie matches contacts to these markets by company name (a lighter check than her usual verified-company-data lookup). She only rules out a contact whose company name clearly points to a different market, uncertain cases are kept in."}
+              </p>
             </div>
 
             <div className="mt-4 mb-1">

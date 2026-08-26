@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { IconHome, IconZap, IconRadio, IconUsers, IconBuilding, IconTrendingUp, IconCalendar, IconCheckSquare, IconMessageCircle, IconBriefcase, IconUser, IconSettings, IconCreditCard } from './icons'
+import { IconHome, IconZap, IconRadio, IconUsers, IconBuilding, IconTrendingUp, IconCalendar, IconCheckSquare, IconMessageCircle, IconBriefcase, IconUser, IconSettings, IconCreditCard, IconReceipt } from './icons'
 
 // "Signals" was retired as a standalone page — the same BD-trigger data now
 // lives on the Intelligence Feed, so this nav no longer links anywhere dead.
@@ -20,6 +20,7 @@ const NAV = [
 const RECRUITMENT_NAV = [
   { to: '/dashboard/jobs', label: 'Jobs & Mandates', Icon: IconBriefcase },
   { to: '/dashboard/candidates', label: 'Candidates', Icon: IconUser },
+  { to: '/dashboard/invoices', label: 'Invoices', Icon: IconReceipt },
 ]
 
 const SETTINGS_NAV = [
