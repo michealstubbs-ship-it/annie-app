@@ -26,6 +26,33 @@ import { reportServerError } from './reportError.js'
 // textSanitize.js for why.
 export { extractJson, SIGNAL_TYPES, stripAiArtifacts }
 
+// 2026-08-26, Michael: built while investigating whether raising
+// anthropicMaxTokens (see SCAN_TIER_CONFIG in entitlements.js) would
+// actually improve data completeness, or just cost more for no real
+// benefit. extractJson requires a BALANCED, fully-closed JSON array to
+// parse at all (see its own header in src/lib/jsonExtract.js) — if
+// Claude's response gets cut off mid-array because it hit max_tokens
+// before finishing, extractJson doesn't return a partial result, it
+// returns [] and looks IDENTICAL in the logs to "genuinely found
+// nothing". This tells the two apart after the fact: a response that
+// contains a real, unclosed '[' but never resolves to a parseable array is
+// almost certainly a max_tokens truncation, not an empty result. Used only
+// for logging/diagnosis — never changes what gets returned to the caller —
+// so Michael can see from production logs, going forward, how often this
+// is actually happening rather than relying on the schema-based estimate
+// this change shipped with.
+export function looksTruncatedByTokenLimit(rawText) {
+  const text = (rawText || '').trim()
+  if (!text || text.startsWith('[') === false) return false
+  if (extractJson(text).length > 0) return false // parsed fine, not truncated
+  // A genuinely empty result ("nothing good found") is a short, clean
+  // `[]` — that's caught by extractJson succeeding above. Anything left at
+  // this point has an opening bracket but never resolved to valid JSON;
+  // require enough length to rule out a stray '[' inside a short "no
+  // results" narration Claude ignored the "JSON only" instruction for.
+  return text.length > 200
+}
+
 // How far back Apollo/Adzuna discovery counts as "actively happening right
 // now", and how the AI prompts describe their own main search window. One
 // name, one value, used by both scan files.
@@ -211,30 +238,48 @@ function alertCapHitOnce(capName, dailyCap) {
   const key = `${capName}:${new Date().toISOString().slice(0, 10)}`
   if (alertedCapsToday.has(key)) return
   alertedCapsToday.add(key)
-  alertIfConfigured(`:warning: ${capName} daily credit cap (${dailyCap}) reached for today — this is a *shared, platform-wide* budget, so every customer's scan is now getting fewer/no contacts or live-job leads from this source until it resets at midnight UTC. Raise the cap (${capName === 'Apollo' ? 'APOLLO_DAILY_CREDIT_CAP' : 'THEIRSTACK_DAILY_CREDIT_CAP'} in Netlify) if this is happening earlier in the day than expected.`)
+  alertIfConfigured(`:warning: ${capName} PLATFORM-WIDE daily credit cap (${dailyCap}) reached for today — every customer's scan is now getting fewer/no contacts or live-job leads from this source until it resets at midnight UTC. Raise the cap (${capName === 'Apollo' ? 'APOLLO_DAILY_CREDIT_CAP' : 'THEIRSTACK_DAILY_CREDIT_CAP'} in Netlify) if this is happening earlier in the day than expected.`)
 }
 
-// Global daily cap on Apollo.io API credits, spent from ANY call site
-// (LinkedIn import enrichment, the onboarding scan, the recurring cron).
-// Enforced here rather than trusted to good behaviour at each call site,
-// because a bug, a retried request, or a stranger hitting an endpoint
-// directly could otherwise run up an unbounded bill on a paid third-party
-// API that has no ceiling of its own. See supabase-migrations/2026-08-21-
-// apollo-credit-cap.sql for the table and the atomic reservation function
-// this calls — the reservation happens in a single SQL statement, so
-// concurrent calls (parallel sector-group scans, two customers' scans
-// running at once) can't both read a stale total and both slip past the
-// cap the way a check-then-write done in JS could.
-const DEFAULT_APOLLO_DAILY_CAP = 500
+// Daily cap on Apollo.io API credits, spent from ANY call site (LinkedIn
+// import enrichment, the onboarding scan, the recurring cron). Enforced
+// here rather than trusted to good behaviour at each call site, because a
+// bug, a retried request, or a stranger hitting an endpoint directly could
+// otherwise run up an unbounded bill on a paid third-party API that has no
+// ceiling of its own. See supabase-migrations/2026-08-26-per-customer-
+// credit-caps.sql for the tables and the atomic reservation function this
+// calls — the reservation happens in a single SQL statement, so concurrent
+// calls (parallel sector-group scans, two customers' scans running at
+// once) can't both read a stale total and both slip past the cap the way a
+// check-then-write done in JS could.
+//
+// 2026-08-26, Michael: this now checks BOTH a per-customer cap and a
+// platform-wide backstop, not just the platform-wide total alone — see
+// that migration's header for why a single shared counter let one
+// customer's scan starve every other customer's. `caps` is the
+// {userDailyCap, platformDailyCap} pair resolveResourceCaps(tier).apollo
+// in entitlements.js produces for the calling customer's own tier;
+// callers that don't have a resolved tier (or a userId) can omit it and
+// this falls back to the env-var-only platform default, same behaviour as
+// before this change, just checked against nobody's personal cap. Matches
+// entitlements.js's own DEFAULT_PLATFORM_CAPS.apollo exactly — the two
+// used to diverge (this was 500, entitlements.js's was 1200) whenever a
+// caller reached this function without going through resolveResourceCaps;
+// kept in sync now so which code path a caller takes never changes the
+// effective platform ceiling.
+const DEFAULT_APOLLO_DAILY_CAP = 1200
 
-export async function reserveApolloCredits(supabase, credits = 1) {
+export async function reserveApolloCredits(supabase, userId, credits = 1, caps = {}) {
   // No supabase client passed (e.g. a unit test calling these functions
   // directly) — fail open rather than block a context that was never meant
   // to be capped in the first place.
   if (!supabase) return true
-  const dailyCap = parseInt(process.env.APOLLO_DAILY_CREDIT_CAP, 10) || DEFAULT_APOLLO_DAILY_CAP
+  const platformDailyCap = caps.platformDailyCap ?? (parseInt(process.env.APOLLO_DAILY_CREDIT_CAP, 10) || DEFAULT_APOLLO_DAILY_CAP)
+  const userDailyCap = caps.userDailyCap ?? null
   try {
-    const { data, error } = await supabase.rpc('apollo_reserve_credits', { p_credits: credits, p_daily_cap: dailyCap })
+    const { data, error } = await supabase.rpc('apollo_reserve_credits', {
+      p_credits: credits, p_user_id: userId || null, p_user_daily_cap: userDailyCap, p_platform_daily_cap: platformDailyCap,
+    })
     if (error) {
       // A DB hiccup here shouldn't take the whole scan down with it — fail
       // open, same philosophy as every other "degrade gracefully" branch in
@@ -242,11 +287,17 @@ export async function reserveApolloCredits(supabase, credits = 1) {
       console.error('[scanShared] apollo_reserve_credits RPC failed, allowing the call through:', error.message)
       return true
     }
-    if (!data) {
-      console.error(`[scanShared] Apollo daily credit cap (${dailyCap}) reached for today, skipping call`)
-      alertCapHitOnce('Apollo', dailyCap)
+    if (data === 'user_cap') {
+      console.log(`[scanShared] Apollo per-customer daily credit cap (${userDailyCap}) reached for user ${userId} — expected behaviour, does not affect other customers`)
+      return false
     }
-    return data
+    if (data === 'platform_cap') {
+      console.error(`[scanShared] Apollo daily credit cap (${platformDailyCap}) reached for today, skipping call`)
+      alertCapHitOnce('Apollo', platformDailyCap)
+      return false
+    }
+    if (data !== 'ok') console.error('[scanShared] apollo_reserve_credits RPC returned an unexpected value, allowing the call through:', data)
+    return true
   } catch (err) {
     console.error('[scanShared] apollo_reserve_credits threw, allowing the call through:', err.message)
     return true
@@ -511,29 +562,42 @@ export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, lo
 }
 
 // Same daily-spend-cap pattern as reserveApolloCredits (see that function's
-// own comment, and 2026-08-25-theirstack-credit-cap.sql for the table this
-// calls) — TheirStack is a paid third-party API with no ceiling of its
-// own, so a bug or a retried request shouldn't be able to run up an
+// own comment, and 2026-08-26-per-customer-credit-caps.sql for the tables
+// this calls) — TheirStack is a paid third-party API with no ceiling of
+// its own, so a bug or a retried request shouldn't be able to run up an
 // unbounded bill. `credits` should be the number of jobs actually
 // requested (TheirStack's own pricing is per job returned, not per call —
 // confirmed against the account's real usage during evaluation, not
-// assumed), not a flat 1 per call the way some other APIs bill.
-const DEFAULT_THEIRSTACK_DAILY_CAP = 40
+// assumed), not a flat 1 per call the way some other APIs bill. Same
+// per-customer-plus-platform-backstop design as Apollo above — see that
+// function's comment for `caps`'s shape and the fallback behaviour when
+// omitted. Matches entitlements.js's own DEFAULT_PLATFORM_CAPS.theirStack
+// exactly, same reasoning as DEFAULT_APOLLO_DAILY_CAP above.
+const DEFAULT_THEIRSTACK_DAILY_CAP = 500
 
-export async function reserveTheirStackCredits(supabase, credits = 1) {
+export async function reserveTheirStackCredits(supabase, userId, credits = 1, caps = {}) {
   if (!supabase) return true
-  const dailyCap = parseInt(process.env.THEIRSTACK_DAILY_CREDIT_CAP, 10) || DEFAULT_THEIRSTACK_DAILY_CAP
+  const platformDailyCap = caps.platformDailyCap ?? (parseInt(process.env.THEIRSTACK_DAILY_CREDIT_CAP, 10) || DEFAULT_THEIRSTACK_DAILY_CAP)
+  const userDailyCap = caps.userDailyCap ?? null
   try {
-    const { data, error } = await supabase.rpc('theirstack_reserve_credits', { p_credits: credits, p_daily_cap: dailyCap })
+    const { data, error } = await supabase.rpc('theirstack_reserve_credits', {
+      p_credits: credits, p_user_id: userId || null, p_user_daily_cap: userDailyCap, p_platform_daily_cap: platformDailyCap,
+    })
     if (error) {
       console.error('[scanShared] theirstack_reserve_credits RPC failed, allowing the call through:', error.message)
       return true
     }
-    if (!data) {
-      console.error(`[scanShared] TheirStack daily credit cap (${dailyCap}) reached for today, skipping call`)
-      alertCapHitOnce('TheirStack', dailyCap)
+    if (data === 'user_cap') {
+      console.log(`[scanShared] TheirStack per-customer daily credit cap (${userDailyCap}) reached for user ${userId} — expected behaviour, does not affect other customers`)
+      return false
     }
-    return data
+    if (data === 'platform_cap') {
+      console.error(`[scanShared] TheirStack daily credit cap (${platformDailyCap}) reached for today, skipping call`)
+      alertCapHitOnce('TheirStack', platformDailyCap)
+      return false
+    }
+    if (data !== 'ok') console.error('[scanShared] theirstack_reserve_credits RPC returned an unexpected value, allowing the call through:', data)
+    return true
   } catch (err) {
     console.error('[scanShared] theirstack_reserve_credits threw, allowing the call through:', err.message)
     return true
@@ -577,7 +641,7 @@ export function mapLocationsToTheirStackCountries(locations) {
 // live). So this only ever does the safe query shape, and leaves company
 // identity resolution to the same AI read + verifyContact/enrichCompany
 // pipeline every other lead source already goes through.
-export async function discoverTheirStackJobs(apiKey, { sectors, functions, locations }, supabase, lookbackDays = SIGNAL_LOOKBACK_DAYS) {
+export async function discoverTheirStackJobs(apiKey, { sectors, functions, locations }, supabase, userId = null, caps = {}, lookbackDays = SIGNAL_LOOKBACK_DAYS) {
   if (!apiKey) return []
   const countries = mapLocationsToTheirStackCountries(locations)
   if (!countries.length) return []
@@ -585,7 +649,7 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
   const keywords = buildSearchKeywords(sectors, functions)
 
   const limit = 10
-  if (!(await reserveTheirStackCredits(supabase, limit))) return []
+  if (!(await reserveTheirStackCredits(supabase, userId, limit, caps))) return []
 
   try {
     const body = {
@@ -626,9 +690,9 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
 // Querying it BEFORE the AI call gives the AI a head start of real,
 // independently-confirmed leads rather than relying purely on whatever
 // general news search happens to surface.
-export async function discoverHotCompanies(apolloKey, { sectors, functions, locations }, supabase, lookbackDays = SIGNAL_LOOKBACK_DAYS) {
+export async function discoverHotCompanies(apolloKey, { sectors, functions, locations }, supabase, userId = null, caps = {}, lookbackDays = SIGNAL_LOOKBACK_DAYS) {
   if (!apolloKey) return []
-  if (!(await reserveApolloCredits(supabase))) return []
+  if (!(await reserveApolloCredits(supabase, userId, 1, caps))) return []
   try {
     const body = { per_page: 8, organization_num_jobs_range: { min: 1 } }
     body.organization_job_posted_at_range = { min: isoDateDaysAgo(lookbackDays) }
@@ -703,7 +767,7 @@ export function titleBucketKey(titleKeywords) {
 // title. Still only ever trusted once Apollo itself confirms the match
 // (see the header comment above), the AI's name is a lead to search for,
 // not a fact accepted on its own.
-export async function verifyContact(apolloKey, company, titleKeywords, supabase, apolloOrgId, appointedName) {
+export async function verifyContact(apolloKey, company, titleKeywords, supabase, apolloOrgId, appointedName, userId = null, caps = {}) {
   if (!apolloKey || !company) return null
 
   const cacheKey = enrichmentCacheKey(company)
@@ -751,11 +815,11 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase,
     console.log(`[scanShared] verifyContact: skipping "${company}" (${titleKey}) — no Apollo org id resolved for this company, so there's nobody to search under`)
     return null
   }
-  if (!(await reserveApolloCredits(supabase))) return null
+  if (!(await reserveApolloCredits(supabase, userId, 1, caps))) return null
 
   const result = appointedName
-    ? await lookupContactByName(apolloKey, company, appointedName, supabase)
-    : await lookupContact(apolloKey, company, titleKeywords, supabase, apolloOrgId)
+    ? await lookupContactByName(apolloKey, company, appointedName, supabase, userId, caps)
+    : await lookupContact(apolloKey, company, titleKeywords, supabase, apolloOrgId, userId, caps)
 
   // 3. Write through regardless of hit or miss — a negative result is a
   // cache-worthy fact too, see the comment on step 1.
@@ -787,7 +851,7 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase,
   return result
 }
 
-async function lookupContact(apolloKey, company, titleKeywords, supabase, apolloOrgId) {
+async function lookupContact(apolloKey, company, titleKeywords, supabase, apolloOrgId, userId = null, caps = {}) {
   try {
     const resp = await fetchWithRetry('https://api.apollo.io/api/v1/mixed_people/api_search', {
       method: 'POST',
@@ -838,7 +902,7 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
     let revealedLastName = null
     let revealedTitle = null
     let revealedLinkedin = null
-    if (p.id && (await reserveApolloCredits(supabase))) {
+    if (p.id && (await reserveApolloCredits(supabase, userId, 1, caps))) {
       try {
         const matchResp = await fetchWithRetry('https://api.apollo.io/v1/people/match', {
           method: 'POST',
@@ -892,7 +956,7 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
 // a generic title search within this same call) if Apollo can't confirm a
 // match on the name, since showing a different, unrelated person under "the
 // new leader" would be worse than showing no verified contact at all.
-async function lookupContactByName(apolloKey, company, fullName, supabase) {
+async function lookupContactByName(apolloKey, company, fullName, supabase, userId = null, caps = {}) {
   try {
     // people/match (People Enrichment) takes a name plus a company hint, not
     // an organization_id — unlike mixed_people/api_search above, which is a
@@ -915,7 +979,7 @@ async function lookupContactByName(apolloKey, company, fullName, supabase) {
     const name = `${p.first_name} ${p.last_name}`.trim()
 
     let email = null
-    if (p.id && (await reserveApolloCredits(supabase))) {
+    if (p.id && (await reserveApolloCredits(supabase, userId, 1, caps))) {
       try {
         const matchResp = await fetchWithRetry('https://api.apollo.io/v1/people/match', {
           method: 'POST',
@@ -997,9 +1061,9 @@ const EXTENDED_FUNCTION_TITLE_BUCKETS = {
 // doesn't spend its whole run's worth of Apollo credit budget in one burst;
 // each bucket search still goes through the same reserveApolloCredits cap
 // verifyContact itself already enforces.
-export async function verifyContactsAcrossFunctions(apolloKey, company, supabase, apolloOrgId, functions = Object.keys(FUNCTION_TITLE_BUCKETS), bucketMap = FUNCTION_TITLE_BUCKETS) {
+export async function verifyContactsAcrossFunctions(apolloKey, company, supabase, apolloOrgId, functions = Object.keys(FUNCTION_TITLE_BUCKETS), bucketMap = FUNCTION_TITLE_BUCKETS, userId = null, caps = {}) {
   const results = await mapWithConcurrency(functions, 2, async (fn) => {
-    const contact = await verifyContact(apolloKey, company, bucketMap[fn] || [fn], supabase, apolloOrgId)
+    const contact = await verifyContact(apolloKey, company, bucketMap[fn] || [fn], supabase, apolloOrgId, null, userId, caps)
     return contact ? { function: fn, ...contact } : null
   })
   return results.filter(Boolean)
@@ -1097,7 +1161,7 @@ function pickBestOrgMatch(candidates, company, locationHints = []) {
   return null
 }
 
-export async function enrichCompany(apolloKey, company, supabase, locationHints = []) {
+export async function enrichCompany(apolloKey, company, supabase, locationHints = [], userId = null, caps = {}) {
   if (!company) return null
   const cacheKey = enrichmentCacheKey(company)
 
@@ -1140,7 +1204,7 @@ export async function enrichCompany(apolloKey, company, supabase, locationHints 
   // 2. Cache miss — only now does this spend anything (the Apollo call;
   // the logo fallback below never spends a credit, Clearbit is free).
   let result = null
-  if (apolloKey && (await reserveApolloCredits(supabase))) {
+  if (apolloKey && (await reserveApolloCredits(supabase, userId, 1, caps))) {
     try {
       // per_page: 5 (was 1) — pickBestOrgMatch needs real candidates to
       // choose between, not just Apollo's single top-ranked (and, for a
@@ -1319,14 +1383,14 @@ function sanitizeCandidateProfile(profile) {
 // entryType field for live_job entries, never trusted to the AI's own
 // signalType choice — see dropGenericHiringWhereLiveJobsExist above and
 // both scan files' prompts.
-export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints = [], apolloContactRetry = false }) {
+export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints = [], apolloContactRetry = false, apolloCaps = {} }) {
   // enrichCompany runs first, not in parallel with verifyContact: Apollo's
   // people-search now requires a resolved organization_id (see
   // verifyContact's header), which only enrichCompany's own company lookup
   // can provide — running them in parallel would mean verifyContact never
   // has an id to search with.
   const [companyInfo, chVerification, sourceVerified] = await Promise.all([
-    enrichCompany(apolloKey, s.company, supabase, locationHints),
+    enrichCompany(apolloKey, s.company, supabase, locationHints, userId, apolloCaps),
     s.signalType === 'leadership_change' ? verifyLeadershipChange(companiesHouseKey, s.company) : Promise.resolve(null),
     verifySourceUrl(s.sourceUrl),
   ])
@@ -1370,12 +1434,12 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
   let contactCandidates = []
   if (isFundingOrExpansion) {
     if (companyInfo?.apolloOrgId) {
-      contactCandidates = await verifyContactsAcrossFunctions(apolloKey, s.company, supabase, companyInfo.apolloOrgId)
+      contactCandidates = await verifyContactsAcrossFunctions(apolloKey, s.company, supabase, companyInfo.apolloOrgId, undefined, undefined, userId, apolloCaps)
     }
   } else {
-    contact = await verifyContact(apolloKey, s.company, s.titleKeywords, supabase, companyInfo?.apolloOrgId, signalType === 'leadership_change' ? s.appointedName : null)
+    contact = await verifyContact(apolloKey, s.company, s.titleKeywords, supabase, companyInfo?.apolloOrgId, signalType === 'leadership_change' ? s.appointedName : null, userId, apolloCaps)
     if (!contact && companyInfo?.apolloOrgId) {
-      contactCandidates = await verifyContactsAcrossFunctions(apolloKey, s.company, supabase, companyInfo.apolloOrgId)
+      contactCandidates = await verifyContactsAcrossFunctions(apolloKey, s.company, supabase, companyInfo.apolloOrgId, undefined, undefined, userId, apolloCaps)
     }
     // Growth/Team only (2026-08-25, see SCAN_TIER_CONFIG in
     // entitlements.js): one more, wider attempt across a different set of
@@ -1386,7 +1450,7 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
     if (!contact && !contactCandidates.length && apolloContactRetry && companyInfo?.apolloOrgId) {
       contactCandidates = await verifyContactsAcrossFunctions(
         apolloKey, s.company, supabase, companyInfo.apolloOrgId,
-        Object.keys(EXTENDED_FUNCTION_TITLE_BUCKETS), EXTENDED_FUNCTION_TITLE_BUCKETS,
+        Object.keys(EXTENDED_FUNCTION_TITLE_BUCKETS), EXTENDED_FUNCTION_TITLE_BUCKETS, userId, apolloCaps,
       )
     }
   }
@@ -1474,7 +1538,7 @@ export async function mapWithConcurrency(items, limit, fn) {
 // Output order becomes "grouped by company" rather than strict input order
 // — harmless, since the result is only ever used as a set for a bulk
 // upsert, never rendered in array order.
-export async function buildEnrichedSignalRows(entries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, concurrency = 4, locationHints = [], apolloContactRetry = false }) {
+export async function buildEnrichedSignalRows(entries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, concurrency = 4, locationHints = [], apolloContactRetry = false, apolloCaps = {} }) {
   const groups = new Map()
   for (const s of entries) {
     const key = normalizeCompanyKey(s.company)
@@ -1485,7 +1549,7 @@ export async function buildEnrichedSignalRows(entries, { userId, apolloKey, comp
   const groupRows = await mapWithConcurrency([...groups.values()], concurrency, async (group) => {
     const rows = []
     for (const s of group) {
-      rows.push(await buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints, apolloContactRetry }))
+      rows.push(await buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints, apolloContactRetry, apolloCaps }))
     }
     return rows
   })

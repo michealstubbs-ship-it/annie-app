@@ -2,10 +2,9 @@ import { createClient } from '@supabase/supabase-js'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { reserveAnthropicTokens, reserveChatCall } from './lib/aiUsage.js'
-import { getEntitlements } from './lib/entitlements.js'
+import { getEntitlements, resolveResourceCaps } from './lib/entitlements.js'
 import { createTimeoutFetch } from './lib/scanShared.js'
 
-const DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP = 2_000_000
 const DEFAULT_CHAT_PER_MINUTE_CAP = 20
 
 // Turns Anthropic's own SSE stream (data: {...}\n\n lines) into a minimal
@@ -115,7 +114,7 @@ export default async (req, context) => {
   // this counts what's actually been sent, not a separate guess at it.
   // Soft gate means this only ever narrows a perk, never blocks the rest of
   // the product — see entitlements.js's header comment.
-  const entitlements = usageClient ? await getEntitlements(usageClient, user.id) : { limits: { chatMessagesPerMonth: Infinity } }
+  const entitlements = usageClient ? await getEntitlements(usageClient, user.id) : { tier: 'starter', limits: { chatMessagesPerMonth: Infinity } }
   if (Number.isFinite(entitlements.limits.chatMessagesPerMonth)) {
     const startOfMonth = new Date()
     startOfMonth.setUTCDate(1)
@@ -170,8 +169,15 @@ export default async (req, context) => {
   const maxSearchUses = Math.min(Number(body.maxSearchUses) || 4, 6)
   const model = body.model === 'claude-sonnet-4-5-20250929' ? body.model : 'claude-haiku-4-5-20251001'
 
-  const dailyTokenCap = parseInt(process.env.ANTHROPIC_DAILY_TOKEN_CAP, 10) || DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP
-  if (!(await reserveAnthropicTokens(usageClient, maxTokens, dailyTokenCap))) {
+  // 2026-08-26: per-customer-plus-platform-backstop now, same fix as the
+  // scan pipeline's Apollo/TheirStack caps — see resolveResourceCaps's own
+  // header in entitlements.js. Uses this caller's own tier (already
+  // resolved above for the chatMessagesPerMonth gate), so a chat-heavy
+  // Growth/Team customer gets real headroom over Starter rather than
+  // sharing one platform-wide total with every other customer's chat AND
+  // scan calls combined.
+  const anthropicCaps = resolveResourceCaps(entitlements.tier).anthropicTokens
+  if (!(await reserveAnthropicTokens(usageClient, user.id, maxTokens, anthropicCaps))) {
     return new Response(JSON.stringify({ error: 'Annie has hit her research budget for today — please try again tomorrow.' }), { status: 429, headers: { 'Content-Type': 'application/json' } })
   }
 

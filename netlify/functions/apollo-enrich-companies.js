@@ -7,6 +7,7 @@ import { reserveApolloCredits, createTimeoutFetch } from './lib/scanShared.js'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { jsonError } from './lib/httpError.js'
+import { getEntitlements, resolveResourceCaps } from './lib/entitlements.js'
 
 function normalize(name) {
   return (name || '').trim().toLowerCase()
@@ -37,7 +38,7 @@ export default async (req, context) => {
   // a caller with no token at all. Previously this had no auth check
   // whatsoever, an unauthenticated request from anywhere on the internet
   // could run up Apollo spend indefinitely.
-  const { error: authError } = await getAuthedUser(req, supabaseUrl, anonKey)
+  const { user, error: authError } = await getAuthedUser(req, supabaseUrl, anonKey)
   if (authError) {
     return new Response(JSON.stringify({ results: [], error: authError === 'missing_token' ? 'Missing session token' : 'Invalid session' }), {
       status: 401,
@@ -48,6 +49,13 @@ export default async (req, context) => {
   // 2026-08-24 Task 3: createTimeoutFetch applied — see its own header in
   // scanShared.js.
   const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
+
+  // 2026-08-26: this endpoint's Apollo spend now counts against the calling
+  // customer's own per-tier cap, not just one platform-wide shared total —
+  // same fix as the scan pipeline's reserveApolloCredits call sites, see
+  // resolveResourceCaps's own header in entitlements.js.
+  const { tier } = await getEntitlements(supabase, user.id)
+  const apolloCaps = resolveResourceCaps(tier).apollo
 
   try {
     const { companies } = await req.json()
@@ -97,7 +105,7 @@ export default async (req, context) => {
         // not "checked and no match" — step 3 below must never write this
         // into the permanent cache, or a company skipped once for a cap hit
         // would incorrectly read as permanently unmatched forever after.
-        if (!(await reserveApolloCredits(supabase))) {
+        if (!(await reserveApolloCredits(supabase, user.id, 1, apolloCaps))) {
           return { company_name: name, company_name_key: normalize(name), matched: false, skipCache: true }
         }
         try {

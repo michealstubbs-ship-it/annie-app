@@ -11,6 +11,7 @@ import {
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs,
+  looksTruncatedByTokenLimit,
 } from './scanShared.js'
 
 // Full behavioural coverage for extractJson now lives in
@@ -201,38 +202,87 @@ describe('mapLocationsToAdzunaCountries', () => {
   })
 })
 
-describe('reserveApolloCredits (spend cap)', () => {
+describe('reserveApolloCredits (per-customer + platform-wide spend cap)', () => {
+  const caps = { userDailyCap: 120, platformDailyCap: 1200 }
+
   it('fails open when no supabase client is passed', async () => {
-    expect(await reserveApolloCredits(undefined)).toBe(true)
-    expect(await reserveApolloCredits(null)).toBe(true)
+    expect(await reserveApolloCredits(undefined, 'u1')).toBe(true)
+    expect(await reserveApolloCredits(null, 'u1')).toBe(true)
   })
 
-  it('allows the call through when the RPC reports the cap is not reached', async () => {
-    const rpc = vi.fn().mockResolvedValue({ data: true, error: null })
+  it('allows the call through when the RPC reports ok, passing userId/credits/caps through', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: 'ok', error: null })
     const supabase = { rpc }
-    expect(await reserveApolloCredits(supabase)).toBe(true)
-    expect(rpc).toHaveBeenCalledWith('apollo_reserve_credits', expect.objectContaining({ p_credits: 1 }))
+    expect(await reserveApolloCredits(supabase, 'u1', 1, caps)).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('apollo_reserve_credits', { p_credits: 1, p_user_id: 'u1', p_user_daily_cap: 120, p_platform_daily_cap: 1200 })
   })
 
-  it('blocks the call when the RPC reports the daily cap is reached', async () => {
-    const supabase = { rpc: vi.fn().mockResolvedValue({ data: false, error: null }) }
-    expect(await reserveApolloCredits(supabase)).toBe(false)
+  it('blocks the call when the RPC reports this customer\'s own daily cap is reached', async () => {
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: 'user_cap', error: null }) }
+    expect(await reserveApolloCredits(supabase, 'u1', 1, caps)).toBe(false)
+  })
+
+  it('blocks the call when the RPC reports the platform-wide daily cap is reached', async () => {
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: 'platform_cap', error: null }) }
+    expect(await reserveApolloCredits(supabase, 'u1', 1, caps)).toBe(false)
   })
 
   it('respects a custom credits argument', async () => {
-    const rpc = vi.fn().mockResolvedValue({ data: true, error: null })
-    await reserveApolloCredits({ rpc }, 3)
+    const rpc = vi.fn().mockResolvedValue({ data: 'ok', error: null })
+    await reserveApolloCredits({ rpc }, 'u1', 3, caps)
     expect(rpc).toHaveBeenCalledWith('apollo_reserve_credits', expect.objectContaining({ p_credits: 3 }))
+  })
+
+  it('passes a null userId through as null for a system-level call with no customer context', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: 'ok', error: null })
+    await reserveApolloCredits({ rpc }, null, 1, caps)
+    expect(rpc).toHaveBeenCalledWith('apollo_reserve_credits', expect.objectContaining({ p_user_id: null }))
+  })
+
+  it('falls back to the env-var/default platform cap and a null user cap when caps is omitted', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: 'ok', error: null })
+    await reserveApolloCredits({ rpc }, 'u1')
+    expect(rpc).toHaveBeenCalledWith('apollo_reserve_credits', { p_credits: 1, p_user_id: 'u1', p_user_daily_cap: null, p_platform_daily_cap: 1200 })
   })
 
   it('fails open (allows the call) if the RPC itself errors — a DB hiccup should not take the whole scan down', async () => {
     const supabase = { rpc: vi.fn().mockResolvedValue({ data: null, error: { message: 'connection reset' } }) }
-    expect(await reserveApolloCredits(supabase)).toBe(true)
+    expect(await reserveApolloCredits(supabase, 'u1', 1, caps)).toBe(true)
   })
 
   it('fails open (allows the call) if calling the RPC throws', async () => {
     const supabase = { rpc: vi.fn().mockRejectedValue(new Error('network down')) }
-    expect(await reserveApolloCredits(supabase)).toBe(true)
+    expect(await reserveApolloCredits(supabase, 'u1', 1, caps)).toBe(true)
+  })
+})
+
+describe('looksTruncatedByTokenLimit', () => {
+  it('returns false for an empty or missing response', () => {
+    expect(looksTruncatedByTokenLimit('')).toBe(false)
+    expect(looksTruncatedByTokenLimit(undefined)).toBe(false)
+    expect(looksTruncatedByTokenLimit(null)).toBe(false)
+  })
+
+  it('returns false for a genuine, cleanly-closed empty array', () => {
+    expect(looksTruncatedByTokenLimit('[]')).toBe(false)
+  })
+
+  it('returns false for a genuine, cleanly-closed array with real entries', () => {
+    const clean = JSON.stringify([{ entryType: 'signal', company: 'Acme', headline: 'Raised Series B' }])
+    expect(looksTruncatedByTokenLimit(clean)).toBe(false)
+  })
+
+  it('returns false for a response that never even starts a JSON array (a stray narration line)', () => {
+    expect(looksTruncatedByTokenLimit('I could not find any genuine signals for this sector today.')).toBe(false)
+  })
+
+  it('returns true for a response that opens an array, contains real content, but never closes it', () => {
+    const truncated = '[{"entryType":"signal","company":"Acme Gulf Trading","headline":"Raised a Series B round","whyItMatters":"This funding round likely means Acme will expand its engineering and commercial teams over the next two quarters, opening several relevant roles for a recruiter with the right network","sourceUrl":"https://techcrunch.com/acme-series-b","introMessage":"I hope you are doing well.\\n\\nI wanted to reach out because'
+    expect(looksTruncatedByTokenLimit(truncated)).toBe(true)
+  })
+
+  it('returns false for a short unclosed fragment — not enough content to distinguish from noise', () => {
+    expect(looksTruncatedByTokenLimit('[{"entryType":"sig')).toBe(false)
   })
 })
 
@@ -253,25 +303,32 @@ describe('mapLocationsToTheirStackCountries', () => {
   })
 })
 
-describe('reserveTheirStackCredits (spend cap)', () => {
+describe('reserveTheirStackCredits (per-customer + platform-wide spend cap)', () => {
+  const caps = { userDailyCap: 40, platformDailyCap: 500 }
+
   it('fails open when no supabase client is passed', async () => {
-    expect(await reserveTheirStackCredits(undefined)).toBe(true)
+    expect(await reserveTheirStackCredits(undefined, 'u1')).toBe(true)
   })
 
-  it('allows the call through when the RPC reports the cap is not reached', async () => {
-    const rpc = vi.fn().mockResolvedValue({ data: true, error: null })
-    expect(await reserveTheirStackCredits({ rpc }, 10)).toBe(true)
-    expect(rpc).toHaveBeenCalledWith('theirstack_reserve_credits', expect.objectContaining({ p_credits: 10 }))
+  it('allows the call through when the RPC reports ok', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: 'ok', error: null })
+    expect(await reserveTheirStackCredits({ rpc }, 'u1', 10, caps)).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('theirstack_reserve_credits', { p_credits: 10, p_user_id: 'u1', p_user_daily_cap: 40, p_platform_daily_cap: 500 })
   })
 
-  it('blocks the call when the RPC reports the daily cap is reached', async () => {
-    const supabase = { rpc: vi.fn().mockResolvedValue({ data: false, error: null }) }
-    expect(await reserveTheirStackCredits(supabase, 10)).toBe(false)
+  it('blocks the call when the RPC reports this customer\'s own daily cap is reached', async () => {
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: 'user_cap', error: null }) }
+    expect(await reserveTheirStackCredits(supabase, 'u1', 10, caps)).toBe(false)
+  })
+
+  it('blocks the call when the RPC reports the platform-wide daily cap is reached', async () => {
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: 'platform_cap', error: null }) }
+    expect(await reserveTheirStackCredits(supabase, 'u1', 10, caps)).toBe(false)
   })
 
   it('fails open if the RPC itself errors', async () => {
     const supabase = { rpc: vi.fn().mockResolvedValue({ data: null, error: { message: 'connection reset' } }) }
-    expect(await reserveTheirStackCredits(supabase)).toBe(true)
+    expect(await reserveTheirStackCredits(supabase, 'u1', 1, caps)).toBe(true)
   })
 })
 
@@ -295,7 +352,7 @@ describe('discoverTheirStackJobs', () => {
   it('does not spend a request when the daily credit cap is reached', async () => {
     const fetchSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)
-    const supabase = { rpc: vi.fn().mockResolvedValue({ data: false, error: null }) }
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: 'platform_cap', error: null }) }
     expect(await discoverTheirStackJobs('key123', { sectors: [], functions: [], locations: ['UAE / GCC'] }, supabase)).toEqual([])
     expect(fetchSpy).not.toHaveBeenCalled()
     vi.unstubAllGlobals()

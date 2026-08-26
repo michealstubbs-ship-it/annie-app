@@ -36,40 +36,140 @@ export const TIER_LIMITS = {
 // apolloContactRetry drives verifyContact's extra retry pass in
 // scanShared.js — the real lever for Actions-eligibility (see that file),
 // not just search budget.
+// 2026-08-26, Michael: anthropicMaxTokens raised from the original
+// 4096/12000 — this isn't a "more is better" bump, it's a fix to a real,
+// measured truncation risk found by walking the actual scan prompt's own
+// JSON schema (buildScanPrompt in intelligence-scan.js/scan-now-
+// background.js: 14 fields per signal, including a full 3-paragraph
+// introMessage letter and a nested candidateProfile object) against a
+// real filled-in example of one signal entry: that averages roughly
+// 550-700 output tokens per entry once JSON punctuation/keys are counted,
+// against a prompt that asks for "up to 8 signals" per call. At the OLD
+// Starter ceiling (4096, with ~200-400 of that already spent on the
+// web_search tool-use blocks themselves before any JSON text is even
+// generated), a call that genuinely finds 6+ good signals runs out of
+// budget mid-object — and extractJson (src/lib/jsonExtract.js) requires a
+// BALANCED, closed array to parse at all, so a truncated response doesn't
+// lose just the last entry, it silently returns [] and the entire call's
+// signals are discarded, indistinguishable in the logs from "genuinely
+// found nothing". 6144 gives ~40% headroom over the ~5700-token safe
+// minimum for 8 full entries, closing that failure mode for Starter.
+// Growth/Team's old 12000 already had ~2x the safe minimum (effectively no
+// truncation risk there today) — the 16000 here is deliberately modest
+// extra headroom for their richer candidateProfile output (more search
+// budget → more named competitor companies per entry), not a fix for a
+// measured problem the way Starter's bump is. Reported to Michael
+// alongside this change: raising Growth/Team's ceiling further would NOT
+// meaningfully improve their data completeness — they're not currently
+// truncation-bottlenecked, more chained rounds (maxRounds) is what's
+// actually buying them more signals, and that's unchanged here.
+//
+// apolloUserDailyCap/theirStackUserDailyCap/anthropicUserDailyTokenCap
+// (all new, 2026-08-26): the per-customer half of the shared-resource fix
+// — see supabase-migrations/2026-08-26-per-customer-credit-caps.sql and
+// resolveResourceCaps below. Sized off each tier's own actual usage
+// pattern (feedSignalTarget/maxRounds/apolloContactRetry above), not a
+// guess: Growth/Team run up to 3x the sector-group+broaden-pass rounds of
+// Starter during a chained onboarding scan, plus the extra
+// EXTENDED_FUNCTION_TITLE_BUCKETS retry pass Starter never runs, so their
+// per-customer ceiling is set well above a flat multiple of Starter's
+// rather than a simple x2. These are starting points reasoned from the
+// product's own call patterns, not measured against your actual Apollo/
+// TheirStack contracted plan limits — sanity-check them against your real
+// plan quotas before trusting them at scale, and tune via the env vars
+// resolveResourceCaps reads (documented there).
 export const SCAN_TIER_CONFIG = {
   starter: {
     feedSignalTarget: 10,
     actionsEligibleTarget: 1,
     maxRounds: 2,
     maxWallClockMs: 10 * 60 * 1000,
-    anthropicMaxTokens: 4096,
+    anthropicMaxTokens: 6144,
     anthropicMaxUses: 8,
     anthropicBroadenMaxUses: 10,
     apolloContactRetry: false,
+    apolloUserDailyCap: 120,
+    theirStackUserDailyCap: 40,
+    anthropicUserDailyTokenCap: 80_000,
   },
   growth: {
     feedSignalTarget: 20,
     actionsEligibleTarget: 3,
     maxRounds: 6,
     maxWallClockMs: 20 * 60 * 1000,
-    anthropicMaxTokens: 12000,
+    anthropicMaxTokens: 16000,
     anthropicMaxUses: 12,
     anthropicBroadenMaxUses: 15,
     apolloContactRetry: true,
+    apolloUserDailyCap: 280,
+    theirStackUserDailyCap: 90,
+    anthropicUserDailyTokenCap: 500_000,
   },
   team: {
     feedSignalTarget: 20,
     actionsEligibleTarget: 3,
     maxRounds: 6,
     maxWallClockMs: 20 * 60 * 1000,
-    anthropicMaxTokens: 12000,
+    anthropicMaxTokens: 16000,
     anthropicMaxUses: 12,
     anthropicBroadenMaxUses: 15,
     apolloContactRetry: true,
+    // Same scan behaviour as Growth (Team is a seat-count/collaboration
+    // upgrade, not a deeper-scan tier), but a small headroom bump over
+    // Growth's own numbers — a multi-seat team is more likely to have more
+    // than one person triggering manual "Scan now" runs the same day.
+    apolloUserDailyCap: 320,
+    theirStackUserDailyCap: 100,
+    anthropicUserDailyTokenCap: 600_000,
   },
 }
 
 const DEFAULT_TIER = 'starter'
+
+// Platform-wide backstop defaults — see the SQL migration's own header for
+// why this stays as a secondary ceiling under the per-customer caps above,
+// not the primary protection any more. Raised from the old flat values
+// (Apollo 500, TheirStack 40→150, Anthropic 2,000,000) because those were
+// sized for a single shared pool serving every customer combined — once
+// each customer has their own real budget via the caps above, several
+// customers legitimately using their own full allowance the same day adds
+// up past the old totals fast (e.g. two Growth customers each running a
+// same-day onboarding scan can alone approach 1M Anthropic tokens). These
+// are still just starting points — the one number in this whole change
+// Michael should sanity-check directly against his real Apollo/TheirStack/
+// Anthropic plan quotas and billing tolerance before trusting at scale,
+// since that's account-specific information this code has no way to see.
+// All three stay overridable via the existing env vars with no code
+// change needed: APOLLO_DAILY_CREDIT_CAP, THEIRSTACK_DAILY_CREDIT_CAP,
+// ANTHROPIC_DAILY_TOKEN_CAP.
+const DEFAULT_PLATFORM_CAPS = {
+  apollo: 1200,
+  theirStack: 500,
+  anthropicTokens: 4_000_000,
+}
+
+// Single place that turns "this tier" into the actual {userDailyCap,
+// platformDailyCap} pair every reserve*Credits/reserveAnthropicTokens call
+// needs — callers resolve this once per request (from getEntitlements)
+// and thread the result down, rather than every low-level Apollo/
+// TheirStack/Anthropic call site needing to know about tiers itself.
+export function resolveResourceCaps(tier) {
+  const t = SCAN_TIER_CONFIG[tier] || SCAN_TIER_CONFIG[DEFAULT_TIER]
+  return {
+    apollo: {
+      userDailyCap: t.apolloUserDailyCap,
+      platformDailyCap: parseInt(process.env.APOLLO_DAILY_CREDIT_CAP, 10) || DEFAULT_PLATFORM_CAPS.apollo,
+    },
+    theirStack: {
+      userDailyCap: t.theirStackUserDailyCap,
+      platformDailyCap: parseInt(process.env.THEIRSTACK_DAILY_CREDIT_CAP, 10) || DEFAULT_PLATFORM_CAPS.theirStack,
+    },
+    anthropicTokens: {
+      userDailyCap: t.anthropicUserDailyTokenCap,
+      platformDailyCap: parseInt(process.env.ANTHROPIC_DAILY_TOKEN_CAP, 10) || DEFAULT_PLATFORM_CAPS.anthropicTokens,
+    },
+  }
+}
 
 // { tier, status, teamId, limits }. `tier` is always one of the real keys
 // above (never null) — a user with no team yet (shouldn't happen post

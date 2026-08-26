@@ -6,11 +6,29 @@ const { mockSelectIn, mockUpsert, mockRpc, mockCreateClient } = vi.hoisted(() =>
   const mockSelectIn = vi.fn()
   const mockUpsert = vi.fn()
   const mockRpc = vi.fn()
+  // 2026-08-26: this endpoint now resolves the caller's tier via
+  // getEntitlements (for the per-customer Apollo cap — see
+  // resolveResourceCaps in entitlements.js) before doing its own
+  // company_enrichment work, so `from` needs to answer BOTH shapes now:
+  // the real table this file queries (company_enrichment, select().in())
+  // and entitlements.js's own team_members/subscriptions lookup
+  // (select().eq().eq().maybeSingle() / select().eq().maybeSingle()).
+  // Defaulting the entitlements chain to "no team membership found" (same
+  // as entitlements.test.js's own default) resolves every test in this
+  // file to Starter tier, which is fine — none of them care about tier-
+  // specific caps, only about whether the Apollo call itself did or didn't
+  // fire.
   const mockCreateClient = vi.fn(() => ({
-    from: vi.fn(() => ({
-      select: vi.fn(() => ({ in: mockSelectIn })),
-      upsert: mockUpsert,
-    })),
+    from: vi.fn((table) => {
+      if (table === 'team_members' || table === 'subscriptions') {
+        const eq = () => ({ eq, maybeSingle: () => Promise.resolve({ data: null, error: null }) })
+        return { select: () => ({ eq, maybeSingle: () => Promise.resolve({ data: null, error: null }) }) }
+      }
+      return {
+        select: vi.fn(() => ({ in: mockSelectIn })),
+        upsert: mockUpsert,
+      }
+    }),
     rpc: mockRpc,
   }))
   return { mockSelectIn, mockUpsert, mockRpc, mockCreateClient }
@@ -125,7 +143,7 @@ describe('cache handling', () => {
 
   it('skips the Apollo call and the cache write when the daily credit cap is already reached', async () => {
     mockSelectIn.mockResolvedValue({ data: [] })
-    mockRpc.mockResolvedValue({ data: false, error: null })
+    mockRpc.mockResolvedValue({ data: 'platform_cap', error: null })
     const res = await handler(makeRequest({ companies: ['Acme'] }))
     expect(res.status).toBe(200)
     expect(global.fetch).not.toHaveBeenCalled()

@@ -30,9 +30,9 @@ import { getStore } from '@netlify/blobs'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { reserveAnthropicTokens } from './lib/aiUsage.js'
-import { getEntitlements, SCAN_TIER_CONFIG } from './lib/entitlements.js'
+import { getEntitlements, SCAN_TIER_CONFIG, resolveResourceCaps } from './lib/entitlements.js'
 import {
-  SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, splitToKeywords, extractJson,
+  SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, splitToKeywords, extractJson, looksTruncatedByTokenLimit,
   discoverHotCompanies, discoverAdzunaJobs, discoverTheirStackJobs, fetchWithRetry, mapLocationsToAdzunaCountries,
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
   buildRegionalSourceHint,
@@ -240,14 +240,19 @@ Only include something here you actually found via search and are confident is r
 Return a single JSON array mixing all three kinds of entries, each tagged with its entryType. Only return the JSON array, nothing else. If nothing genuinely good was found, return an empty array.`
 }
 
-const DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP = 2_000_000
-
-async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 4096, supabase = null } = {}) {
+async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 4096, supabase = null, userId = null, anthropicCaps = {} } = {}) {
   // Anthropic spend had no cap anywhere in this codebase — mirrors the
   // existing Apollo daily-credit-cap pattern (see reserveApolloCredits in
   // scanShared.js). Checked before the network call fires, same as Apollo's.
-  const dailyTokenCap = parseInt(process.env.ANTHROPIC_DAILY_TOKEN_CAP, 10) || DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP
-  if (!(await reserveAnthropicTokens(supabase, maxTokens, dailyTokenCap))) {
+  // 2026-08-26: per-customer-plus-platform-backstop now, not one shared
+  // platform-wide total — see resolveAnthropicTokens's own comment in
+  // aiUsage.js. Also fixes a real bug found while making this change:
+  // runAdditionalRound (round 2+ of a chained scan) was never passing
+  // `supabase` through to this function at all, so reserveAnthropicTokens's
+  // own `if (!supabase) return true` fail-open path meant every round-2+
+  // call silently skipped the cap check entirely, not just the per-customer
+  // half of it.
+  if (!(await reserveAnthropicTokens(supabase, userId, maxTokens, anthropicCaps))) {
     throw new Error('Anthropic daily token cap reached — skipping this call')
   }
   // A brand new customer's first scan is the moment that makes or breaks
@@ -296,12 +301,12 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
 // round actually searches for NEW real signals instead of re-finding (or
 // worse, being tempted to pad with near-duplicates of) what round 1 already
 // wrote.
-async function runAdditionalRound(ob, tierConfig, recentNames, round, learned) {
+async function runAdditionalRound(ob, tierConfig, recentNames, round, learned, userId, supabase, resourceCaps) {
   const text = await callAnthropic(process.env.ANTHROPIC_API_KEY, buildScanPrompt(ob, recentNames, {
     broaden: true,
     broadenReason: `this is chained research round ${round} for this account — the earlier round(s) already found real signals, so widen further still (older lookback, adjacent function connections) to find genuinely NEW ones rather than repeating what's already been found`,
     learned,
-  }), { maxUses: tierConfig.anthropicBroadenMaxUses, maxTokens: tierConfig.anthropicMaxTokens })
+  }), { maxUses: tierConfig.anthropicBroadenMaxUses, maxTokens: tierConfig.anthropicMaxTokens, supabase, userId, anthropicCaps: resourceCaps.anthropicTokens })
   const { learned: learnedFound, rest } = splitLearnedEntries(extractJson(text))
   return { found: rest, learnedFound, rawText: text }
 }
@@ -312,7 +317,7 @@ async function runAdditionalRound(ob, tierConfig, recentNames, round, learned) {
 // needs to log and to decide what to enrich. This is round 1 of a chained
 // scan — see the chaining comment above MIN_SIGNAL_TARGET's old spot.
 async function runResearchPhase(ob, tierConfig, ctx) {
-  const { userId, anthropicKey, apolloKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase, startedAt } = ctx
+  const { userId, anthropicKey, apolloKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase, startedAt, resourceCaps } = ctx
 
   // Adzuna has no coverage at all for some markets this recruiter can
   // select (notably UAE/GCC — see ADZUNA_COUNTRY_MAP) — for those accounts
@@ -339,14 +344,14 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   const groupResults = await Promise.all(groups.map(async (sectorGroup) => {
     const groupSectors = sectorGroup?.length ? sectorGroup : ob.sectors
     const [apolloLeads, adzunaLeads, theirStackLeads] = await Promise.all([
-      discoverHotCompanies(apolloKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }, supabase),
+      discoverHotCompanies(apolloKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }, supabase, userId, resourceCaps.apollo),
       discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }),
       // Fills the UAE/GCC gap Adzuna leaves — see discoverTheirStackJobs's
       // own header in scanShared.js. This is exactly the noAdzunaCoverage
       // case below, which is why that broaden pass stays on regardless of
       // whether this returns leads: TheirStack supplements the search, it
       // doesn't replace casting a wide net on a market Adzuna can't seed.
-      discoverTheirStackJobs(theirStackApiKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }, supabase),
+      discoverTheirStackJobs(theirStackApiKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }, supabase, userId, resourceCaps.theirStack),
     ])
     try {
       const promptOpts = { sectorsOverride: sectorGroup, apolloLeads, adzunaLeads, theirStackLeads, learned }
@@ -354,7 +359,7 @@ async function runResearchPhase(ob, tierConfig, ctx) {
         promptOpts.broaden = true
         promptOpts.broadenReason = "this recruiter's market has no live-jobs-board coverage to seed leads from (e.g. UAE/GCC), so cast a wide net from this very first pass rather than waiting to come back thin first"
       }
-      const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], promptOpts), { supabase, maxUses: noAdzunaCoverage ? tierConfig.anthropicBroadenMaxUses : tierConfig.anthropicMaxUses, maxTokens: tierConfig.anthropicMaxTokens })
+      const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], promptOpts), { supabase, maxUses: noAdzunaCoverage ? tierConfig.anthropicBroadenMaxUses : tierConfig.anthropicMaxUses, maxTokens: tierConfig.anthropicMaxTokens, userId, anthropicCaps: resourceCaps.anthropicTokens })
       const { learned: learnedFound, rest } = splitLearnedEntries(extractJson(text))
       learnedEntries.push(...learnedFound)
       return { sectorGroup, found: rest, rawText: text }
@@ -376,7 +381,11 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   groupResults.forEach(g => {
     if (!g.found.length) {
       const preview = (g.rawText || '').trim().slice(0, 300)
-      console.log('[scan-now] group came back empty for', userId, '| sectors:', g.sectorGroup?.join('/') || 'general', '| preview:', preview || g.error || '(empty response)')
+      // See looksTruncatedByTokenLimit's own header — tells "genuinely
+      // nothing found" apart from "max_tokens cut the response off before
+      // it finished", which used to be indistinguishable in these logs.
+      const truncated = looksTruncatedByTokenLimit(g.rawText)
+      console.log('[scan-now] group came back empty for', userId, '| sectors:', g.sectorGroup?.join('/') || 'general', truncated ? '| LIKELY TRUNCATED BY max_tokens (raise anthropicMaxTokens for this tier if this keeps happening)' : '', '| preview:', preview || g.error || '(empty response)')
     }
   })
 
@@ -397,7 +406,7 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   } else if (merged.length < tierConfig.feedSignalTarget) {
     await setStatus(userId, { status: 'running', stage: 'broadening', startedAt })
     try {
-      const broadenText = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { broaden: true, learned }), { maxUses: tierConfig.anthropicBroadenMaxUses, maxTokens: tierConfig.anthropicMaxTokens, supabase })
+      const broadenText = await callAnthropic(anthropicKey, buildScanPrompt(ob, [], { broaden: true, learned }), { maxUses: tierConfig.anthropicBroadenMaxUses, maxTokens: tierConfig.anthropicMaxTokens, supabase, userId, anthropicCaps: resourceCaps.anthropicTokens })
       const { learned: broadenLearned, rest: broadenFound } = splitLearnedEntries(extractJson(broadenText))
       learnedEntries.push(...broadenLearned)
       broadened = true
@@ -466,7 +475,7 @@ async function checkTierProgress(supabase, userId) {
 // signals, enriches what's genuinely new, and writes it. Returns the rows
 // actually written (may be empty) and any write error.
 async function enrichAndWriteSignals(capped, ctx) {
-  const { userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints, apolloContactRetry } = ctx
+  const { userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints, apolloContactRetry, apolloCaps } = ctx
 
   // Dedupe against this customer's existing signals BEFORE spending Apollo
   // credits, not after. For a brand new account this set is normally empty,
@@ -488,7 +497,7 @@ async function enrichAndWriteSignals(capped, ctx) {
   // is ambiguous (e.g. "Stitch") and Apollo has no single exact-name match
   // — see pickBestOrgMatch in scanShared.js for the full reasoning behind
   // why this exists (a real wrong-company match this fixes).
-  const rows = await buildEnrichedSignalRows(newEntries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix: '[scan-now]', locationHints, apolloContactRetry })
+  const rows = await buildEnrichedSignalRows(newEntries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix: '[scan-now]', locationHints, apolloContactRetry, apolloCaps })
 
   // The exact bug that made a live customer's first scan report success
   // with zero signals actually written: the upsert's own `error` was never
@@ -679,6 +688,9 @@ export default async (req) => {
     // entitlements.js for the actual numbers and the reasoning behind them.
     const { tier } = await getEntitlements(supabase, userId)
     const tierConfig = SCAN_TIER_CONFIG[tier] || SCAN_TIER_CONFIG.starter
+    // Resolved once per chain (not once per round — tier doesn't change
+    // mid-chain) — see resolveResourceCaps's own header in entitlements.js.
+    const resourceCaps = resolveResourceCaps(tier)
 
     // Phase-tagged status from here on (2026-08-24): if this function ever
     // stalls again, `stage` on the status blob says exactly which phase it
@@ -696,13 +708,13 @@ export default async (req) => {
     let groups, capped, broadened, broadenPreview, noAdzunaCoverage
     if (round === 1) {
       ;({ groups, capped, broadened, broadenPreview, noAdzunaCoverage } = await runResearchPhase(ob, tierConfig, {
-        userId, anthropicKey, apolloKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase, startedAt,
+        userId, anthropicKey, apolloKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase, startedAt, resourceCaps,
       }))
     } else {
       const { data: existingRows } = await supabase.from('intelligence_signals').select('company_name').eq('user_id', userId)
       const recentNames = [...new Set((existingRows || []).map(r => r.company_name).filter(Boolean))].slice(0, 60)
       const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
-      const { found, learnedFound, rawText } = await runAdditionalRound(ob, tierConfig, recentNames, round, learned)
+      const { found, learnedFound, rawText } = await runAdditionalRound(ob, tierConfig, recentNames, round, learned, userId, supabase, resourceCaps)
       if (learnedFound.length) recordLearnedDiscoveries(supabase, learnedFound).catch(() => {})
       groups = [ob.sectors || []]
       capped = dropGenericHiringWhereLiveJobsExist(found).slice(0, MAX_TOTAL_SIGNALS)
@@ -712,7 +724,8 @@ export default async (req) => {
     }
 
     if (!capped.length) {
-      console.log('[scan-now] round', round, 'found nothing new for', userId, '| sectors scanned:', groups.map(g => g?.join('/') || 'general').join(' | '), '| broadened:', broadened, '| noAdzunaCoverage:', noAdzunaCoverage, '| preview:', broadenPreview || '(n/a)')
+      const truncated = round > 1 && looksTruncatedByTokenLimit(broadenPreview)
+      console.log('[scan-now] round', round, 'found nothing new for', userId, '| sectors scanned:', groups.map(g => g?.join('/') || 'general').join(' | '), '| broadened:', broadened, '| noAdzunaCoverage:', noAdzunaCoverage, truncated ? '| LIKELY TRUNCATED BY max_tokens' : '', '| preview:', broadenPreview || '(n/a)')
     } else {
       await setStatus(userId, { status: 'running', stage: 'enriching', round, tier, startedAt: chainStartedAt })
     }
@@ -721,7 +734,7 @@ export default async (req) => {
     // it — see enrichAndWriteSignals's own comment. Safe to call even when
     // capped is empty (newEntries just resolves to []).
     const { rows, writeError } = await enrichAndWriteSignals(capped, {
-      userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints: ob.locations || [], apolloContactRetry: tierConfig.apolloContactRetry,
+      userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints: ob.locations || [], apolloContactRetry: tierConfig.apolloContactRetry, apolloCaps: resourceCaps.apollo,
     })
 
     // Real, current progress against this account's tier targets — see

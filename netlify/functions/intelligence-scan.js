@@ -20,9 +20,9 @@
 import { createClient } from '@supabase/supabase-js'
 import { reportServerError } from './lib/reportError.js'
 import { reserveAnthropicTokens } from './lib/aiUsage.js'
-import { getEntitlements, SCAN_TIER_CONFIG } from './lib/entitlements.js'
+import { getEntitlements, SCAN_TIER_CONFIG, resolveResourceCaps } from './lib/entitlements.js'
 import {
-  SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, extractJson,
+  SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, extractJson, looksTruncatedByTokenLimit,
   discoverAdzunaJobs, discoverTheirStackJobs, fetchWithRetry, alertIfConfigured,
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
   buildRegionalSourceHint,
@@ -136,8 +136,6 @@ Only include something here you actually found via search and are confident is r
 Return a single JSON array mixing all three kinds of entries, each tagged with its entryType. Only return the JSON array, nothing else. If nothing genuinely good was found, return an empty array.`
 }
 
-const DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP = 2_000_000
-
 // maxTokens/maxUses now come from the calling customer's own tier (see
 // SCAN_TIER_CONFIG in entitlements.js) instead of being fixed at 4096/8 for
 // everyone — Michael's explicit call (2026-08-25): the daily recurring scan
@@ -146,12 +144,15 @@ const DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP = 2_000_000
 // numbers exactly, so a caller that doesn't pass them (a unit test, or any
 // future call site that doesn't care about tiering) behaves exactly as this
 // function always has.
-async function callAnthropic(apiKey, systemPrompt, supabase, { maxTokens = 4096, maxUses = 8 } = {}) {
+//
+// 2026-08-26: userId/anthropicCaps added — see resolveAnthropicTokens's own
+// comment in aiUsage.js for why this is now a per-customer-plus-platform-
+// backstop reservation instead of one shared platform-wide total.
+async function callAnthropic(apiKey, systemPrompt, supabase, { maxTokens = 4096, maxUses = 8, userId = null, anthropicCaps = {} } = {}) {
   // Anthropic spend had no cap anywhere in this codebase — mirrors the
   // existing Apollo daily-credit-cap pattern (reserveApolloCredits in
   // scanShared.js). Checked before the network call fires, same as Apollo's.
-  const dailyTokenCap = parseInt(process.env.ANTHROPIC_DAILY_TOKEN_CAP, 10) || DEFAULT_ANTHROPIC_DAILY_TOKEN_CAP
-  if (!(await reserveAnthropicTokens(supabase, maxTokens, dailyTokenCap))) {
+  if (!(await reserveAnthropicTokens(supabase, userId, maxTokens, anthropicCaps))) {
     throw new Error('Anthropic daily token cap reached — skipping this call')
   }
   // retries=1, not the fetchWithRetry default of 2: this call already has a
@@ -253,6 +254,10 @@ async function scanOneCustomer(ob, ctx) {
   // See SCAN_TIER_CONFIG in entitlements.js for the actual numbers.
   const { tier } = await getEntitlements(supabase, ob.user_id)
   const tierConfig = SCAN_TIER_CONFIG[tier] || SCAN_TIER_CONFIG.starter
+  // Resolved once per customer alongside tierConfig above — see
+  // resolveResourceCaps's own header for why this is a {userDailyCap,
+  // platformDailyCap} pair per resource rather than a single shared number.
+  const resourceCaps = resolveResourceCaps(tier)
 
   const recentCompanies = await fetchRecentCompanies(supabase, ob.user_id)
   const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
@@ -261,10 +266,10 @@ async function scanOneCustomer(ob, ctx) {
   // a credit for a customer whose locations actually include a market
   // THEIRSTACK_COUNTRY_MAP covers, same "only pay for what's real" guard
   // reserveApolloCredits already has for Apollo.
-  const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase)
+  const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, ob.user_id, resourceCaps.theirStack)
   const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
 
-  const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned }), supabase, { maxTokens: tierConfig.anthropicMaxTokens, maxUses: tierConfig.anthropicMaxUses })
+  const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned }), supabase, { maxTokens: tierConfig.anthropicMaxTokens, maxUses: tierConfig.anthropicMaxUses, userId: ob.user_id, anthropicCaps: resourceCaps.anthropicTokens })
   const { learned: learnedFound, rest: rawFound } = splitLearnedEntries(extractJson(text))
   // Fire-and-forget on purpose — this is Annie's own research memory
   // growing for next time (see getLearnedSources/recordLearnedDiscoveries's
@@ -278,9 +283,12 @@ async function scanOneCustomer(ob, ctx) {
   const found = dropGenericHiringWhereLiveJobsExist(rawFound)
   if (!found.length) {
     // Log a preview so a zero-result customer is diagnosable from the log,
-    // not guessed at.
+    // not guessed at. See looksTruncatedByTokenLimit's own header — tells
+    // "genuinely nothing found" apart from "max_tokens cut the response
+    // off before it finished", which used to be indistinguishable here.
     const preview = (text || '').trim().slice(0, 400)
-    console.log('[intelligence-scan] nothing found for', ob.user_id, '| raw response preview:', preview || '(empty response)')
+    const truncated = looksTruncatedByTokenLimit(text)
+    console.log('[intelligence-scan] nothing found for', ob.user_id, truncated ? '| LIKELY TRUNCATED BY max_tokens (raise anthropicMaxTokens for this tier if this keeps happening)' : '', '| raw response preview:', preview || '(empty response)')
     return 0
   }
 
@@ -302,7 +310,7 @@ async function scanOneCustomer(ob, ctx) {
   // lets enrichCompany prefer an Apollo org whose country matches this
   // customer's monitored markets when a company name alone is ambiguous
   // (see pickBestOrgMatch in scanShared.js).
-  const rows = await buildEnrichedSignalRows(newSignals, { userId: ob.user_id, apolloKey, companiesHouseKey, supabase, logPrefix: '[intelligence-scan]', locationHints: ob.locations || [], apolloContactRetry: tierConfig.apolloContactRetry })
+  const rows = await buildEnrichedSignalRows(newSignals, { userId: ob.user_id, apolloKey, companiesHouseKey, supabase, logPrefix: '[intelligence-scan]', locationHints: ob.locations || [], apolloContactRetry: tierConfig.apolloContactRetry, apolloCaps: resourceCaps.apollo })
   if (!rows.length) return 0
 
   // Throwing here (rather than swallowing) is deliberate: this function's
