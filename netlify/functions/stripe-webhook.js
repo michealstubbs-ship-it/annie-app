@@ -306,7 +306,24 @@ export default async (req) => {
     // this delete, Stripe's retry (a fresh delivery of the same event.id)
     // would hit the unique-violation "already processed" path above and
     // never actually get a real second attempt.
-    await supabase.from('stripe_webhook_events').delete().eq('event_id', event.id).then(() => {}, () => {})
+    //
+    // 2nd-pass audit fix: this used to be `.then(() => {}, () => {})`, which
+    // only routes to its rejection handler on a network-level throw. A
+    // query-level failure (RLS denial, a transient Postgres error) resolves
+    // NORMALLY with `{ error }` set — supabase-js doesn't reject for that —
+    // so it silently landed in the fulfillment handler and the release
+    // failure vanished with no log, no report, nothing. If the cleanup
+    // itself then failed, the reservation stayed in place forever: Stripe's
+    // retry would hit the unique-violation "already processed" branch above
+    // and get treated as already-handled even though the original attempt
+    // never actually wrote anything — the exact same "error resolves
+    // instead of throwing" bug class this session's audit fixed everywhere
+    // else, just missed in the one place this fix itself introduced.
+    const { error: releaseError } = await supabase.from('stripe_webhook_events').delete().eq('event_id', event.id)
+    if (releaseError) {
+      console.error('[stripe-webhook] failed to release event reservation after a handling failure — retries of this event will be wrongly treated as already-processed:', releaseError.message)
+      await reportServerError('stripe-webhook', new Error(`reservation release failed: ${releaseError.message}`), { eventType: event.type, eventId: event.id, stage: 'release-after-failure' })
+    }
     return new Response('Webhook handler error', { status: 500 })
   }
 

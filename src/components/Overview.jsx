@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
@@ -124,6 +124,16 @@ export default function Overview() {
   const navigate = useNavigate()
 
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  // 2nd-pass audit fix (2026-08-26): onDone below can now call load() a
+  // second time, mid-session, in the background — not just the one
+  // mount-triggered call this used to be limited to. Two overlapping
+  // load() calls (a slow mount-load still in flight when a scan finishes,
+  // or the reverse) had no ordering guarantee: whichever resolved last won,
+  // which could let a stale, in-flight response overwrite fresher
+  // post-scan data. This token is the same "only the latest call may write
+  // state" guard useScanStatusPoll.js already uses for polling.
+  const loadTokenRef = useRef(0)
   const [topActions, setTopActions] = useState([])
   const [totalActions, setTotalActions] = useState(0)
   const [jobs, setJobs] = useState([])
@@ -213,8 +223,21 @@ export default function Overview() {
   }
 
 
+  // 2nd-pass audit fix (2026-08-26): this had no try/catch at all — fine
+  // when it only ever ran once on mount (a throw there would have been
+  // obvious and immediately visible), but onDone above can now also call
+  // it from a background scan-poll callback with nobody watching. An
+  // uncaught throw here (e.g. resolveTodaysActions -> loadActionState
+  // throwing on a real Supabase error, per this same session's own audit
+  // fix) used to mean setLoading(false) never ran — the "Needs your
+  // attention" card would silently freeze on "Loading..." forever, mid
+  // session, with no error anywhere. Now caught, surfaced, and the loading
+  // flag is always released via finally.
   async function load() {
+    const token = ++loadTokenRef.current
     setLoading(true)
+    setLoadError('')
+    try {
     const todayStart = startOfToday().toISOString()
     const todayEnd = endOfToday().toISOString()
     const todayDateStr = new Date().toISOString().slice(0, 10)
@@ -292,6 +315,13 @@ export default function Overview() {
     })
     const resolvedActions = await resolveTodaysActions({ supabase, userId: user.id, freshActions: shaped })
 
+    // A newer load() already started (or finished) while this one was still
+    // in flight — its results are stale, don't let them clobber fresher
+    // state. (Deliberately checked here, right before the writes, rather
+    // than only in finally — this is the point a slow, superseded response
+    // would otherwise overwrite what a faster, newer one already set.)
+    if (loadTokenRef.current !== token) return
+
     setTopActions(resolvedActions.slice(0, 3))
     setTotalActions(resolvedActions.length)
     setJobs(jobRows || [])
@@ -301,7 +331,13 @@ export default function Overview() {
     setMeetings(meetingRows || [])
     setTasks(taskRows || [])
     setContactsCount(contactsCountResult ?? 0)
-    setLoading(false)
+    } catch (err) {
+      if (loadTokenRef.current !== token) return
+      console.error('[Overview] failed to load dashboard data', err)
+      setLoadError(err.message || 'Could not load your dashboard. Please try again.')
+    } finally {
+      if (loadTokenRef.current === token) setLoading(false)
+    }
   }
 
   const jobStats = useMemo(() => {
@@ -450,6 +486,11 @@ export default function Overview() {
             </div>
             {loading ? (
               <p className="text-sm text-gray-400">Loading...</p>
+            ) : loadError ? (
+              <div className="py-2">
+                <p className="text-sm text-red-600 mb-3">{loadError}</p>
+                <button onClick={load} className="text-xs font-semibold text-navy">Try again</button>
+              </div>
             ) : topActions.length === 0 ? (
               <div className="py-2">
                 {researching ? (

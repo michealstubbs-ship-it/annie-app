@@ -233,6 +233,10 @@ export function useTodaysActions({ user, profile }) {
     // next load with nothing telling the user their "done" didn't stick.
     const { error: err } = await markActionDone(supabase, user.id, action)
     if (err) { setError(err.message || 'Could not mark this done. Please try again.'); return }
+    // 2nd-pass audit fix: nothing cleared `error` on a later success, so one
+    // failed mark-done left the banner showing indefinitely even after a
+    // different (or retried) action succeeded right after it.
+    setError('')
     setActions(prev => prev.filter(a => a !== action))
   }
 

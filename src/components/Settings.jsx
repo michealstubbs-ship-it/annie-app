@@ -27,7 +27,15 @@ export default function Settings() {
   const [pastedMessages, setPastedMessages] = useState('')
   const [writingStyle, setWritingStyle] = useState('')
   const [analysing, setAnalysing] = useState(false)
-  const [styleError, setStyleError] = useState('')
+  // 2nd-pass audit fix: these used to be one shared `styleError` rendered
+  // via two <ErrorBanner> instances (one below the paste box, one below the
+  // save button) — any single error, from either action, showed up TWICE,
+  // and a save() failure specifically rendered its copy below the
+  // unrelated "paste messages" box, misleadingly suggesting that action had
+  // also failed. Split so each action's error renders once, next to the
+  // control it actually belongs to.
+  const [pasteError, setPasteError] = useState('')
+  const [saveStyleError, setSaveStyleError] = useState('')
   const [styleSaving, setStyleSaving] = useState(false)
   const [styleSaved, setStyleSaved] = useState(false)
 
@@ -107,11 +115,11 @@ export default function Settings() {
 
   async function analyseStyle() {
     if (!pastedMessages.trim() || pastedMessages.trim().length < 40) {
-      setStyleError('Paste in a few real messages you\'ve actually sent, at least a couple of sentences each, so Annie has enough to work from.')
+      setPasteError('Paste in a few real messages you\'ve actually sent, at least a couple of sentences each, so Annie has enough to work from.')
       return
     }
     setAnalysing(true)
-    setStyleError('')
+    setPasteError('')
     try {
       const systemPrompt = `You analyse a person's real written communication style from examples of messages they've actually sent, so an AI writing on their behalf can sound authentically like them.
 
@@ -126,7 +134,7 @@ Only return the style profile text, nothing else.`
       })
       setWritingStyle((text || '').trim())
     } catch (err) {
-      setStyleError('Could not analyse right now. Please try again.')
+      setPasteError('Could not analyse right now. Please try again.')
     } finally {
       setAnalysing(false)
     }
@@ -134,14 +142,14 @@ Only return the style profile text, nothing else.`
 
   async function saveWritingStyle() {
     setStyleSaving(true)
-    setStyleError('')
+    setSaveStyleError('')
     // Same unchecked-write fix as saveProfile above — this used to
     // optimistically update local state and show "Saved!" even if the
     // write itself failed.
     const { error } = await supabase.from('onboarding').update({ writing_style: writingStyle.trim() || null }).eq('user_id', user.id)
     setStyleSaving(false)
     if (error) {
-      setStyleError('Could not save your writing style. Please try again.')
+      setSaveStyleError('Could not save your writing style. Please try again.')
       return
     }
     setOnboarding(prev => prev ? { ...prev, writing_style: writingStyle.trim() || null } : prev)
@@ -221,7 +229,7 @@ Only return the style profile text, nothing else.`
           value={pastedMessages}
           onChange={e => setPastedMessages(e.target.value)}
         />
-        <ErrorBanner>{styleError}</ErrorBanner>
+        <ErrorBanner>{pasteError}</ErrorBanner>
         <button onClick={analyseStyle} disabled={analysing} className="btn-ghost mb-4">{analysing ? 'Analysing...' : 'Analyse my style'}</button>
 
         <label className="label" htmlFor="settings-writing-style">Your style profile</label>
@@ -233,7 +241,7 @@ Only return the style profile text, nothing else.`
           value={writingStyle}
           onChange={e => setWritingStyle(e.target.value)}
         />
-        <ErrorBanner>{styleError}</ErrorBanner>
+        <ErrorBanner>{saveStyleError}</ErrorBanner>
         <div className="flex items-center gap-3 mt-3">
           <button onClick={saveWritingStyle} disabled={styleSaving} className="btn-primary">{styleSaving ? 'Saving...' : 'Save style profile'}</button>
           {styleSaved && <span className="text-green-600 text-sm font-medium">Saved!</span>}

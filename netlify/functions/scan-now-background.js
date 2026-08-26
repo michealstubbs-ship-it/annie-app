@@ -708,7 +708,13 @@ export default async (req) => {
           reason: 'cooldown',
           retryAfter: new Date(new Date(ob.initial_scan_triggered_at).getTime() + RESCAN_COOLDOWN_MS).toISOString(),
           signalsFound: 0,
-          startedAt,
+          // 2nd-pass audit fix: every other status write in this file uses
+          // chainStartedAt (this only ran on !internal round-1 calls, where
+          // the two happen to be numerically identical today since nothing
+          // awaits between them — but that's a coincidence of the current
+          // call order, not a guarantee, and every other write already
+          // treats chainStartedAt as the source of truth).
+          startedAt: chainStartedAt,
           finishedAt: Date.now(),
         })
         return

@@ -56,4 +56,37 @@ describe('extractJson', () => {
   it('returns [] for malformed JSON rather than throwing', () => {
     expect(extractJson('[{"company": "Acme", headline: unquoted}]')).toEqual([])
   })
+
+  // 2nd-pass audit fix (2026-08-26): the retry-next-bracket loop above,
+  // taken on its own, would happily grab a later, unrelated array if the
+  // REAL array was malformed — silently returning wrong data instead of
+  // failing safely to []. This is worse than the bug it fixed.
+  it('does not silently substitute a later unrelated array when the real (first) array is malformed', () => {
+    const text = '[{"company":"Acme","headline":"Raises $10M"},]\n\nI excluded these as duplicates: ["BetaCo","GammaCo"].'
+    expect(extractJson(text)).toEqual([])
+  })
+
+  it('still accepts a genuinely empty array', () => {
+    expect(extractJson('[]')).toEqual([])
+    expect(extractJson('Nothing found this round.\n[]')).toEqual([])
+  })
+
+  // 2nd-pass audit fix: the retry loop rescanning to the end of the string
+  // on every failed candidate was O(n^2) on a string dominated by unclosed
+  // '[' characters — a real LLM repetition-loop failure mode, and exactly
+  // the kind of input looksTruncatedByTokenLimit (scanShared.js) runs this
+  // function on to diagnose. Must stay fast and must still return [].
+  it('stays fast and returns [] on a pathological string of unclosed brackets', () => {
+    const text = '['.repeat(50000)
+    const start = Date.now()
+    expect(extractJson(text)).toEqual([])
+    expect(Date.now() - start).toBeLessThan(1000)
+  })
+
+  it('stays fast and returns [] when many "[" candidates each fail to parse, up to the retry cap', () => {
+    const text = Array.from({ length: 5000 }, () => '[not json]').join(' ')
+    const start = Date.now()
+    expect(extractJson(text)).toEqual([])
+    expect(Date.now() - start).toBeLessThan(1000)
+  })
 })

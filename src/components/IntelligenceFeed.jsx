@@ -94,6 +94,7 @@ export default function IntelligenceFeed() {
     // signal marked 'new' server-side while the UI still said 'seen'.
     const { error: err } = await markSignalSeen(s.id)
     if (err) { setError(err.message || 'Could not update this signal. Please try again.'); return }
+    setError('') // 2nd-pass audit fix: clear a stale error from an earlier failed action
     setSignals(prev => prev.map(x => x.id === s.id ? { ...x, status: 'seen' } : x))
     logSignalOutcome(user, s, 'seen')
   }
@@ -105,6 +106,7 @@ export default function IntelligenceFeed() {
     // 'actioned' in analytics) out of sync with the database.
     const { error: err } = await markSignalActioned(s.id)
     if (err) { setError(err.message || 'Could not update this signal. Please try again.'); return }
+    setError('') // 2nd-pass audit fix: clear a stale error from an earlier failed action
     setSignals(prev => prev.filter(x => x.id !== s.id))
     trackEvent('signal_actioned', { signal_type: s.signal_type, source_verified: !!s.source_verified })
   }
@@ -154,6 +156,7 @@ export default function IntelligenceFeed() {
     // actually set.
     const { error: err } = await markSignalManuallyAdded(s.id)
     if (err) { setError(err.message || 'Could not add this to Today\'s Actions. Please try again.'); return }
+    setError('') // 2nd-pass audit fix: clear a stale error from an earlier failed action
     setSignals(prev => prev.map(x => x.id === s.id ? { ...x, manually_added_at: new Date().toISOString() } : x))
     logSignalOutcome(user, s, 'added_to_bd_actions')
     trackEvent('signal_added_to_bd_actions', { signal_type: s.signal_type })

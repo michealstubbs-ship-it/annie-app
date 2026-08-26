@@ -219,6 +219,39 @@ describe('idempotency', () => {
     expect(deleteCalls.length).toBe(1)
   })
 
+  // 2nd-pass audit fix (2026-08-26): the release-on-failure delete used to
+  // be `.then(() => {}, () => {})`, which only catches a thrown rejection —
+  // a query-level failure (RLS denial, a transient Postgres error) resolves
+  // normally with `{ error }` set and would vanish silently. This proves
+  // that case is now logged and reported instead of swallowed.
+  it('logs and reports when releasing the reservation itself fails at the query level (not a thrown rejection)', async () => {
+    mockConstructEvent.mockReturnValue(CHECKOUT_EVENT)
+    const supabase = makeSupabaseMock({
+      subscriptions: { data: null, error: { message: 'upsert failed' } },
+    })
+    const originalFrom = supabase.from
+    supabase.from = vi.fn((table) => {
+      if (table !== 'stripe_webhook_events') return originalFrom(table)
+      const builder = {}
+      const chain = () => builder
+      Object.assign(builder, {
+        eq: vi.fn(chain),
+        insert: vi.fn(() => Promise.resolve({ data: null, error: null })),
+        delete: vi.fn(chain),
+        then: (resolve) => Promise.resolve({ data: null, error: { message: 'RLS denied delete' } }).then(resolve),
+      })
+      return builder
+    })
+    mockCreateClient.mockReturnValue(supabase)
+    const res = await handler(makeRequest(CHECKOUT_EVENT))
+    expect(res.status).toBe(500)
+    expect(mockReportServerError).toHaveBeenCalledWith(
+      'stripe-webhook',
+      expect.objectContaining({ message: expect.stringContaining('reservation release failed') }),
+      expect.objectContaining({ stage: 'release-after-failure', eventId: CHECKOUT_EVENT.id })
+    )
+  })
+
   it('returns 500 and reports the error when reserving the event_id fails for a reason other than a duplicate', async () => {
     mockConstructEvent.mockReturnValue(CHECKOUT_EVENT)
     mockCreateClient.mockReturnValue(makeSupabaseMock({

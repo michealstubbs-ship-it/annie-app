@@ -195,6 +195,14 @@ export default function Pipeline() {
             leaving `required` inert. */}
         <form onSubmit={save}>
             <div className="space-y-3">
+              {/* 2nd-pass audit fix: the page-level ErrorBanner above sits
+                  behind this modal's full-screen overlay, so it was
+                  invisible while the modal was open. That mattered because
+                  save()'s own validation (a whitespace-only company passes
+                  the native `required` check but fails .trim()) had nowhere
+                  to actually show its message — clicking Save just silently
+                  did nothing. */}
+              {error && <ErrorBanner>{error}</ErrorBanner>}
               {[['company','Company *','text',true],['role','Role/Position','text',false],['next_action','Next Action','text',false]].map(([f,l,t,req]) => (
                 <div key={f}><label className="label" htmlFor={`pipeline-${f}`}>{l}</label><input id={`pipeline-${f}`} className="input" type={t} value={form[f]} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} required={req} /></div>
               ))}
