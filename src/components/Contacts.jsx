@@ -87,7 +87,7 @@ export default function Contacts() {
         <div className="flex items-center justify-center py-20">
           <Spinner />
         </div>
-      ) : filtered.length === 0 ? (
+      ) : filtered.length === 0 && contacts.length === 0 ? (
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">👥</div>
           <h3 className="font-bold text-navy mb-1">No contacts yet</h3>
@@ -96,6 +96,18 @@ export default function Contacts() {
             <button onClick={() => navigate('/dashboard/import-linkedin')} className="btn-ghost">Import from LinkedIn</button>
             <button onClick={openAdd} className="btn-primary">Add a contact</button>
           </div>
+        </div>
+      ) : filtered.length === 0 ? (
+        // 2026-08-26 audit fix: this used to be the same "No contacts yet"
+        // empty state as an actually-empty list (condition was just
+        // `filtered.length === 0`, true either way) — a user with hundreds
+        // of real contacts and a typo'd search saw "add your first contact"
+        // and the import/add buttons, which was actively misleading.
+        <div className="card p-12 text-center">
+          <div className="text-4xl mb-3">🔍</div>
+          <h3 className="font-bold text-navy mb-1">No contacts match "{search}"</h3>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Try a different name, company, title, or email — or clear the search to see all {contacts.length} contacts.</p>
+          <button onClick={() => setSearch('')} className="btn-ghost">Clear search</button>
         </div>
       ) : (
         <div className="card overflow-hidden">

@@ -1244,7 +1244,10 @@ async function resolveLogoUrl(company, domain, existingLogoUrl) {
 // guess is worse than no match here — an unmatched company still shows
 // fine (no logo/no contact), where a wrong match puts a real stranger's
 // name and email on a card for the wrong business.
-function pickBestOrgMatch(candidates, company, locationHints = []) {
+// Exported (2026-08-26 audit fix) so apollo-enrich-companies.js can reuse
+// this same guard — see that file's own fix comment for the bug this
+// closes: it was taking Apollo's unguarded top search result unconditionally.
+export function pickBestOrgMatch(candidates, company, locationHints = []) {
   if (!candidates?.length) return null
   const norm = (v) => (v || '').trim().toLowerCase().replace(/\s+/g, ' ')
   const target = norm(company)

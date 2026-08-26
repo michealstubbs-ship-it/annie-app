@@ -156,12 +156,22 @@ export default function Companies() {
 
       {loading ? (
         <div className="flex items-center justify-center py-20"><Spinner /></div>
-      ) : filtered.length === 0 ? (
+      ) : filtered.length === 0 && companies.length === 0 ? (
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">🏢</div>
           <h3 className="font-bold text-navy mb-1">No companies yet</h3>
           <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Add a company, then attach contacts and jobs to it from a dropdown wherever you go.</p>
           <button onClick={openAddCo} className="btn-primary">Add a company</button>
+        </div>
+      ) : filtered.length === 0 ? (
+        // 2026-08-26 audit fix: same bug as Contacts.jsx — a typo'd search
+        // against a non-empty list used to render the identical "add your
+        // first company" empty state as a genuinely empty table.
+        <div className="card p-12 text-center">
+          <div className="text-4xl mb-3">🔍</div>
+          <h3 className="font-bold text-navy mb-1">No companies match "{search}"</h3>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Try a different name — or clear the search to see all {companies.length} companies.</p>
+          <button onClick={() => setSearch('')} className="btn-ghost">Clear search</button>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

@@ -54,7 +54,10 @@ function scanOutcomeCopy(scanOutcome) {
     case 'no_results':
       return {
         headline: "Annie's first pass through your market didn't turn up anything strong enough to flag yet.",
-        detail: 'She checks again automatically every few hours — you can also ask her to look again right now.',
+        // 2026-08-26 audit fix: was "every few hours" — the real cadence is
+        // intelligence-scan.js's cron schedule, `0 */12 * * *` (twice a
+        // day), confirmed against the live function config.
+        detail: 'She checks again automatically twice a day — you can also ask her to look again right now.',
         canRetryNow: true,
       }
     case 'timed_out':
@@ -407,7 +410,15 @@ export default function Overview() {
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-bold text-white">Annie is researching your market right now</p>
-            <p className="text-[12.5px] text-gray-300 mt-0.5 leading-relaxed">Live funding rounds, leadership changes and hiring signals in your sectors. First results usually land within a couple of minutes, and this page updates itself, no need to refresh.</p>
+            {/* 2026-08-26 audit fix: was "usually land within a couple of
+                minutes" — entitlements.js's SCAN_TIER_CONFIG budgets 10-20
+                minutes of wall-clock scan time depending on tier, and this
+                page's own poll window (below) is sized at 24 minutes
+                specifically because a scan can legitimately still be
+                running that long. A customer taking the "couple of
+                minutes" line literally and refreshing at the 3-minute mark
+                would see nothing and reasonably conclude it was broken. */}
+            <p className="text-[12.5px] text-gray-300 mt-0.5 leading-relaxed">Live funding rounds, leadership changes and hiring signals in your sectors. A full pass can take several minutes for a market this size — this page updates itself the moment results land, no need to refresh.</p>
           </div>
         </div>
       )}
@@ -471,7 +482,16 @@ export default function Overview() {
           <div className="text-[11px] text-gray-400 mt-1">{candidateStats.interviewing} interviewing</div>
         </div>
         <div className="bg-white rounded-xl border border-gray-100 p-4">
-          <div className="text-xs text-gray-400 font-medium mb-1.5">New signals, 7 days</div>
+          {/* 2026-08-26 audit fix: label was "New signals" but newSignalsCount
+              (below) has no status filter — it counts every signal found in
+              7 days, including ones already dismissed — while the Feed's
+              own "N new" badge means status === 'new' only. Same word,
+              different definition, one click apart. Relabelling to what the
+              number actually is rather than changing what it counts, since
+              the count itself (total found this week) is a reasonable,
+              useful stat on its own — it just isn't "new" in the Feed's
+              sense. */}
+          <div className="text-xs text-gray-400 font-medium mb-1.5">Signals found, 7 days</div>
           <div className="text-[22px] font-bold text-navy tracking-tight">{newSignalsCount}</div>
           <div className="text-[11px] text-gray-400 mt-1">{urgentCount} need action</div>
         </div>

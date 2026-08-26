@@ -56,7 +56,10 @@ export default function TodaysActions() {
         <div className="card p-10 text-center mt-6">
           <div className="text-5xl mb-4">⚡</div>
           <h2 className="text-xl font-bold text-navy mb-2">Ready to see today's actions?</h2>
-          <p className="text-gray-500 mb-6 max-w-sm mx-auto">Annie is already researching your market around the clock. This pulls together everything genuinely worth acting on today, sized by real opportunity, not a fixed number.</p>
+          {/* 2026-08-26 audit fix: was "around the clock" — overstates a
+              twice-daily cron job (intelligence-scan.js, every 12 hours) as
+              continuous monitoring. */}
+          <p className="text-gray-500 mb-6 max-w-sm mx-auto">Annie is already researching your market, twice a day plus whenever you ask her to look again. This pulls together everything genuinely worth acting on today, sized by real opportunity, not a fixed number.</p>
           <button onClick={() => refresh({ silent: false })} className="btn-primary">Show Today's Actions</button>
         </div>
       )}

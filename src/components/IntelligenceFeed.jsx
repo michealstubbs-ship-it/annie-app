@@ -170,7 +170,11 @@ export default function IntelligenceFeed() {
         <div>
           <h1 className="text-xl font-extrabold text-navy flex items-center">
             Intelligence Feed
-            <InfoTip text="Annie researches your sectors and markets in the background every few hours, this is everything she's found, newest first. Today's Actions pulls its best picks from the same list." />
+            {/* 2026-08-26 audit fix: was "every few hours" — the actual
+                cadence (intelligence-scan.js's cron, every 12 hours) is
+                twice a day, plus on demand whenever the customer runs a
+                manual scan. */}
+            <InfoTip text="Annie researches your sectors and markets in the background twice a day, plus whenever you ask her to look again — this is everything she's found, newest first. Today's Actions pulls its best picks from the same list." />
           </h1>
           <p className="text-gray-500 text-[13px] mt-0.5">Newest first, exactly when it happened. Annie's already watching, even when you're not looking.</p>
         </div>
@@ -239,7 +243,7 @@ export default function IntelligenceFeed() {
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">🔍</div>
           <h3 className="font-bold text-navy mb-1">Nothing here yet</h3>
-          <p className="text-gray-500 text-sm max-w-sm mx-auto">Annie scans your sectors and markets every few hours in the background. Check back soon, or import your LinkedIn contacts so she has more to watch.</p>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto">Annie scans your sectors and markets twice a day in the background. Check back soon, or import your LinkedIn contacts so she has more to watch.</p>
         </div>
       ) : (
         <div className="bg-white rounded-2xl shadow-[0_1px_2px_rgba(13,27,62,0.06),0_1px_6px_rgba(13,27,62,0.04)] overflow-hidden">

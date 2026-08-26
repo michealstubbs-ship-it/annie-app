@@ -1,10 +1,8 @@
 import { parseIntEnv } from './env.js'
 
 // Soft-gate tier lookup, shared by every Netlify function that needs to
-// know "what plan is this caller's team on" (chat.js's message cap today;
-// onboarding's research depth and LinkedIn re-import-on-demand are the
-// next call sites, flagged in this build's summary rather than wired up
-// yet — see PRICING_AND_TEAMS.md).
+// know "what plan is this caller's team on" (chat.js's message cap,
+// onboarding's research depth).
 //
 // Soft gate, confirmed with Michael (2026-08-24): nobody is ever locked out
 // of core product (CRM, Today's Actions, Intelligence Feed) for lacking an
@@ -19,10 +17,22 @@ import { parseIntEnv } from './env.js'
 // team's subscription is looked up by team_id. This is one code path for
 // everyone: a Growth solo user and a Team-tier teammate both resolve their
 // tier the same way, through their team's own subscription row.
+//
+// 2026-08-26 pricing/copy alignment: linkedinReimportOnDemand used to live
+// here (false for starter, true for growth/team) but was never actually
+// read by any call site — LinkedIn re-import has no tier check anywhere
+// (LinkedInImport.jsx, Settings.jsx). Rather than wire up a gate the
+// product doesn't actually want (SupportWidget.jsx's own fact base tells
+// customers directly it's available "for anyone, regardless of plan," and
+// pricing.js no longer sells it as Growth-exclusive — see that file's own
+// comment), the flag itself is removed. Keeping an unused gate flag around
+// invites exactly the bug this would have been: someone wiring it up later
+// on the strength of its name alone, re-introducing a restriction the
+// product deliberately doesn't have.
 export const TIER_LIMITS = {
-  starter: { chatMessagesPerMonth: 100, deepOnboardingResearch: false, linkedinReimportOnDemand: false },
-  growth: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true, linkedinReimportOnDemand: true },
-  team: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true, linkedinReimportOnDemand: true },
+  starter: { chatMessagesPerMonth: 100, deepOnboardingResearch: false },
+  growth: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true },
+  team: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true },
 }
 
 // The actual numbers behind deepOnboardingResearch above (2026-08-25,
