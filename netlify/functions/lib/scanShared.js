@@ -194,6 +194,26 @@ export async function alertIfConfigured(message) {
   }
 }
 
+// 2026-08-26: a shared daily Apollo/TheirStack credit cap (see
+// reserveApolloCredits/reserveTheirStackCredits below) used to fail
+// completely silently to everyone but someone actively reading Netlify's
+// function logs — a customer whose scan got starved because ANOTHER
+// customer's scan spent the whole shared budget earlier that day had no
+// way to know that's what happened, and neither did Michael, unless he
+// went looking. This alerts once the cap is first hit each day, not on
+// every single subsequent call that fails the same already-exhausted cap
+// (which could be dozens within one scan run alone) — `alertedCapsToday`
+// is per-warm-instance, not persisted, so a cold start can re-alert once;
+// that's an acceptable, deliberately simple tradeoff over adding a new DB
+// column just to dedupe a Slack message.
+const alertedCapsToday = new Set()
+function alertCapHitOnce(capName, dailyCap) {
+  const key = `${capName}:${new Date().toISOString().slice(0, 10)}`
+  if (alertedCapsToday.has(key)) return
+  alertedCapsToday.add(key)
+  alertIfConfigured(`:warning: ${capName} daily credit cap (${dailyCap}) reached for today — this is a *shared, platform-wide* budget, so every customer's scan is now getting fewer/no contacts or live-job leads from this source until it resets at midnight UTC. Raise the cap (${capName === 'Apollo' ? 'APOLLO_DAILY_CREDIT_CAP' : 'THEIRSTACK_DAILY_CREDIT_CAP'} in Netlify) if this is happening earlier in the day than expected.`)
+}
+
 // Global daily cap on Apollo.io API credits, spent from ANY call site
 // (LinkedIn import enrichment, the onboarding scan, the recurring cron).
 // Enforced here rather than trusted to good behaviour at each call site,
@@ -222,7 +242,10 @@ export async function reserveApolloCredits(supabase, credits = 1) {
       console.error('[scanShared] apollo_reserve_credits RPC failed, allowing the call through:', error.message)
       return true
     }
-    if (!data) console.error(`[scanShared] Apollo daily credit cap (${dailyCap}) reached for today, skipping call`)
+    if (!data) {
+      console.error(`[scanShared] Apollo daily credit cap (${dailyCap}) reached for today, skipping call`)
+      alertCapHitOnce('Apollo', dailyCap)
+    }
     return data
   } catch (err) {
     console.error('[scanShared] apollo_reserve_credits threw, allowing the call through:', err.message)
@@ -305,9 +328,21 @@ export function normalizeCompanyKey(company) {
 // call decided to also mention.
 const GENERIC_HIRING_SIGNAL_TYPES = ['hiring_activity', 'job_posting_unclaimed']
 
+// 2026-08-26: used to count EVERY entry the AI merely labelled "live_job"
+// here, before buildEnrichedSignalRow's own looksLikeJobPostingUrl check
+// (further downstream, run per-entry, one entry at a time) ever got a
+// chance to demote an entry whose sourceUrl doesn't actually look like a
+// real posting. Net effect: a genuinely good, well-sourced hiring_activity
+// entry for a company could get dropped here in favour of a same-company
+// "live_job" entry that turns out, one step later, not to be verified at
+// all — a real loss, and in the wrong direction (losing the entry that WAS
+// good). Checking the URL shape here too, before it's allowed to suppress
+// anything, closes that ordering gap.
 export function dropGenericHiringWhereLiveJobsExist(entries) {
   const companiesWithLiveJobs = new Set(
-    entries.filter(e => e.entryType === 'live_job').map(e => normalizeCompanyKey(e.company))
+    entries
+      .filter(e => e.entryType === 'live_job' && looksLikeJobPostingUrl(e.sourceUrl))
+      .map(e => normalizeCompanyKey(e.company))
   )
   if (!companiesWithLiveJobs.size) return entries
   return entries.filter(e => {
@@ -408,7 +443,18 @@ export function mapLocationsToAdzunaCountries(locations) {
 // discovery input handed to the AI, not a final answer: Adzuna's own data
 // doesn't reliably flag agency-posted vs direct-posted, so the AI still has
 // to read each ad's language before writing it up.
-export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, locations }) {
+// 2026-08-26: used to only ever query the customer's first 2 mapped
+// countries (`countries.slice(0, 2)`) and then cap the merged, country-
+// concatenated result list at 10 — so a customer targeting 3+ Adzuna-
+// covered markets silently never got ANY leads from their 3rd+ market, and
+// even between the first two, whichever came first in `locations` crowded
+// out the second once results were merged. Adzuna is free (no credit cost,
+// see the comment above), so there's no cost reason to hold back — this
+// now queries every mapped country and interleaves the results round-robin
+// so each market gets fair representation up to the cap, with a log line
+// when the cap actually discards something (matches the "no silent caps"
+// standard the rest of this file already holds itself to).
+export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, locations }, lookbackDays = SIGNAL_LOOKBACK_DAYS) {
   if (!appId || !appKey) return []
   const countries = mapLocationsToAdzunaCountries(locations)
   if (!countries.length) return []
@@ -416,37 +462,52 @@ export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, lo
   const keywords = buildSearchKeywords(sectors, functions)
   if (!keywords.length) return []
 
-  const results = []
-  for (const country of countries.slice(0, 2)) {
+  const perCountry = []
+  for (const country of countries) {
+    const countryResults = []
     try {
       const params = new URLSearchParams({
         app_id: appId,
         app_key: appKey,
         results_per_page: '10',
         what: keywords.join(' '),
-        max_days_old: String(SIGNAL_LOOKBACK_DAYS),
+        max_days_old: String(lookbackDays),
         sort_by: 'date',
       })
       const resp = await fetchWithRetry(`https://api.adzuna.com/v1/api/jobs/${country}/search/1?${params.toString()}`)
-      if (!resp.ok) continue
-      const data = await resp.json()
-      for (const j of data.results || []) {
-        const title = (j.title || '').replace(/<[^>]+>/g, '').trim()
-        const company = j.company?.display_name || ''
-        if (!title || !company) continue
-        results.push({
-          title,
-          company,
-          location: j.location?.display_name || '',
-          url: j.redirect_url || '',
-          salary: j.salary_min ? `${Math.round(j.salary_min)}${j.salary_max && j.salary_max !== j.salary_min ? `-${Math.round(j.salary_max)}` : ''}` : null,
-        })
+      if (resp.ok) {
+        const data = await resp.json()
+        for (const j of data.results || []) {
+          const title = (j.title || '').replace(/<[^>]+>/g, '').trim()
+          const company = j.company?.display_name || ''
+          if (!title || !company) continue
+          countryResults.push({
+            title,
+            company,
+            location: j.location?.display_name || '',
+            url: j.redirect_url || '',
+            salary: j.salary_min ? `${Math.round(j.salary_min)}${j.salary_max && j.salary_max !== j.salary_min ? `-${Math.round(j.salary_max)}` : ''}` : null,
+          })
+        }
       }
     } catch (err) {
-      console.error('[scanShared] adzuna discovery failed:', err.message)
+      console.error('[scanShared] adzuna discovery failed for', country, ':', err.message)
+    }
+    perCountry.push(countryResults)
+  }
+
+  const merged = []
+  for (let i = 0; merged.length < 10 && perCountry.some((list) => i < list.length); i++) {
+    for (const list of perCountry) {
+      if (merged.length >= 10) break
+      if (i < list.length) merged.push(list[i])
     }
   }
-  return results.slice(0, 10)
+  const totalFound = perCountry.reduce((n, list) => n + list.length, 0)
+  if (totalFound > merged.length) {
+    console.log(`[scanShared] Adzuna: found ${totalFound} real jobs across ${countries.length} countries, capped to ${merged.length} (interleaved evenly across markets rather than first-country-biased)`)
+  }
+  return merged
 }
 
 // Same daily-spend-cap pattern as reserveApolloCredits (see that function's
@@ -468,7 +529,10 @@ export async function reserveTheirStackCredits(supabase, credits = 1) {
       console.error('[scanShared] theirstack_reserve_credits RPC failed, allowing the call through:', error.message)
       return true
     }
-    if (!data) console.error(`[scanShared] TheirStack daily credit cap (${dailyCap}) reached for today, skipping call`)
+    if (!data) {
+      console.error(`[scanShared] TheirStack daily credit cap (${dailyCap}) reached for today, skipping call`)
+      alertCapHitOnce('TheirStack', dailyCap)
+    }
     return data
   } catch (err) {
     console.error('[scanShared] theirstack_reserve_credits threw, allowing the call through:', err.message)
@@ -513,7 +577,7 @@ export function mapLocationsToTheirStackCountries(locations) {
 // live). So this only ever does the safe query shape, and leaves company
 // identity resolution to the same AI read + verifyContact/enrichCompany
 // pipeline every other lead source already goes through.
-export async function discoverTheirStackJobs(apiKey, { sectors, functions, locations }, supabase) {
+export async function discoverTheirStackJobs(apiKey, { sectors, functions, locations }, supabase, lookbackDays = SIGNAL_LOOKBACK_DAYS) {
   if (!apiKey) return []
   const countries = mapLocationsToTheirStackCountries(locations)
   if (!countries.length) return []
@@ -527,7 +591,7 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
     const body = {
       limit,
       offset: 0,
-      posted_at_max_age_days: SIGNAL_LOOKBACK_DAYS,
+      posted_at_max_age_days: lookbackDays,
       job_country_code_or: countries,
     }
     if (keywords.length) body.job_title_or = keywords
@@ -562,12 +626,12 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
 // Querying it BEFORE the AI call gives the AI a head start of real,
 // independently-confirmed leads rather than relying purely on whatever
 // general news search happens to surface.
-export async function discoverHotCompanies(apolloKey, { sectors, functions, locations }, supabase) {
+export async function discoverHotCompanies(apolloKey, { sectors, functions, locations }, supabase, lookbackDays = SIGNAL_LOOKBACK_DAYS) {
   if (!apolloKey) return []
   if (!(await reserveApolloCredits(supabase))) return []
   try {
     const body = { per_page: 8, organization_num_jobs_range: { min: 1 } }
-    body.organization_job_posted_at_range = { min: isoDateDaysAgo(SIGNAL_LOOKBACK_DAYS) }
+    body.organization_job_posted_at_range = { min: isoDateDaysAgo(lookbackDays) }
 
     const sectorKeywords = (sectors || []).flatMap(splitToKeywords)
     if (sectorKeywords.length) body.q_organization_keyword_tags = sectorKeywords.slice(0, 20)
@@ -677,8 +741,16 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase,
   }
 
   // 2. Cache miss (or stale) — only now does this spend anything, and only
-  // now does the lack of a resolved org id actually matter.
-  if (!apolloOrgId) return null
+  // now does the lack of a resolved org id actually matter. This used to be
+  // silent — the only trace of why a signal never got a contact was
+  // enrichCompany's own log line about the company match itself, in a
+  // different function; nothing here said "and that's also why the contact
+  // search never even ran." 2026-08-26: this is now the dominant failure
+  // mode this file's own header comment documents, so it gets its own line.
+  if (!apolloOrgId) {
+    console.log(`[scanShared] verifyContact: skipping "${company}" (${titleKey}) — no Apollo org id resolved for this company, so there's nobody to search under`)
+    return null
+  }
   if (!(await reserveApolloCredits(supabase))) return null
 
   const result = appointedName
@@ -734,7 +806,10 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
     }
     const data = await resp.json()
     const p = (data.people || [])[0]
-    if (!p) return null
+    if (!p) {
+      console.log(`[scanShared] verifyContact: no Apollo person matched any of [${(titleKeywords || []).join(', ')}] at "${company}" (org ${apolloOrgId})`)
+      return null
+    }
     // 2026-08-24: mixed_people/api_search masks last names on this account's
     // Apollo plan tier — the raw response carries `last_name_obfuscated`
     // (e.g. "Re***n"), never a usable `last_name`, confirmed directly
@@ -749,7 +824,10 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
     // reveal call already made below for the email, which returns an
     // unmasked name (confirmed live: search gave "Re***n", the reveal call
     // for that same person id gave "Rehman").
-    if (!p.first_name) return null
+    if (!p.first_name) {
+      console.log(`[scanShared] verifyContact: Apollo person record for "${company}" (org ${apolloOrgId}) had no first name at all — treating as no usable contact`)
+      return null
+    }
 
     // Reveal is no longer "just for email" — for this endpoint it's now the
     // only source of the real, unmasked last name too, so it's always
@@ -793,7 +871,10 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
     // search response, which never has one on this plan.
     const firstName = revealedFirstName || p.first_name
     const lastName = revealedLastName
-    if (!firstName || !lastName) return null
+    if (!firstName || !lastName) {
+      console.log(`[scanShared] verifyContact: found a real Apollo person for "${company}" (${p.first_name || '?'}) but the reveal call never returned a usable last name — dropping the contact rather than showing a first-name-only record`)
+      return null
+    }
     const name = `${firstName} ${lastName}`.trim()
 
     return { name, title: revealedTitle || p.title || '', linkedin_url: revealedLinkedin || p.linkedin_url || '', email }
@@ -870,7 +951,17 @@ async function lookupContactByName(apolloKey, company, fullName, supabase) {
 // actionsEngine.js) is required to always carry at least one usable contact
 // recommendation, so this is the fallback that guarantees that when a single
 // verifyContact call comes back empty.
+// 2026-08-26: added `leadership`. The funding/expansion signal is
+// specifically about young/small/regional companies — exactly the ones
+// most likely to not yet have a "Head of Product" or "Commercial Director"
+// at all, where the real, only decision-maker is the Founder/CEO/Managing
+// Director. Every existing bucket here searched only functional titles and
+// none of them included this — a real, structural miss for the smaller
+// companies these two signal types are about, at every tier, not just
+// Starter (this bucket applies to funding/expansion unconditionally,
+// unlike EXTENDED_FUNCTION_TITLE_BUCKETS below which is tier-gated).
 const FUNCTION_TITLE_BUCKETS = {
+  leadership: ['Founder', 'Co-Founder', 'CEO', 'Managing Director', 'Owner'],
   product: ['Head of Product', 'VP Product', 'Product Director'],
   engineering: ['Head of Engineering', 'VP Engineering', 'Engineering Director'],
   commercial: ['Commercial Director', 'VP Sales', 'Head of Business Development'],
@@ -981,6 +1072,20 @@ function pickBestOrgMatch(candidates, company, locationHints = []) {
   const target = norm(company)
   const exact = candidates.find((c) => norm(c.name) === target)
   if (exact) return exact
+  // 2026-08-26: a plain string-exact match rejects "Acme Trading" vs
+  // Apollo's own "Acme Trading FZE" as two different companies — a real,
+  // structural miss for Annie's UAE/GCC customers specifically, whose
+  // Apollo records commonly carry a legal-entity suffix (FZE/DMCC/PJSC/
+  // WLL/...) the AI's news-derived company name never includes. This is
+  // still an EXACT match, just on the legal-suffix-stripped name — not the
+  // fuzzy containment companiesMatch() allows elsewhere — so it stays as
+  // safe against the Stitch/Stitch Fix false-positive as the raw-string
+  // check above, just blind to a suffix that isn't part of the real brand.
+  const targetNormalized = normalizeCompanyName(company)
+  if (targetNormalized) {
+    const suffixInsensitive = candidates.find((c) => normalizeCompanyName(c.name) === targetNormalized)
+    if (suffixInsensitive) return suffixInsensitive
+  }
   if (locationHints.length) {
     const hints = locationHints.map(norm).filter(Boolean)
     const locationMatch = candidates.find((c) => {

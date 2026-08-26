@@ -6,11 +6,27 @@
 // ("Acme" inside "Acme Group Holdings"). Not bulletproof, good enough to
 // surface a likely match for a human to glance at and confirm.
 
-const LEGAL_SUFFIXES = /\b(ltd|limited|llc|inc|incorporated|plc|corp|corporation|group|holdings|co)\b\.?/g
+// 2026-08-26: added the common UAE/GCC legal-entity suffixes (fze, dmcc,
+// pjsc, psc, wll, fz, establishment/est) — this list previously only
+// covered US/UK-style suffixes, so a genuinely correct match like "Acme
+// Trading" (as an AI-written signal names it) vs. Apollo's own registered
+// record "Acme Trading FZE" normalized to two different keys and was
+// treated as two different companies everywhere this function is used,
+// including pickBestOrgMatch's org-resolution step scanShared.js's
+// verifyContact depends on — a real, structural gap for Annie's core UAE/
+// GCC market specifically, not a US/UK one.
+const LEGAL_SUFFIXES = /\b(ltd|limited|llc|inc|incorporated|plc|corp|corporation|group|holdings|co|fze|fz|dmcc|pjsc|psc|wll|establishment|est)\b\.?/g
 
 export function normalizeCompanyName(name) {
   return (name || '')
     .toLowerCase()
+    // GCC entity suffixes are routinely written with periods between every
+    // letter ("W.L.L.") — strip periods before the suffix regex runs, or
+    // "wll" never matches "w.l.l." at all. Collapses to "wll", not "w l l":
+    // periods are removed outright (not turned into spaces) so the letters
+    // stay joined, same as "Ltd." already relied on via the regex's own
+    // trailing `\.?`.
+    .replace(/\./g, '')
     .replace(LEGAL_SUFFIXES, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()

@@ -353,20 +353,25 @@ describe('discoverTheirStackJobs', () => {
 })
 
 describe('dropGenericHiringWhereLiveJobsExist (Live Jobs "replace, not supplement")', () => {
-  it('drops a hiring_activity entry for a company that also has a live_job entry', () => {
+  // A real posting URL — passes looksLikeJobPostingUrl — is what makes a
+  // live_job entry entitled to suppress a same-company generic-hiring
+  // entry as of 2026-08-26; every "drops..." case below needs one.
+  const REAL_POSTING_URL = 'https://acme.com/careers/senior-finance-manager'
+
+  it('drops a hiring_activity entry for a company that also has a verified-URL live_job entry', () => {
     const entries = [
       { entryType: 'signal', signalType: 'hiring_activity', company: 'Acme Ltd', headline: 'Hiring push' },
-      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager' },
+      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager', sourceUrl: REAL_POSTING_URL },
     ]
     expect(dropGenericHiringWhereLiveJobsExist(entries)).toEqual([
-      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager' },
+      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager', sourceUrl: REAL_POSTING_URL },
     ])
   })
 
   it('drops a job_posting_unclaimed entry the same way', () => {
     const entries = [
       { entryType: 'signal', signalType: 'job_posting_unclaimed', company: 'Acme Ltd', headline: 'Job ad up' },
-      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager' },
+      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager', sourceUrl: REAL_POSTING_URL },
     ]
     expect(dropGenericHiringWhereLiveJobsExist(entries).some(e => e.signalType === 'job_posting_unclaimed')).toBe(false)
   })
@@ -374,7 +379,7 @@ describe('dropGenericHiringWhereLiveJobsExist (Live Jobs "replace, not supplemen
   it('matches company across legal-suffix variants, same normalization as dedup', () => {
     const entries = [
       { entryType: 'signal', signalType: 'hiring_activity', company: 'Acme Limited', headline: 'Hiring push' },
-      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager' },
+      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager', sourceUrl: REAL_POSTING_URL },
     ]
     expect(dropGenericHiringWhereLiveJobsExist(entries)).toHaveLength(1)
   })
@@ -382,7 +387,7 @@ describe('dropGenericHiringWhereLiveJobsExist (Live Jobs "replace, not supplemen
   it('leaves a hiring_activity entry alone when no live_job exists for that company', () => {
     const entries = [
       { entryType: 'signal', signalType: 'hiring_activity', company: 'Acme Ltd', headline: 'Hiring push' },
-      { entryType: 'live_job', company: 'Zenith Group', headline: 'Ops Director' },
+      { entryType: 'live_job', company: 'Zenith Group', headline: 'Ops Director', sourceUrl: REAL_POSTING_URL },
     ]
     const result = dropGenericHiringWhereLiveJobsExist(entries)
     expect(result.some(e => e.company === 'Acme Ltd')).toBe(true)
@@ -391,7 +396,7 @@ describe('dropGenericHiringWhereLiveJobsExist (Live Jobs "replace, not supplemen
   it('never drops other signal types (e.g. funding) for a company with a live_job entry', () => {
     const entries = [
       { entryType: 'signal', signalType: 'funding', company: 'Acme Ltd', headline: 'Raises Series B' },
-      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager' },
+      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager', sourceUrl: REAL_POSTING_URL },
     ]
     expect(dropGenericHiringWhereLiveJobsExist(entries)).toHaveLength(2)
   })
@@ -401,6 +406,31 @@ describe('dropGenericHiringWhereLiveJobsExist (Live Jobs "replace, not supplemen
       { entryType: 'signal', signalType: 'hiring_activity', company: 'Acme Ltd', headline: 'Hiring push' },
     ]
     expect(dropGenericHiringWhereLiveJobsExist(entries)).toEqual(entries)
+  })
+
+  // 2026-08-26: the real ordering bug this fixes — a live_job entry whose
+  // sourceUrl doesn't actually look like a genuine posting (a news article
+  // that merely mentions hiring, or a hallucinated URL) used to still count
+  // as "this company has a live job" here, discarding a real, well-sourced
+  // hiring_activity entry in its favour — before buildEnrichedSignalRow's
+  // own per-entry check ever got a chance to demote that unverified entry.
+  // Net loss: the genuinely good entry gone, the unverified one kept.
+  it('does NOT drop a hiring_activity entry in favour of a live_job entry whose URL is not a real posting', () => {
+    const entries = [
+      { entryType: 'signal', signalType: 'hiring_activity', company: 'Acme Ltd', headline: 'On a genuine hiring push, well sourced' },
+      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager', sourceUrl: 'https://technews.example.com/2026/08/acme-raises-funding-and-hiring' },
+    ]
+    const result = dropGenericHiringWhereLiveJobsExist(entries)
+    expect(result.some(e => e.signalType === 'hiring_activity')).toBe(true)
+  })
+
+  it('does NOT drop a hiring_activity entry when the live_job entry has no sourceUrl at all', () => {
+    const entries = [
+      { entryType: 'signal', signalType: 'hiring_activity', company: 'Acme Ltd', headline: 'On a genuine hiring push, well sourced' },
+      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager' },
+    ]
+    const result = dropGenericHiringWhereLiveJobsExist(entries)
+    expect(result.some(e => e.signalType === 'hiring_activity')).toBe(true)
   })
 })
 
@@ -949,7 +979,16 @@ describe('enrichCompany — pickBestOrgMatch (the Stitch / Stitch Fix wrong-comp
     vi.unstubAllGlobals()
   })
 
-  it('falls back to a location-hint match when no candidate is an exact name match', async () => {
+  // 2026-08-26: this used to only be resolvable via the location-hint
+  // fallback, since a raw string compare treats "Stitch" and "Stitch FZ
+  // LLC" as different companies. It's now caught earlier and more
+  // precisely, by the suffix-normalized exact match (see the next
+  // describe block) — "FZ LLC" is stripped as a legal suffix, so this
+  // *is* an exact match once normalized, not just a location-based guess.
+  // Kept as its own test since the assertion (right company wins) still
+  // matters, even though it's no longer exercising the location-hint path
+  // specifically.
+  it('resolves the real GCC entity over a same-search decoy, suffix and all', async () => {
     const supabase = makeTableAwareSupabase()
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (url.includes('mixed_companies/search')) {
@@ -967,6 +1006,55 @@ describe('enrichCompany — pickBestOrgMatch (the Stitch / Stitch Fix wrong-comp
     }))
     const result = await enrichCompany('apollo-key', 'Stitch', supabase, ['United Arab Emirates'])
     expect(result.apolloOrgId).toBe('org_ae')
+    vi.unstubAllGlobals()
+  })
+
+  // A genuine location-only fallback case: two candidates whose names are
+  // BOTH unrelated to the target once suffixes are stripped (no exact
+  // match, normalized or otherwise) — only the country hint can decide it.
+  it('still falls back to a pure location-hint match when even the normalized names disagree', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) {
+        return {
+          ok: true,
+          json: async () => ({
+            organizations: [
+              // Neither candidate's name reduces to bare "acme" even after
+              // legal-suffix stripping ("International"/"Gulf" aren't
+              // suffixes) — genuinely ambiguous without the location hint.
+              { id: 'org_us', name: 'Acme International Trading', primary_domain: 'acmeintl.com', country: 'United States' },
+              { id: 'org_ae', name: 'Acme Gulf Trading', primary_domain: 'acmegulf.ae', country: 'United Arab Emirates' },
+            ],
+          }),
+        }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    const result = await enrichCompany('apollo-key', 'Acme', supabase, ['United Arab Emirates'])
+    expect(result.apolloOrgId).toBe('org_ae')
+    vi.unstubAllGlobals()
+  })
+
+  it('picks a GCC-suffixed candidate over an unsuffixed decoy purely via suffix-normalized exact match, no location hint needed', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) {
+        return {
+          ok: true,
+          json: async () => ({
+            organizations: [
+              { id: 'org_decoy', name: 'Acme Global Ventures', primary_domain: 'acmeglobal.com' },
+              { id: 'org_real', name: 'Acme Trading FZE', primary_domain: 'acmetrading.ae' },
+            ],
+          }),
+        }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    const result = await enrichCompany('apollo-key', 'Acme Trading', supabase)
+    expect(result.apolloOrgId).toBe('org_real')
+    expect(result.domain).toBe('acmetrading.ae')
     vi.unstubAllGlobals()
   })
 })

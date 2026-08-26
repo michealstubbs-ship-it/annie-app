@@ -13,6 +13,14 @@ describe('normalizeCompanyName', () => {
     expect(normalizeCompanyName('')).toBe('')
     expect(normalizeCompanyName(null)).toBe('')
   })
+
+  it('strips common UAE/GCC legal-entity suffixes', () => {
+    expect(normalizeCompanyName('Acme Trading FZE')).toBe('acme trading')
+    expect(normalizeCompanyName('Acme Trading DMCC')).toBe('acme trading')
+    expect(normalizeCompanyName('Acme Holdings PJSC')).toBe('acme')
+    expect(normalizeCompanyName('Acme Trading W.L.L.')).toBe('acme trading')
+    expect(normalizeCompanyName('Acme Establishment')).toBe('acme')
+  })
 })
 
 describe('companiesMatch', () => {
