@@ -3,7 +3,7 @@ import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { reserveAnthropicTokens, reserveChatCall } from './lib/aiUsage.js'
 import { getEntitlements, resolveResourceCaps } from './lib/entitlements.js'
-import { createTimeoutFetch } from './lib/scanShared.js'
+import { createTimeoutFetch, fetchWithTimeout } from './lib/scanShared.js'
 import { parseIntEnv } from './lib/env.js'
 
 const DEFAULT_CHAT_PER_MINUTE_CAP = 20
@@ -212,7 +212,19 @@ export default async (req, context) => {
     const TRANSIENT_ANTHROPIC_STATUSES = [429, 529]
     let resp, errText
     for (let attempt = 0; attempt < 2; attempt++) {
-      resp = await fetch('https://api.anthropic.com/v1/messages', {
+      // 4th-pass audit fix: this was the one Anthropic call site in the
+      // codebase using a bare fetch() with no AbortController-backed
+      // timeout — every other Anthropic call (the scan pipeline's
+      // callAnthropic) already goes through fetchWithTimeout/fetchWithRetry
+      // specifically to guard against a hung connection sitting forever
+      // (see that helper's own header comment in scanShared.js). A thrown
+      // network error here was already caught by the outer try/catch and
+      // turned into a proper error response, but a true hang — a
+      // connection that neither resolves nor rejects — had nothing forcing
+      // it closed, so an Ask Annie / support-widget / writing-style message
+      // sent during a stalled network path could hang indefinitely with no
+      // error ever surfaced to the customer.
+      resp = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -220,7 +232,7 @@ export default async (req, context) => {
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify(payload),
-      })
+      }, 60000)
       if (resp.ok) break
       errText = await resp.text()
       if (attempt === 0 && TRANSIENT_ANTHROPIC_STATUSES.includes(resp.status)) {

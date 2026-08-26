@@ -89,4 +89,34 @@ describe('extractJson', () => {
     expect(extractJson(text)).toEqual([])
     expect(Date.now() - start).toBeLessThan(1000)
   })
+
+  // 3rd-pass audit fix (2026-08-26): buildCandidatePitchPrompt's callers
+  // (useTodaysActions.js / TodaysActions.legacy.jsx) ask the model for an
+  // array of plain strings, not objects — the default object-shape guard
+  // above must not reject that when the caller explicitly asks for it.
+  describe('shape option', () => {
+    it('defaults to rejecting an array of plain strings (the object-shape signal callers)', () => {
+      const text = '["First pitch sentence.","Second pitch sentence."]'
+      expect(extractJson(text)).toEqual([])
+    })
+
+    it('with shape: "string", accepts a genuine array of plain strings', () => {
+      const text = '["First pitch sentence.","Second pitch sentence."]'
+      expect(extractJson(text, { shape: 'string' })).toEqual(['First pitch sentence.', 'Second pitch sentence.'])
+    })
+
+    it('with shape: "string", still rejects an array of objects and keeps searching/fails safely', () => {
+      const text = '[{"not":"a string"}]'
+      expect(extractJson(text, { shape: 'string' })).toEqual([])
+    })
+
+    it('with shape: "string", still refuses to substitute a later unrelated array when the real one is malformed', () => {
+      const text = '["First pitch",]\n\nExcluded candidate records: [{"id":1},{"id":2}].'
+      expect(extractJson(text, { shape: 'string' })).toEqual([])
+    })
+
+    it('with shape: "string", still accepts a genuinely empty array', () => {
+      expect(extractJson('[]', { shape: 'string' })).toEqual([])
+    })
+  })
 })

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { listDeals, createDeal, updateDeal, deleteDeal } from '../lib/data/deals'
@@ -44,7 +44,32 @@ export default function Pipeline() {
   const [form, setForm] = useState(EMPTY)
   const [editId, setEditId] = useState(null)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  // 3rd-pass audit fix: this used to be one shared `error` rendered in TWO
+  // places — a page-level banner AND (added in round 2) a modal-local one —
+  // with nothing clearing it on modal open/close. Opening the modal after a
+  // prior load()/del() failure showed that stale, unrelated error inside
+  // the freshly-opened form; a save error left in the modal survived
+  // Cancel/Escape/backdrop-close and reappeared as the page-level banner
+  // with no form context left to explain it. Same bug class round 2 fixed
+  // for Settings.jsx's shared styleError — split the same way here.
+  const [listError, setListError] = useState('') // load()/del() — page-level banner
+  const [saveError, setSaveError] = useState('') // save() validation/write — modal-local banner, cleared on open/close
+  // 4th-pass audit fix: save() is async (the create/update network call),
+  // but Cancel/Escape/backdrop/× all close the modal synchronously via
+  // closeModal — which used to just clear saveError and move on. If a save
+  // was still in flight when the user dismissed the modal, its eventual
+  // failure called setSaveError on a banner that no longer renders (Modal
+  // returns null once closed), so the error vanished with nobody ever
+  // seeing it — the user believed they'd cleanly cancelled when a real
+  // write had actually been attempted and failed. Worse, if the user
+  // dismissed and then immediately opened a DIFFERENT deal's edit form
+  // before that stale save resolved, its error would land on the new,
+  // unrelated form instead. This token invalidates a save attempt the
+  // instant the modal it belongs to closes or a new one opens; a save
+  // whose token is no longer current still surfaces its error, just via
+  // the page-level listError banner (always visible, never misattributed
+  // to whatever the modal happens to be showing now) instead of saveError.
+  const saveTokenRef = useRef(0)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [currency, setCurrency] = useState(DEFAULT_CURRENCY)
 
@@ -52,7 +77,7 @@ export default function Pipeline() {
 
   async function load() {
     setLoading(true)
-    setError('')
+    setListError('')
     // 2026-08-24 Task 2: routed through lib/data/deals.js (previously
     // duplicated inline here) so this table's query shape lives in exactly
     // one place.
@@ -63,7 +88,7 @@ export default function Pipeline() {
       setDeals(await listDeals(user.id))
       await loadCurrency()
     } catch (err) {
-      setError(err.message || 'Could not load your pipeline. Please try again.')
+      setListError(err.message || 'Could not load your pipeline. Please try again.')
     } finally {
       setLoading(false)
     }
@@ -83,39 +108,65 @@ export default function Pipeline() {
     }
   }
 
-  function openAdd() { setForm(EMPTY); setEditId(null); setShowModal(true) }
-  function openEdit(d) { setForm({ company: d.company, role: d.role || '', stage: d.stage, value: d.value || '', probability: d.probability || 25, notes: d.notes || '', next_action: d.next_action || '', next_action_date: d.next_action_date || '' }); setEditId(d.id); setShowModal(true) }
+  // 3rd-pass audit fix: clear saveError on every way the modal opens or
+  // closes, so a stale error from a previous save attempt can never bleed
+  // into a freshly-opened form or reappear after the form it belonged to
+  // is gone.
+  // `saving` is reset to false here (not just inside save() itself) so a
+  // save left stranded in flight by a dismissal/reopen — which must NOT
+  // touch `saving` itself, or it could clobber a genuinely newer save's own
+  // in-progress state, see the stale-token guard in save() — can never
+  // leave a freshly opened modal's Save button permanently disabled.
+  function openAdd() { setForm(EMPTY); setEditId(null); setSaveError(''); setSaving(false); saveTokenRef.current++; setShowModal(true) }
+  function openEdit(d) { setForm({ company: d.company, role: d.role || '', stage: d.stage, value: d.value || '', probability: d.probability || 25, notes: d.notes || '', next_action: d.next_action || '', next_action_date: d.next_action_date || '' }); setEditId(d.id); setSaveError(''); setSaving(false); saveTokenRef.current++; setShowModal(true) }
+  function closeModal() { setShowModal(false); setSaveError(''); setSaving(false); saveTokenRef.current++ }
 
   async function save(e) {
     e?.preventDefault()
+    const token = saveTokenRef.current
     // 2026-08-26 audit fix: the form's "Company *" label has always implied
     // this is required, but nothing enforced it — the DB happily accepted
     // an empty-string company, producing a blank, unidentifiable deal card.
     // Matches the required-field check already used in ContactFormModal.jsx/
     // JobFormModal.jsx.
-    if (!form.company.trim()) { setError('Company is required'); return }
+    if (!form.company.trim()) { setSaveError('Company is required'); return }
     setSaving(true)
-    setError('')
+    setSaveError('')
     const payload = { ...form, company: form.company.trim(), value: parseFloat(form.value) || 0, probability: parseInt(form.probability) || 0 }
     const { error: err } = editId
       ? await updateDeal(editId, { ...payload, updated_at: new Date().toISOString() })
       : await createDeal(payload, user.id)
+    // 4th-pass audit fix: only touch saveError/showModal/saving if this is
+    // still the save the open modal is waiting on. If the modal was closed
+    // or reopened for a different deal while this request was in flight,
+    // saveTokenRef.current has moved on — this result belongs to a form
+    // that's no longer showing, so a failure goes to the always-visible
+    // listError banner instead of a saveError nobody will ever see, and a
+    // success just silently refreshes the list below without touching
+    // modal state that a newer open/close already owns.
+    const stillCurrent = saveTokenRef.current === token
     if (err) {
-      setError(err.message || 'Could not save this deal. Please try again.')
-      setSaving(false)
+      const message = err.message || 'Could not save this deal. Please try again.'
+      if (stillCurrent) setSaveError(message)
+      else setListError(message)
+      if (stillCurrent) setSaving(false)
       return
     }
     await load()
-    setShowModal(false)
-    setSaving(false)
+    if (stillCurrent) {
+      setShowModal(false)
+      setSaveError('')
+      setSaving(false)
+    }
   }
 
   async function del(id) {
     const { error: err } = await deleteDeal(id)
     if (err) {
-      setError(err.message || 'Could not delete this deal. Please try again.')
+      setListError(err.message || 'Could not delete this deal. Please try again.')
       return
     }
+    setListError('') // 3rd-pass audit fix: clear a stale error from an earlier failed delete
     setDeals(prev => prev.filter(d => d.id !== id))
   }
 
@@ -135,7 +186,7 @@ export default function Pipeline() {
         <button onClick={openAdd} className="btn-primary">+ Add Deal</button>
       </div>
 
-      <ErrorBanner>{error}</ErrorBanner>
+      <ErrorBanner>{listError}</ErrorBanner>
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4 mb-6">
@@ -187,7 +238,7 @@ export default function Pipeline() {
         </div>
       )}
 
-      <Modal open={showModal} onClose={() => setShowModal(false)} title={editId ? 'Edit Deal' : 'Add Deal'} maxWidth="max-w-lg">
+      <Modal open={showModal} onClose={closeModal} title={editId ? 'Edit Deal' : 'Add Deal'} maxWidth="max-w-lg">
         {/* A real <form onSubmit> so the `required` constraint on Company
             actually fires — matches the fix already applied to
             ContactFormModal.jsx/JobFormModal.jsx, where "Save" previously
@@ -201,8 +252,9 @@ export default function Pipeline() {
                   save()'s own validation (a whitespace-only company passes
                   the native `required` check but fails .trim()) had nowhere
                   to actually show its message — clicking Save just silently
-                  did nothing. */}
-              {error && <ErrorBanner>{error}</ErrorBanner>}
+                  did nothing. Uses its own saveError (not the page-level
+                  listError) — see the 3rd-pass audit fix on that state. */}
+              {saveError && <ErrorBanner>{saveError}</ErrorBanner>}
               {[['company','Company *','text',true],['role','Role/Position','text',false],['next_action','Next Action','text',false]].map(([f,l,t,req]) => (
                 <div key={f}><label className="label" htmlFor={`pipeline-${f}`}>{l}</label><input id={`pipeline-${f}`} className="input" type={t} value={form[f]} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} required={req} /></div>
               ))}
@@ -219,7 +271,7 @@ export default function Pipeline() {
               <div><label className="label" htmlFor="pipeline-notes">Notes</label><textarea id="pipeline-notes" className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
             </div>
             <div className="flex gap-3 justify-end mt-5">
-              <button type="button" onClick={() => setShowModal(false)} className="btn-ghost">Cancel</button>
+              <button type="button" onClick={closeModal} className="btn-ghost">Cancel</button>
               <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
             </div>
         </form>

@@ -61,14 +61,31 @@
 //    immediately instead of rescanning to prove that once per bracket; (b)
 //    a hard cap on retry attempts, since legitimate model output never
 //    needs more than a handful.
+//
+// 3rd-pass audit fix (2026-08-26): the "array of objects" shape guard above
+// is correct for the signal-extraction callers (scan-now-background.js,
+// useTodaysActions.js's enrichedList) but wrong for
+// buildCandidatePitchPrompt's callers (useTodaysActions.js's pitches,
+// TodaysActions.legacy.jsx's pitches) — that prompt explicitly asks the
+// model to return an array of plain strings, one pitch per candidate, so
+// the object-shape guard rejected every legitimate response and silently
+// zeroed the "Annie's read" pill every single time. A single global shape
+// can't correctly serve both callers, so extractJson now takes an optional
+// shape: 'object' (default — preserves the fix above exactly) or 'string',
+// which the two pitch call sites pass explicitly.
 const MAX_EXTRACT_ATTEMPTS = 200
 
 function isArrayOfObjects(value) {
   return Array.isArray(value) && value.every(item => item !== null && typeof item === 'object' && !Array.isArray(item))
 }
 
-export function extractJson(text) {
+function isArrayOfStrings(value) {
+  return Array.isArray(value) && value.every(item => typeof item === 'string')
+}
+
+export function extractJson(text, { shape = 'object' } = {}) {
   if (!text) return []
+  const shapeMatches = shape === 'string' ? isArrayOfStrings : isArrayOfObjects
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/)
   const candidate = fenced ? fenced[1] : text
 
@@ -104,7 +121,7 @@ export function extractJson(text) {
       const slice = candidate.slice(start, closedAt + 1)
       try {
         const parsed = JSON.parse(slice)
-        if (isArrayOfObjects(parsed)) return parsed
+        if (shapeMatches(parsed)) return parsed
         // Valid JSON, but not the shape any real caller wants (e.g. a
         // bracketed aside like ["BetaCo","GammaCo"]) — keep searching
         // rather than returning something semantically unrelated.

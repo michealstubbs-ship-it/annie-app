@@ -305,6 +305,34 @@ export async function reserveApolloCredits(supabase, userId, credits = 1, caps =
   }
 }
 
+// 4th-pass audit fix (2026-08-26): every Apollo call site reserves credits
+// via reserveApolloCredits before making its call, but until now nothing
+// ever released that reservation when the call itself failed outright — a
+// timeout, a 429, a 500, an expired/rotated key, or a malformed response
+// all still permanently cost credits against both the per-customer and
+// platform-wide daily caps, exactly as if the call had succeeded. During a
+// real Apollo outage this made the platform-wide cap exhaust FASTER than
+// normal operation, throttling every other customer's genuine usage on top
+// of the outage itself. Mirrors releaseTheirStackCredits exactly, except
+// every real call site here reserves a flat, fixed credit count per call
+// (not a variable "up to N" ceiling the way TheirStack's per-job billing
+// is), so there's no partial-success reconciliation — a failed call always
+// refunds the full amount it reserved. See supabase-migrations/
+// 2026-08-26-apollo-credit-release.sql for the RPC. Best-effort and
+// fail-silent-but-logged on purpose, same as every other cap-bookkeeping
+// call in this file — a failed refund shouldn't take a scan down with it,
+// it just means the cap trips a little earlier than true spend justifies
+// until the next call succeeds.
+export async function releaseApolloCredits(supabase, userId, credits) {
+  if (!supabase || !credits || credits <= 0) return
+  try {
+    const { error } = await supabase.rpc('apollo_release_credits', { p_credits: credits, p_user_id: userId || null })
+    if (error) console.error('[scanShared] apollo_release_credits RPC failed:', error.message)
+  } catch (err) {
+    console.error('[scanShared] apollo_release_credits threw:', err.message)
+  }
+}
+
 // A listing/category page (e.g. a site's whole "/category/funding-news"
 // feed) is not a stable per-article fact the way a specific article URL is —
 // it's a live URL that genuinely goes on to host many different stories over
@@ -747,7 +775,10 @@ export async function discoverHotCompanies(apolloKey, { sectors, functions, loca
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
       body: JSON.stringify(body),
     })
-    if (!resp.ok) return []
+    // 4th-pass audit fix: a failed call still cost 1 reserved credit until
+    // now — release it so a real Apollo outage doesn't burn the shared
+    // platform-wide daily cap faster than normal operation would.
+    if (!resp.ok) { await releaseApolloCredits(supabase, userId, 1); return [] }
     const data = await resp.json()
     const orgs = [...(data.organizations || []), ...(data.accounts || [])]
     return orgs
@@ -756,6 +787,7 @@ export async function discoverHotCompanies(apolloKey, { sectors, functions, loca
       .slice(0, 8)
   } catch (err) {
     console.error('[scanShared] apollo discovery failed:', err.message)
+    await releaseApolloCredits(supabase, userId, 1)
     return []
   }
 }
@@ -910,6 +942,9 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
       await reportServerError('scanShared:verifyContact', new Error(`Apollo mixed_people/api_search returned ${resp.status}`), {
         company, apolloOrgId, titleKeywords, status: resp.status, bodyPreview: bodyPreview.slice(0, 500),
       })
+      // 4th-pass audit fix: release the search credit verifyContact reserved
+      // before calling this — the call failed, nothing was returned for it.
+      await releaseApolloCredits(supabase, userId, 1)
       return null
     }
     const data = await resp.json()
@@ -964,12 +999,15 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
           if (revealed && !revealed.includes('email_not_unlocked') && !revealed.includes('locked')) email = revealed
         } else {
           console.error(`[scanShared] email reveal non-ok response for "${company}"/"${p.first_name}": ${matchResp.status}`)
+          // 4th-pass audit fix: release the reveal credit just reserved above.
+          await releaseApolloCredits(supabase, userId, 1)
         }
       } catch (err) {
         // Never let a failed reveal cost visibility into why — this is now
         // also the only source of the last name, so a failure here means
         // no contact at all, not just no email, and that's worth knowing.
         console.error(`[scanShared] email reveal failed for "${company}"/"${p.first_name}":`, err.message)
+        await releaseApolloCredits(supabase, userId, 1)
       }
     }
 
@@ -988,6 +1026,12 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
     return { name, title: revealedTitle || p.title || '', linkedin_url: revealedLinkedin || p.linkedin_url || '', email }
   } catch (err) {
     console.error(`[scanShared] verifyContact failed for "${company}":`, err.message)
+    // 4th-pass audit fix: a throw this far up (almost always the initial
+    // fetchWithRetry itself failing) means the search credit reserved
+    // before calling this function was never actually spent on a result —
+    // the reveal step's own credit already releases itself in its own
+    // try/catch above, so this only ever double-covers the search credit.
+    await releaseApolloCredits(supabase, userId, 1)
     await reportServerError('scanShared:verifyContact', err, { company, titleKeywords })
     return null
   }
@@ -1013,6 +1057,9 @@ async function lookupContactByName(apolloKey, company, fullName, supabase, userI
     }, 12000, 1)
     if (!resp.ok) {
       console.error(`[scanShared] lookupContactByName non-ok response for "${fullName}" at "${company}": ${resp.status}`)
+      // 4th-pass audit fix: release the search credit verifyContact reserved
+      // before calling this — the call failed, nothing was returned for it.
+      await releaseApolloCredits(supabase, userId, 1)
       return null
     }
     const data = await resp.json()
@@ -1036,15 +1083,24 @@ async function lookupContactByName(apolloKey, company, fullName, supabase, userI
           if (revealed && !revealed.includes('email_not_unlocked') && !revealed.includes('locked')) email = revealed
         } else {
           console.error(`[scanShared] email reveal non-ok response for "${company}"/"${name}": ${matchResp.status}`)
+          // 4th-pass audit fix: release the reveal credit just reserved above.
+          await releaseApolloCredits(supabase, userId, 1)
         }
       } catch (err) {
         console.error(`[scanShared] email reveal failed for "${company}"/"${name}":`, err.message)
+        await releaseApolloCredits(supabase, userId, 1)
       }
     }
 
     return { name, title: p.title || '', linkedin_url: p.linkedin_url || '', email }
   } catch (err) {
     console.error(`[scanShared] lookupContactByName failed for "${fullName}" at "${company}":`, err.message)
+    // 4th-pass audit fix: a throw this far up (almost always the initial
+    // fetchWithRetry itself failing) means the search credit reserved
+    // before calling this function was never actually spent on a result —
+    // the reveal step's own credit already releases itself in its own
+    // try/catch above, so this only ever double-covers the search credit.
+    await releaseApolloCredits(supabase, userId, 1)
     await reportServerError('scanShared:lookupContactByName', err, { company, fullName })
     return null
   }
@@ -1268,6 +1324,9 @@ export async function enrichCompany(apolloKey, company, supabase, locationHints 
       if (!resp.ok) {
         console.error(`[scanShared] enrichCompany non-ok response for "${company}": ${resp.status}`)
         await reportServerError('scanShared:enrichCompany', new Error(`Apollo mixed_companies/search returned ${resp.status}`), { company })
+        // 4th-pass audit fix: release the credit just reserved above — the
+        // call failed outright, nothing was returned for it.
+        await releaseApolloCredits(supabase, userId, 1)
       } else {
         const data = await resp.json()
         const candidates = [...(data.organizations || []), ...(data.accounts || [])]
@@ -1293,6 +1352,9 @@ export async function enrichCompany(apolloKey, company, supabase, locationHints 
       }
     } catch (err) {
       console.error(`[scanShared] enrichCompany failed for "${company}":`, err.message)
+      // 4th-pass audit fix: release the credit just reserved above — a
+      // thrown error here means the call never produced a usable result.
+      await releaseApolloCredits(supabase, userId, 1)
     }
   }
 

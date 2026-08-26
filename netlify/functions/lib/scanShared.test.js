@@ -6,7 +6,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   extractJson, normalizeKey, toEventIso, resolveSignalType, splitToKeywords, buildSearchKeywords,
-  mapLocationsToAdzunaCountries, SIGNAL_TYPES, reserveApolloCredits,
+  mapLocationsToAdzunaCountries, SIGNAL_TYPES, reserveApolloCredits, releaseApolloCredits,
   normalizeCompanyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
@@ -253,6 +253,49 @@ describe('reserveApolloCredits (per-customer + platform-wide spend cap)', () => 
   it('fails open (allows the call) if calling the RPC throws', async () => {
     const supabase = { rpc: vi.fn().mockRejectedValue(new Error('network down')) }
     expect(await reserveApolloCredits(supabase, 'u1', 1, caps)).toBe(true)
+  })
+})
+
+// 4th-pass audit fix (2026-08-26): every real Apollo call site reserved
+// credits before calling but never released them on failure — a timeout,
+// 429, 500, or bad key still permanently cost credits against both caps,
+// exactly as if the call had succeeded, making a real outage exhaust the
+// shared platform-wide cap FASTER than normal operation. Mirrors
+// reserveApolloCredits' own test coverage above.
+describe('releaseApolloCredits (refunds a reservation a failed call never actually spent)', () => {
+  it('is a no-op when no supabase client is passed', async () => {
+    const result = await releaseApolloCredits(undefined, 'u1', 1)
+    expect(result).toBeUndefined()
+  })
+
+  it('is a no-op when credits is zero, negative, or missing', async () => {
+    const rpc = vi.fn()
+    await releaseApolloCredits({ rpc }, 'u1', 0)
+    await releaseApolloCredits({ rpc }, 'u1', -1)
+    await releaseApolloCredits({ rpc }, 'u1', null)
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('calls the release RPC with the credits and userId given', async () => {
+    const rpc = vi.fn().mockResolvedValue({ error: null })
+    await releaseApolloCredits({ rpc }, 'u1', 1)
+    expect(rpc).toHaveBeenCalledWith('apollo_release_credits', { p_credits: 1, p_user_id: 'u1' })
+  })
+
+  it('passes a null userId through as null for a system-level call with no customer context', async () => {
+    const rpc = vi.fn().mockResolvedValue({ error: null })
+    await releaseApolloCredits({ rpc }, null, 1)
+    expect(rpc).toHaveBeenCalledWith('apollo_release_credits', expect.objectContaining({ p_user_id: null }))
+  })
+
+  it('logs but does not throw if the RPC reports a query-level error', async () => {
+    const supabase = { rpc: vi.fn().mockResolvedValue({ error: { message: 'connection reset' } }) }
+    await expect(releaseApolloCredits(supabase, 'u1', 1)).resolves.toBeUndefined()
+  })
+
+  it('logs but does not throw if calling the RPC itself throws', async () => {
+    const supabase = { rpc: vi.fn().mockRejectedValue(new Error('network down')) }
+    await expect(releaseApolloCredits(supabase, 'u1', 1)).resolves.toBeUndefined()
   })
 })
 
@@ -574,6 +617,26 @@ describe('verifyContact — company + title-bucket contact cache', () => {
     expect(result).toEqual({ name: 'Jane Doe', title: 'CFO', linkedin_url: 'https://linkedin.com/in/jane', email: 'jane@acme.com' })
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(rpc).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  // 4th-pass audit fix: same reserve/release gap as discoverTheirStackJobs
+  // above, applied to verifyContact's own search-call reservation — a
+  // failed Apollo people-search call used to permanently cost the credit
+  // reserved for it.
+  it('releases the reserved search credit when the Apollo people-search call returns a non-ok response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401, text: async () => 'unauthorized' }))
+    const { supabase, rpc } = makeMockSupabase()
+    await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123', null, 'u1')
+    expect(rpc).toHaveBeenCalledWith('apollo_release_credits', { p_credits: 1, p_user_id: 'u1' })
+    vi.unstubAllGlobals()
+  })
+
+  it('releases the reserved search credit when the Apollo people-search call throws', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
+    const { supabase, rpc } = makeMockSupabase()
+    await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123', null, 'u1')
+    expect(rpc).toHaveBeenCalledWith('apollo_release_credits', { p_credits: 1, p_user_id: 'u1' })
     vi.unstubAllGlobals()
   })
 
@@ -1028,6 +1091,28 @@ describe('enrichCompany — logo resolution fallback chain', () => {
     const result = await enrichCompany('apollo-key', 'Zenith Group', supabase)
     expect(result.matched).toBe(false)
     expect(result.logo_url).toBe('https://logo.clearbit.com/zenith.io')
+    vi.unstubAllGlobals()
+  })
+
+  // 4th-pass audit fix: a failed Apollo companies/search call used to
+  // permanently cost the credit reserved for it. Confirms the release RPC
+  // now fires for both a non-ok response and a thrown network error.
+  it('releases the reserved credit when the Apollo companies/search call returns a non-ok response', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) return { ok: false, status: 401, text: async () => 'unauthorized' }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    await enrichCompany('apollo-key', 'Acme Ltd', supabase, [], 'u1')
+    expect(supabase.rpc).toHaveBeenCalledWith('apollo_release_credits', { p_credits: 1, p_user_id: 'u1' })
+    vi.unstubAllGlobals()
+  })
+
+  it('releases the reserved credit when the Apollo companies/search call throws', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down') }))
+    await enrichCompany('apollo-key', 'Acme Ltd', supabase, [], 'u1')
+    expect(supabase.rpc).toHaveBeenCalledWith('apollo_release_credits', { p_credits: 1, p_user_id: 'u1' })
     vi.unstubAllGlobals()
   })
 
