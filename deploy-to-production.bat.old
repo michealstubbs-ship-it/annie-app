@@ -1,0 +1,35 @@
+@echo off
+echo Step 1: Pushing test-payments to GitHub...
+cd /d "%~dp0"
+git push origin test-payments
+echo.
+echo (Step 1 finished - errorlevel %errorlevel%)
+pause
+
+echo.
+echo Step 2: Switching to main...
+git checkout main
+echo.
+echo (checkout finished - errorlevel %errorlevel%)
+pause
+
+echo.
+echo Step 2b: Merging test-payments into main...
+git merge test-payments --ff-only
+echo.
+echo (merge finished - errorlevel %errorlevel%)
+pause
+
+echo.
+echo Step 3: Pushing main to GitHub - this triggers the production deploy...
+git push origin main
+echo.
+echo (push finished - errorlevel %errorlevel%)
+pause
+
+echo.
+echo Step 4: Switching back to test-payments...
+git checkout test-payments
+echo.
+echo All done. Whatever you see above is the real result of each step.
+pause
