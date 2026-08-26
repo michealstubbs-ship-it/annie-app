@@ -72,7 +72,9 @@ describe('live values', () => {
     // These come straight from DEFAULT_PLATFORM_CAPS in entitlements.js — a
     // future tuning change there should flow through here automatically,
     // which is the entire point of this endpoint existing.
-    expect(body).toEqual({ apollo: 1200, theirStack: 500, anthropicTokens: 4_000_000 })
+    // theirStack raised 500 -> 3000 in the 5th-pass audit's scale review —
+    // see DEFAULT_PLATFORM_CAPS's own comment in entitlements.js.
+    expect(body).toEqual({ apollo: 1200, theirStack: 3000, anthropicTokens: 4_000_000 })
   })
 
   it('respects an env-var override the same way a real reserve*Credits call would', async () => {

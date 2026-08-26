@@ -144,16 +144,42 @@ export default function Pipeline() {
     // listError banner instead of a saveError nobody will ever see, and a
     // success just silently refreshes the list below without touching
     // modal state that a newer open/close already owns.
-    const stillCurrent = saveTokenRef.current === token
     if (err) {
       const message = err.message || 'Could not save this deal. Please try again.'
-      if (stillCurrent) setSaveError(message)
-      else setListError(message)
-      if (stillCurrent) setSaving(false)
+      if (saveTokenRef.current === token) {
+        setSaveError(message)
+        setSaving(false)
+      } else {
+        setListError(message)
+      }
       return
     }
+    // 5th-pass audit fix: a stale (abandoned/orphaned) save that still
+    // succeeds no longer calls load() at all. It used to, on the theory
+    // that it "silently refreshes the list below" — but load() itself
+    // unconditionally flips the page into its full-screen loading spinner
+    // and clears listError, neither of which is silent: it visibly
+    // interrupts whatever the user is looking at now (which owns the
+    // screen, not this orphaned save), and can wipe an error message a
+    // DIFFERENT stale save's failure branch just set a moment earlier,
+    // undoing the very fix (routing stale errors to listError) meant to
+    // make sure they're seen. The deal itself is safely written either
+    // way; a save this stale just waits for the list's next natural
+    // reload (a real page load, or the next save/delete) to show it,
+    // rather than reaching back into a screen it no longer owns.
+    //
+    // `stillCurrent` is also re-checked AFTER load() rather than reused
+    // from a snapshot taken before it — load() is itself an async round
+    // trip (listDeals + loadCurrency), during which the user can close
+    // this modal and open (and even save) a completely different one.
+    // Re-checking here is what stops a slow-to-settle save from reaching
+    // back in and force-closing a newer, unrelated modal the user is
+    // actively using, and from re-enabling `saving` while that newer save
+    // is still genuinely in flight — reopening the exact duplicate-submit
+    // window this token guard exists to prevent.
+    if (saveTokenRef.current !== token) return
     await load()
-    if (stillCurrent) {
+    if (saveTokenRef.current === token) {
       setShowModal(false)
       setSaveError('')
       setSaving(false)

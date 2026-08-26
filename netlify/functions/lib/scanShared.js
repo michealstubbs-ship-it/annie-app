@@ -602,7 +602,21 @@ export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, lo
 // function's comment for `caps`'s shape and the fallback behaviour when
 // omitted. Matches entitlements.js's own DEFAULT_PLATFORM_CAPS.theirStack
 // exactly, same reasoning as DEFAULT_APOLLO_DAILY_CAP above.
-const DEFAULT_THEIRSTACK_DAILY_CAP = 500
+// 5th-pass audit fix (2026-08-26): a scale review against the cost-analysis
+// doc's own confirmed, real cadence — discoverTheirStackJobs is called
+// twice a day, unconditionally, on EVERY tier, at 10 credits/call, i.e. a
+// flat 20 credits/customer/day no matter which plan — found this backstop
+// was sized for a much smaller customer base than the 50-100 clients
+// that doc targets: 500/day is already exceeded past ~25 customers
+// (25 × 20 = 500), well short of 50, let alone 100 (2,000/day of genuine,
+// legitimate demand). Once past that point, this "secondary, backstop"
+// cap would start being the thing actually throttling TheirStack for
+// every customer daily — not a bug, a genuine outage, or a runaway
+// process, just real usage outgrowing a number set before that usage
+// pattern was confirmed. Raised to comfortably clear 100 clients (2,000/
+// day) with real headroom, while staying well under what an actual
+// runaway/bug would produce.
+const DEFAULT_THEIRSTACK_DAILY_CAP = 3000
 
 export async function reserveTheirStackCredits(supabase, userId, credits = 1, caps = {}) {
   if (!supabase) return true

@@ -144,9 +144,20 @@ const DEFAULT_TIER = 'starter'
 // All three stay overridable via the existing env vars with no code
 // change needed: APOLLO_DAILY_CREDIT_CAP, THEIRSTACK_DAILY_CREDIT_CAP,
 // ANTHROPIC_DAILY_TOKEN_CAP.
+// 5th-pass audit fix (2026-08-26): theirStack raised again — see
+// DEFAULT_THEIRSTACK_DAILY_CAP's own comment in scanShared.js for the full
+// reasoning (must stay in sync with that constant). Annie-Cost-Analysis-
+// 50-100-Clients.md confirmed a flat, unconditional 20 credits/customer/day
+// on every tier; 500 was already short of the target scale (exceeded past
+// ~25 customers), not just an eventual concern. apollo/anthropicTokens are
+// untouched here — Apollo's real per-account credit rate (as opposed to its
+// dollar cost, which the same doc does confirm) isn't something this code
+// has visibility into, so raising that number needs the same real-usage
+// check against Michael's own Apollo billing before trusting it at scale,
+// per the comment above.
 const DEFAULT_PLATFORM_CAPS = {
   apollo: 1200,
-  theirStack: 500,
+  theirStack: 3000,
   anthropicTokens: 4_000_000,
 }
 
