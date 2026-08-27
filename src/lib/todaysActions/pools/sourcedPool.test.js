@@ -22,21 +22,21 @@ function baseSignal(overrides = {}) {
   }
 }
 
-describe('buildSourcedPool — signal-type whitelist (2026-08-24 narrowing)', () => {
+describe('buildSourcedPool — signal-type whitelist (2026-08-27: restored to all four)', () => {
   it.each(BD_ACTION_SIGNAL_TYPES)('includes a fresh, contact-backed %s signal', (signal_type) => {
     const pool = buildSourcedPool([baseSignal({ signal_type })], [])
     expect(pool).toHaveLength(1)
   })
 
-  it.each(['funding', 'expansion', 'm_and_a', 'hiring_activity', 'public_commentary', 'team_building', 'job_posting_unclaimed', 'regulatory'])(
-    'excludes a fresh, contact-backed %s signal — only leadership_change and live_job reach Today\'s BD Actions',
+  it.each(['m_and_a', 'hiring_activity', 'public_commentary', 'team_building', 'job_posting_unclaimed', 'regulatory'])(
+    'excludes a fresh, contact-backed %s signal — not a BD action type',
     (signal_type) => {
       expect(buildSourcedPool([baseSignal({ signal_type })], [])).toEqual([])
     }
   )
 
   it('2026-08-25: a manual "Add to Today\'s BD Actions" click DOES bypass the whitelist, as long as it still has a real contact', () => {
-    const signals = [baseSignal({ signal_type: 'funding', manually_added_at: daysAgoIso(0) })]
+    const signals = [baseSignal({ signal_type: 'm_and_a', manually_added_at: daysAgoIso(0) })]
     expect(buildSourcedPool(signals, [])).toHaveLength(1)
   })
 })

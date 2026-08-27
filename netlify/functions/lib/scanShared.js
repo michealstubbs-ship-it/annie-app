@@ -1126,9 +1126,9 @@ async function lookupContactByName(apolloKey, company, fullName, supabase, userI
 // naturally several people across different functions, not one. These are
 // the buckets Annie searches by default; every one of the four whitelisted
 // Today's BD Actions signal types (see BD_ACTION_SIGNAL_TYPES in
-// actionsEngine.js) is required to always carry at least one usable contact
-// recommendation, so this is the fallback that guarantees that when a single
-// verifyContact call comes back empty.
+// src/lib/todaysActions/eligibility.js) is required to always carry at
+// least one usable contact recommendation, so this is the fallback that
+// guarantees that when a single verifyContact call comes back empty.
 // 2026-08-26: added `leadership`. The funding/expansion signal is
 // specifically about young/small/regional companies — exactly the ones
 // most likely to not yet have a "Head of Product" or "Commercial Director"
@@ -1589,18 +1589,18 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
   }
   const signalType = isLiveJob && liveJobUrlVerified ? 'live_job' : resolveSignalType(isLiveJob ? 'hiring_activity' : s.signalType, logPrefix)
 
-  // 2026-08-25 correction: this comment used to say "the four whitelisted
-  // Today's BD Actions signal types ... see BD_ACTION_SIGNAL_TYPES in
-  // actionsEngine.js" — both wrong. That file doesn't exist anymore (the
-  // constant lives in src/lib/todaysActions/eligibility.js), and the live
-  // whitelist there is currently just ['leadership_change', 'live_job'] —
-  // funding/expansion were narrowed out on 2026-08-24. This function still
-  // enriches all four types the same way regardless, on purpose: a
-  // funding/expansion signal can still reach Today's BD Actions via the
-  // "Add to Today's BD Actions" manual bypass from the Feed, and it needs
-  // the same real contact data as anything else, not a worse version just
-  // because it took the manual path. See eligibility.js for the actual
-  // current whitelist and sourcedPool.js for how the manual bypass works.
+  // 2026-08-27: whitelist is back to all four types (see eligibility.js's
+  // own header comment — 2026-08-24's narrowing to just
+  // ['leadership_change', 'live_job'] silently threw away every funding/
+  // expansion signal's contact panel below instead of using it). The
+  // constant itself lives in src/lib/todaysActions/eligibility.js, not
+  // actionsEngine.js (that file doesn't exist in this codebase). This
+  // function still enriches all four types the same way regardless of
+  // which are currently whitelisted, on purpose — Today's Actions'
+  // whitelist is a display-layer concern, not a reason to enrich some
+  // signal types worse than others, and a signal can always reach Today's
+  // Actions via the "Add to Today's BD Actions" manual bypass from the
+  // Feed even on a day this list changes again.
   // Funding/expansion rarely have one obvious single contact the way a
   // named leadership appointment or a specific job posting does — see
   // verifyContactsAcrossFunctions's own header — so those two go straight

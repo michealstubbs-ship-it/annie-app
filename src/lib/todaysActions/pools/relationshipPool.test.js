@@ -48,7 +48,7 @@ describe('buildRelationshipPool', () => {
     expect(buildRelationshipPool(signals, contacts)).toHaveLength(1)
   })
 
-  it.each(['funding', 'expansion', 'm_and_a', 'hiring_activity', 'public_commentary', 'team_building', 'job_posting_unclaimed', 'regulatory'])(
+  it.each(['m_and_a', 'hiring_activity', 'public_commentary', 'team_building', 'job_posting_unclaimed', 'regulatory'])(
     'excludes a fresh %s signal about a known company — only the whitelisted BD types belong here',
     (signal_type) => {
       const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type, found_at: daysAgoIso(1) }]
@@ -56,7 +56,7 @@ describe('buildRelationshipPool', () => {
     }
   )
 
-  it.each(['funding', 'm_and_a', 'hiring_activity', 'public_commentary', 'regulatory'])(
+  it.each(['m_and_a', 'hiring_activity', 'public_commentary', 'regulatory'])(
     '2026-08-25: includes a %s signal when manually added — the whitelist IS bypassed by an explicit Feed add',
     (signal_type) => {
       const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type, found_at: daysAgoIso(1), manually_added_at: daysAgoIso(0) }]
