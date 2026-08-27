@@ -13,6 +13,7 @@ import {
   getAdminErrorHealth,
   getAdminOpex,
   getAdminResourceCaps,
+  getAdminMarketCoverage,
   loadAdminOverview,
 } from './adminDashboard.js'
 
@@ -212,15 +213,40 @@ describe('RPC wrappers', () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'Not authorized' }) })
     await expect(getAdminResourceCaps()).rejects.toThrow('Not authorized')
   })
+
+  it('getAdminMarketCoverage calls the admin-market-coverage endpoint with the caller\'s own session token', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ pairs: [{ sector: 'Technology', location: 'UK', thin: true }] }) })
+    const result = await getAdminMarketCoverage()
+    expect(global.fetch).toHaveBeenCalledWith('/.netlify/functions/admin-market-coverage', {
+      headers: { Authorization: 'Bearer tok_admin' },
+    })
+    expect(result).toEqual([{ sector: 'Technology', location: 'UK', thin: true }])
+  })
+
+  it('getAdminMarketCoverage defaults to an empty array when the response has no pairs', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    expect(await getAdminMarketCoverage()).toEqual([])
+  })
+
+  it('getAdminMarketCoverage throws when there is no session to authenticate with', async () => {
+    getSessionMock.mockResolvedValue({ data: { session: null } })
+    await expect(getAdminMarketCoverage()).rejects.toThrow('session has expired')
+    expect(global.fetch).not.toHaveBeenCalled()
+  })
+
+  it('getAdminMarketCoverage throws the server\'s own error message on a non-admin caller', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'Not authorized' }) })
+    await expect(getAdminMarketCoverage()).rejects.toThrow('Not authorized')
+  })
 })
 
 describe('loadAdminOverview', () => {
-  it('fetches all eight pieces together and shapes them under named keys', async () => {
+  it('fetches all nine pieces together and shapes them under named keys', async () => {
     rpcMock.mockResolvedValue({ data: [], error: null })
     const result = await loadAdminOverview()
     expect(rpcMock).toHaveBeenCalledTimes(7)
-    expect(global.fetch).toHaveBeenCalledTimes(1)
-    expect(Object.keys(result).sort()).toEqual(['accounts', 'dataQuality', 'errorHealth', 'funnel', 'opex', 'resourceCaps', 'signupTrend', 'teamSeats'].sort())
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(Object.keys(result).sort()).toEqual(['accounts', 'dataQuality', 'errorHealth', 'funnel', 'marketCoverage', 'opex', 'resourceCaps', 'signupTrend', 'teamSeats'].sort())
   })
 
   it('rejects the whole load if any single RPC fails, rather than rendering a partly-true dashboard', async () => {

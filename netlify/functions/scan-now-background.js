@@ -45,6 +45,7 @@ import {
   personalizePoolHits,
   writeToSignalPool,
   POOL_PERSONALIZE_MAX_TOKENS,
+  logMarketCoverage,
 } from './lib/scanShared.js'
 
 // How many sector groups to research in parallel.
@@ -893,6 +894,12 @@ export default async (req) => {
     const { rows, writeError } = await enrichAndWriteSignals(capped, {
       userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints: ob.locations || [], apolloContactRetry: tierConfig.apolloContactRetry, apolloCaps: resourceCaps.apollo, ob,
     })
+
+    // 2026-08-27: log this round's scan attempt regardless of outcome — see
+    // getMarketCoverageReport's own header in scanShared.js for why the
+    // zero-result rounds matter as much as the successful ones to a real,
+    // ongoing picture of which markets are actually thin.
+    if (!writeError) await logMarketCoverage(supabase, ob, rows.length)
 
     // Real, current progress against this account's tier targets — see
     // checkTierProgress's own header for why this is a fresh DB read rather

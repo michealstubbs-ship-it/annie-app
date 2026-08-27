@@ -35,6 +35,7 @@ import {
   personalizePoolHits,
   writeToSignalPool,
   POOL_PERSONALIZE_MAX_TOKENS,
+  logMarketCoverage,
 } from './lib/scanShared.js'
 
 // Hard ceiling on how many NEW (never-seen-before) signals get enriched via
@@ -329,6 +330,10 @@ async function scanOneCustomer(ob, ctx) {
       const preview = (text || '').trim().slice(0, 400)
       const truncated = looksTruncatedByTokenLimit(text)
       console.log('[intelligence-scan] nothing found for', ob.user_id, truncated ? '| LIKELY TRUNCATED BY max_tokens (raise anthropicMaxTokens for this tier if this keeps happening)' : '', '| raw response preview:', preview || '(empty response)')
+      // 2026-08-27: log every scan attempt, found-something or not — the
+      // zero-result runs are exactly what a genuinely thin market looks
+      // like over time (see getMarketCoverageReport's own header).
+      await logMarketCoverage(supabase, ob, 0)
       return 0
     }
 
@@ -339,6 +344,7 @@ async function scanOneCustomer(ob, ctx) {
 
   if (!newSignals.length) {
     console.log('[intelligence-scan] only duplicates found for', ob.user_id, ', skipping enrichment')
+    await logMarketCoverage(supabase, ob, 0)
     return 0
   }
 
@@ -349,7 +355,10 @@ async function scanOneCustomer(ob, ctx) {
   // customer's monitored markets when a company name alone is ambiguous
   // (see pickBestOrgMatch in scanShared.js).
   const rows = await buildEnrichedSignalRows(newSignals, { userId: ob.user_id, apolloKey, companiesHouseKey, supabase, logPrefix: '[intelligence-scan]', locationHints: ob.locations || [], apolloContactRetry: tierConfig.apolloContactRetry, apolloCaps: resourceCaps.apollo })
-  if (!rows.length) return 0
+  if (!rows.length) {
+    await logMarketCoverage(supabase, ob, 0)
+    return 0
+  }
 
   // Write genuinely fresh discoveries through to the shared pool (see
   // writeToSignalPool's own header in scanShared.js) so the next customer
@@ -363,6 +372,10 @@ async function scanOneCustomer(ob, ctx) {
   // which is exactly the right handling for a write failure too.
   const { error } = await supabase.from('intelligence_signals').upsert(rows, { onConflict: 'user_id,dedup_key', ignoreDuplicates: true })
   if (error) throw new Error(`signal upsert failed: ${error.message}`)
+  // 2026-08-27: logged after a successful write too — see
+  // getMarketCoverageReport's own header for why both the zero and
+  // non-zero cases matter equally to a real coverage picture.
+  await logMarketCoverage(supabase, ob, rows.length)
   return rows.length
 }
 

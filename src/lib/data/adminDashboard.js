@@ -136,12 +136,31 @@ export async function getAdminResourceCaps() {
   return body
 }
 
+// 2026-08-27: same shape and same reasoning as getAdminResourceCaps just
+// above — this data lives in Postgres (market_coverage_log), so it COULD
+// have been a SECURITY DEFINER RPC like most of the others, but the
+// aggregation logic already exists, unit-tested, in scanShared.js
+// (getMarketCoverageReport) — a JS endpoint reusing it directly avoids a
+// second, separate implementation of the same aggregation drifting out of
+// sync with the first.
+export async function getAdminMarketCoverage() {
+  const { data: { session } } = await supabase.auth.getSession()
+  const token = session?.access_token
+  if (!token) throw new Error('Your session has expired. Please log in again.')
+  const res = await fetch('/.netlify/functions/admin-market-coverage', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const body = await res.json()
+  if (!res.ok) throw new Error(body?.error || 'Could not load market coverage.')
+  return body.pairs || []
+}
+
 // Everything the Overview tab needs, fetched together. Any single failed
 // call throws (Promise.all), same "fail loud, don't render a half-true
 // dashboard" choice Insights.jsx's own load() already makes for its three
 // existing RPCs.
 export async function loadAdminOverview() {
-  const [accounts, funnel, signupTrend, teamSeats, dataQuality, errorHealth, opex, resourceCaps] = await Promise.all([
+  const [accounts, funnel, signupTrend, teamSeats, dataQuality, errorHealth, opex, resourceCaps, marketCoverage] = await Promise.all([
     getAdminAccountSummary(),
     getAdminFunnel(),
     getAdminSignupTrend(30),
@@ -150,6 +169,7 @@ export async function loadAdminOverview() {
     getAdminErrorHealth(),
     getAdminOpex(30),
     getAdminResourceCaps(),
+    getAdminMarketCoverage(),
   ])
-  return { accounts, funnel, signupTrend, teamSeats, dataQuality, errorHealth, opex, resourceCaps }
+  return { accounts, funnel, signupTrend, teamSeats, dataQuality, errorHealth, opex, resourceCaps, marketCoverage }
 }

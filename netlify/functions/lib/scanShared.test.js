@@ -13,6 +13,7 @@ import {
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs,
   looksTruncatedByTokenLimit, getLearnedSources,
   writeToSignalPool, fetchSignalPoolMatches, personalizePoolHits,
+  logMarketCoverage, getMarketCoverageReport,
 } from './scanShared.js'
 
 // Full behavioural coverage for extractJson now lives in
@@ -1859,6 +1860,82 @@ describe('personalizePoolHits (cheap, no-web-search re-voicing of an already-dis
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
     const result = await personalizePoolHits('sk-ant-key', [{ company: 'Acme', headline: 'x' }], {})
     expect(result).toEqual([])
+    consoleSpy.mockRestore()
+  })
+})
+
+describe('logMarketCoverage (one row per scan attempt, found-something or not)', () => {
+  it('inserts a row with the scan\'s own sectors/locations/functions and found count', async () => {
+    const insertSpy = vi.fn().mockResolvedValue({ error: null })
+    const supabase = { from: vi.fn(() => ({ insert: insertSpy })) }
+    const ob = { user_id: 'user_1', sectors: ['Technology'], locations: ['United Kingdom'], functions: ['Engineering'] }
+    await logMarketCoverage(supabase, ob, 3)
+    expect(supabase.from).toHaveBeenCalledWith('market_coverage_log')
+    expect(insertSpy).toHaveBeenCalledWith({
+      user_id: 'user_1', sectors: ['Technology'], locations: ['United Kingdom'], functions: ['Engineering'], found_count: 3,
+    })
+  })
+
+  it('does nothing without a supabase client', async () => {
+    await expect(logMarketCoverage(null, {}, 0)).resolves.not.toThrow()
+  })
+
+  it('logs, rather than throws, on a write failure', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const supabase = { from: () => ({ insert: vi.fn().mockResolvedValue({ error: { message: 'db down' } }) }) }
+    await expect(logMarketCoverage(supabase, {}, 0)).resolves.not.toThrow()
+    expect(consoleSpy).toHaveBeenCalledWith('[scanShared] market_coverage_log write failed:', 'db down')
+    consoleSpy.mockRestore()
+  })
+})
+
+describe('getMarketCoverageReport (aggregating scan history into a per sector+location coverage picture)', () => {
+  function makeCoverageSupabase(rows) {
+    return { from: () => ({ select: () => ({ gte: () => ({ limit: async () => ({ data: rows, error: null }) }) }) }) }
+  }
+
+  it('flags a sector+location pair as thin only once it has enough distinct customers, enough scans, and zero signals found', async () => {
+    const rows = [
+      { user_id: 'u1', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 },
+      { user_id: 'u2', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 },
+      { user_id: 'u3', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 },
+      { user_id: 'u3', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 },
+      { user_id: 'u3', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 },
+    ]
+    const result = await getMarketCoverageReport(makeCoverageSupabase(rows), { minScans: 5, minCustomers: 3 })
+    expect(result).toEqual([{ sector: 'Law', location: 'UAE / GCC', scans: 5, distinctCustomers: 3, totalFound: 0, thin: true }])
+  })
+
+  it('does not flag a pair as thin if it has real signals, even with plenty of scan history', async () => {
+    const rows = [
+      { user_id: 'u1', sectors: ['Technology'], locations: ['United Kingdom'], found_count: 2 },
+      { user_id: 'u2', sectors: ['Technology'], locations: ['United Kingdom'], found_count: 0 },
+      { user_id: 'u3', sectors: ['Technology'], locations: ['United Kingdom'], found_count: 1 },
+    ]
+    const result = await getMarketCoverageReport(makeCoverageSupabase(rows), { minScans: 3, minCustomers: 3 })
+    expect(result[0]).toMatchObject({ thin: false, totalFound: 3 })
+  })
+
+  it('does not flag a pair as thin without enough distinct customers, even with many scans from the same one', async () => {
+    const rows = Array.from({ length: 10 }, () => ({ user_id: 'u1', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 }))
+    const result = await getMarketCoverageReport(makeCoverageSupabase(rows), { minScans: 5, minCustomers: 3 })
+    expect(result[0]).toMatchObject({ thin: false, distinctCustomers: 1 })
+  })
+
+  it('attributes one scan row to every sector x location pair it spans', async () => {
+    const rows = [{ user_id: 'u1', sectors: ['Law', 'Technology'], locations: ['UAE / GCC', 'United Kingdom'], found_count: 1 }]
+    const result = await getMarketCoverageReport(makeCoverageSupabase(rows))
+    const pairs = result.map(r => `${r.sector}|${r.location}`).sort()
+    expect(pairs).toEqual(['Law|UAE / GCC', 'Law|United Kingdom', 'Technology|UAE / GCC', 'Technology|United Kingdom'].sort())
+  })
+
+  it('returns an empty array without a supabase client, and logs rather than throws on a read failure', async () => {
+    expect(await getMarketCoverageReport(null)).toEqual([])
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const supabase = { from: () => ({ select: () => ({ gte: () => ({ limit: async () => ({ data: null, error: { message: 'db down' } }) }) }) }) }
+    const result = await getMarketCoverageReport(supabase)
+    expect(result).toEqual([])
+    expect(consoleSpy).toHaveBeenCalledWith('[scanShared] market_coverage_log read failed:', 'db down')
     consoleSpy.mockRestore()
   })
 })

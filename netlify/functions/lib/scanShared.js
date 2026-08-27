@@ -2294,3 +2294,83 @@ Return a single JSON array, one object per signal, each with exactly: { "index":
     return []
   }
 }
+
+// "Annie always learning" extension #2 (2026-08-27): the 19-scenario
+// staged audit earlier this session was a one-time manual snapshot of
+// which sector/location combinations produce thin results. This is what
+// makes that an ongoing, self-updating fact instead — one row logged per
+// scan attempt, whether or not it found anything, so a market that's
+// genuinely thin (many attempts, consistently nothing) is distinguishable
+// from one that just hasn't come up yet (few or no attempts). See
+// 2026-08-27-market-coverage-log.sql for the table this writes/reads.
+export async function logMarketCoverage(supabase, ob, foundCount) {
+  if (!supabase) return
+  try {
+    const { error } = await supabase.from('market_coverage_log').insert({
+      user_id: ob?.user_id || null,
+      sectors: ob?.sectors || [],
+      locations: ob?.locations || [],
+      functions: ob?.functions || [],
+      found_count: foundCount || 0,
+    })
+    if (error) console.error('[scanShared] market_coverage_log write failed:', error.message)
+  } catch (err) {
+    console.error('[scanShared] market_coverage_log write failed:', err.message)
+  }
+}
+
+const MARKET_COVERAGE_SCAN_LIMIT = 5000
+
+// Aggregates raw scan-attempt rows into one line per (sector, location)
+// pair actually targeted by real customers — attributing one log row to
+// every pair it covers (a customer with 3 sectors and 2 locations
+// contributes to all 6 pairs their profile spans), same "attribute a fact
+// to every combination it's relevant to" approach signal_pool's own
+// sectors_hint/locations_hint matching already uses. `thin` marks a pair
+// with real, repeated evidence (enough distinct customers, enough scan
+// attempts) and zero signals found across all of it — the actual,
+// evolving answer to "is this combination worth offering on the signup
+// form", computed from Annie's own history rather than a one-off audit.
+export async function getMarketCoverageReport(supabase, { sinceDays = 30, minScans = 5, minCustomers = 3 } = {}) {
+  if (!supabase) return []
+  const cutoff = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString()
+  try {
+    const { data, error } = await supabase
+      .from('market_coverage_log')
+      .select('user_id, sectors, locations, found_count')
+      .gte('ran_at', cutoff)
+      .limit(MARKET_COVERAGE_SCAN_LIMIT)
+    if (error) {
+      console.error('[scanShared] market_coverage_log read failed:', error.message)
+      return []
+    }
+    const pairs = new Map()
+    for (const row of data || []) {
+      const sectors = Array.isArray(row.sectors) ? row.sectors : []
+      const locations = Array.isArray(row.locations) ? row.locations : []
+      for (const sector of sectors) {
+        for (const location of locations) {
+          const key = `${sector}|||${location}`
+          if (!pairs.has(key)) pairs.set(key, { sector, location, scans: 0, totalFound: 0, customers: new Set() })
+          const p = pairs.get(key)
+          p.scans += 1
+          p.totalFound += row.found_count || 0
+          if (row.user_id) p.customers.add(row.user_id)
+        }
+      }
+    }
+    return [...pairs.values()]
+      .map(p => ({
+        sector: p.sector,
+        location: p.location,
+        scans: p.scans,
+        distinctCustomers: p.customers.size,
+        totalFound: p.totalFound,
+        thin: p.customers.size >= minCustomers && p.scans >= minScans && p.totalFound === 0,
+      }))
+      .sort((a, b) => (b.thin - a.thin) || (b.scans - a.scans))
+  } catch (err) {
+    console.error('[scanShared] market_coverage_log read failed:', err.message)
+    return []
+  }
+}

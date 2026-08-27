@@ -71,7 +71,7 @@ export default function AdminOverview({ onOpenErrors }) {
   if (error) return <ErrorBanner>{error}</ErrorBanner>
   if (!data) return null
 
-  const { accounts, funnel, signupTrend, teamSeats, dataQuality, errorHealth, opex, resourceCaps } = data
+  const { accounts, funnel, signupTrend, teamSeats, dataQuality, errorHealth, opex, resourceCaps, marketCoverage } = data
   const errorDelta = errorHealth.last_24h - errorHealth.prior_24h
   const maxSignups = Math.max(1, ...signupTrend.map(d => Number(d.signups)))
   const funnelTotal = funnel?.total_signups || 0
@@ -272,6 +272,37 @@ export default function AdminOverview({ onOpenErrors }) {
             </div>
           )}
         </div>
+      </div>
+
+      {/* market coverage — the ongoing, self-updating version of the
+          one-time staged audit: which sector/location combinations offered
+          on the signup form are structurally thin, from Annie's own real
+          scan history, not a manual snapshot. */}
+      <div className="card p-4">
+        <h2 className="text-sm font-bold text-navy">Market coverage</h2>
+        <p className="text-xs text-gray-400 mb-2">Sector + market combinations with real, repeated scan attempts and consistently nothing found, last 30 days</p>
+        {(() => {
+          const thin = (marketCoverage || []).filter(p => p.thin)
+          if (!marketCoverage || marketCoverage.length === 0) {
+            return <p className="text-sm text-gray-400 py-2">No scan history yet.</p>
+          }
+          if (thin.length === 0) {
+            return <p className="text-sm text-status-good py-2">Nothing structurally thin right now — every combination with enough scan history has produced real signals.</p>
+          }
+          return (
+            <div className="divide-y divide-gray-100">
+              {thin.map(p => (
+                <div key={`${p.sector}|${p.location}`} className="flex items-center gap-2.5 py-2.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded flex-shrink-0 bg-status-warning text-navy">Thin</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-semibold text-navy truncate">{p.sector} · {p.location}</div>
+                    <div className="text-[11px] text-gray-400">{p.scans} scans across {p.distinctCustomers} customer{p.distinctCustomers === 1 ? '' : 's'}, 0 signals found</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        })()}
       </div>
     </div>
   )
