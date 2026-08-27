@@ -1993,8 +1993,44 @@ export function buildTargetFirmHint(sectors, learned) {
 // opinion, so one account's discovery benefits every other account
 // researching the same sector/market — the same reasoning company_contacts
 // already uses for verified contacts. Capped per sector so a sector that's
-// been scanned for months doesn't grow into an unbounded prompt.
-const LEARNED_PER_SECTOR_CAP = 100
+// been scanned for years doesn't grow into an unbounded prompt.
+//
+// 2026-08-27, Michael, after reviewing the original 100-per-sector cap:
+// "I think we need to up that cap... are you happy how Annie applies these
+// learnings, or do you see any gaps?" Two real things fixed here together,
+// not just the number:
+//
+// 1) Raised 100 -> 300, giving real multi-year headroom before any sector
+//    gets anywhere near it, while still bounding the worst case (only
+//    buildTargetFirmHint, for Law/Management Consulting, puts the entire
+//    per-sector list straight into the prompt with no further slicing —
+//    every other sector's hint already caps at 30 regardless of this
+//    number, see buildRegionalSourceHint above). Deliberately NOT
+//    uncapped — an unbounded list here is an unbounded, permanently
+//    compounding Anthropic input-token cost for whichever sector grows
+//    the most, with real diminishing returns past a few hundred names
+//    (Annie's own per-call search budget can't meaningfully act on
+//    hundreds of named targets in one pass anyway).
+// 2) FIXED A REAL BUG: this used to order by first_seen_at ASCENDING, so
+//    once a sector's list filled up, the OLDEST-ever-discovered entries
+//    permanently occupied every slot — brand new discoveries (exactly the
+//    "Annie getting smarter over time" this whole mechanism exists for)
+//    would never surface in a prompt again once that ceiling was hit, even
+//    though they were the freshest, most-likely-still-relevant ones. Now
+//    orders by last_confirmed_at DESCENDING instead — the most recently
+//    (re)confirmed-active entries win the available slots, so genuinely
+//    stale, no-longer-relevant old entries are what age out first, not
+//    whatever happened to be discovered first. See recordLearnedDiscoveries
+//    below for the matching fix that makes last_confirmed_at actually mean
+//    something for Annie's own rediscoveries, not just customer CRM adds.
+const LEARNED_PER_SECTOR_CAP = 300
+
+// Raised alongside the per-sector cap above, with headroom for the realistic
+// worst case: 11 top-level sectors (see sectorTaxonomy.js) x 2 kinds
+// (company + source) x 300 = 6,600 rows needed to fully populate every
+// bucket if a customer selected every sector on the signup form. 8,000
+// leaves comfortable margin above that without being open-ended.
+const LEARNED_SOURCES_QUERY_LIMIT = 8000
 
 export async function getLearnedSources(supabase, sectors, locations) {
   const empty = { companies: {}, sources: {} }
@@ -2006,8 +2042,8 @@ export async function getLearnedSources(supabase, sectors, locations) {
       .select('kind, sector, value')
       .in('sector', sectors)
       .in('location', locs)
-      .order('first_seen_at', { ascending: true })
-      .limit(2000)
+      .order('last_confirmed_at', { ascending: false })
+      .limit(LEARNED_SOURCES_QUERY_LIMIT)
     // 2026-08-26 audit fix: `error` was already checked (so a query-level
     // failure correctly falls back to `empty` instead of being mistaken for
     // "no learned sources yet"), but it was never logged — silently
@@ -2049,12 +2085,30 @@ export function splitLearnedEntries(found) {
 
 // Writes new companies/sources Annie found this scan back to the shared
 // table above so her list keeps growing — this is the actual "evolve and
-// get better" half of the mechanism, not just a one-time seed. Silently
-// deduplicates via the table's own unique constraint (ignoreDuplicates),
-// so re-discovering "Deloitte" for the hundredth time is a cheap no-op
-// rather than a growing pile of duplicate rows.
+// get better" half of the mechanism, not just a one-time seed.
+//
+// 2026-08-27 bug fix (found while addressing Michael's "are you happy how
+// Annie applies these learnings" question): this used to upsert with
+// ignoreDuplicates: true (ON CONFLICT DO NOTHING) — so re-discovering
+// "Deloitte" for the hundredth time correctly avoided a duplicate ROW, but
+// also silently skipped ever refreshing last_confirmed_at, meaning it stayed
+// frozen at whatever the very first insert set it to, forever, for
+// EVERYTHING Annie discovered through her own research. Only the separate
+// customer-CRM-add trigger (learn_company_for_sectors, see
+// 2026-08-27-learn-from-customer-crm.sql) was ever correctly bumping that
+// timestamp on a repeat. Since getLearnedSources above now orders by
+// last_confirmed_at to decide which entries stay visible once a sector
+// nears its cap, that timestamp needs to actually mean "still genuinely
+// active" for the bulk of what's in this table — Annie's own rediscoveries,
+// not just customer CRM adds. Now a real upsert (ON CONFLICT DO UPDATE,
+// Supabase's default merge behavior once ignoreDuplicates is dropped) that
+// explicitly stamps last_confirmed_at fresh on every write, matching the SQL
+// trigger's own behavior exactly. first_seen_at is deliberately left out of
+// the upserted columns, so a repeat write still never overwrites the
+// original discovery date — only "still active" freshness updates.
 export async function recordLearnedDiscoveries(supabase, entries) {
   if (!supabase || !entries?.length) return
+  const nowIso = new Date().toISOString()
   const rows = entries
     .filter(e => e?.kind && e?.sector && e?.value)
     .map(e => ({
@@ -2064,12 +2118,13 @@ export async function recordLearnedDiscoveries(supabase, entries) {
       value: e.value,
       value_key: normalizeCompanyKey(e.value),
       found_via: e.foundVia || 'discovered',
+      last_confirmed_at: nowIso,
     }))
   if (!rows.length) return
   try {
     const { error } = await supabase
       .from('annie_learned_sources')
-      .upsert(rows, { onConflict: 'kind,sector,location,value_key', ignoreDuplicates: true })
+      .upsert(rows, { onConflict: 'kind,sector,location,value_key' })
     if (error) console.error('[scanShared] failed to record learned discoveries', error.message)
   } catch (err) {
     console.error('[scanShared] failed to record learned discoveries', err.message)
@@ -2373,4 +2428,90 @@ export async function getMarketCoverageReport(supabase, { sinceDays = 30, minSca
     console.error('[scanShared] market_coverage_log read failed:', err.message)
     return []
   }
+}
+
+// "Annie always learning" extension #4 (2026-08-27), Michael: "along with
+// the current prompt, annie starts to analyze the companies either they
+// are adding, or that have come from their CSV, start monitoring those
+// companies and their competitors... this adds to her prompt currently to
+// learn and adapt, it doesn't replace it."
+//
+// This is deliberately separate from annie_learned_sources (the CRM-add
+// triggers in 2026-08-27-learn-from-customer-crm.sql) — that mechanism is
+// SHARED/global (an objective "this company exists in this sector" fact
+// every account researching that sector benefits from). This one is
+// PERSONAL: the exact companies THIS customer has personally added — as a
+// client/prospect via CompanySelect.jsx, or in bulk via a CSV/LinkedIn
+// import, or as a candidate's current employer — are the strongest
+// possible signal of who they actually care about, stronger than a sector
+// match alone. Every genuine BD signal type this whole file already looks
+// for (funding, expansion, leadership change, live hiring, M&A) is worth
+// checking specifically for these named companies AND their real
+// competitors, not just waiting for them to surface from a generic
+// sector-wide search.
+//
+// Read directly from companies/candidates (the CRM's own tables, both
+// team-scoped — see companies.js's own header) rather than a new cache
+// table: this always reflects the account's current CRM contents exactly,
+// with nothing to keep in sync. Capped at WATCHLIST_COMPANY_LIMIT so an
+// account with a large CRM doesn't balloon the scan prompt's token cost —
+// most recently added companies first, since those are the freshest signal
+// of current interest.
+const WATCHLIST_COMPANY_LIMIT = 20
+
+export async function getCustomerWatchlistCompanies(supabase, ob, limit = WATCHLIST_COMPANY_LIMIT) {
+  if (!supabase || !ob?.user_id) return []
+  try {
+    // Team accounts share a CRM across teammates (companies/candidates are
+    // team-scoped, see companies.js) — resolve this user's own team_id (if
+    // any) so a company or candidate added by a teammate is picked up too,
+    // not only rows this exact user_id added themselves.
+    const { data: teamRow } = await supabase
+      .from('team_members')
+      .select('team_id')
+      .eq('user_id', ob.user_id)
+      .limit(1)
+      .single()
+    const teamId = teamRow?.team_id || null
+
+    const queries = [
+      supabase.from('companies').select('name').eq('user_id', ob.user_id).order('created_at', { ascending: false }).limit(limit),
+      supabase.from('candidates').select('company').eq('user_id', ob.user_id).order('created_at', { ascending: false }).limit(limit),
+    ]
+    if (teamId) {
+      queries.push(supabase.from('companies').select('name').eq('team_id', teamId).order('created_at', { ascending: false }).limit(limit))
+      queries.push(supabase.from('candidates').select('company').eq('team_id', teamId).order('created_at', { ascending: false }).limit(limit))
+    }
+    const results = await Promise.all(queries)
+    const names = new Set()
+    for (const { data, error } of results) {
+      if (error) {
+        console.error('[scanShared] failed to read customer watchlist companies:', error.message)
+        continue
+      }
+      for (const row of data || []) {
+        const val = (row.name || row.company || '').trim()
+        if (val) names.add(val)
+      }
+    }
+    return [...names].slice(0, limit)
+  } catch (err) {
+    console.error('[scanShared] failed to read customer watchlist companies:', err.message)
+    return []
+  }
+}
+
+// Composes the prompt paragraph for the watchlist above, same
+// only-if-there's-something-real-to-say discipline as buildRegionalSourceHint/
+// buildTargetFirmHint. Deliberately ADDITIVE — sits alongside the existing
+// sector/location/function-driven search the rest of buildScanPrompt
+// already runs, never replacing it, per Michael's explicit "doesn't
+// replace it" instruction. Asks the AI to find real, genuine competitors
+// itself (using the same web-search tool already available for this call)
+// rather than this needing a second AI call or a hand-maintained
+// competitor map — the same "no duplicate logic" reasoning the rest of
+// this file follows.
+export function buildCustomerWatchlistHint(companies) {
+  if (!companies?.length) return ''
+  return `\nThis recruiter has personally added the following companies to their own CRM — as a client, a prospect, or as a candidate's current employer, either one at a time or via a bulk CSV/LinkedIn import: ${companies.join(', ')}. In addition to the sector/location/function-driven search above, specifically check each of these companies, AND any genuine, real direct competitors of theirs that you know to be active in the same space, for the same kind of BD signal (funding, expansion, leadership change, live hiring, M&A) — even one that might not otherwise have surfaced from a general search. Only name a competitor you're confident is real and genuinely comparable, never a guess.\n`
 }

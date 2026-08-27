@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { callChatStream } from '../lib/callChat'
 import { trackEvent } from '../lib/analytics'
+import { getWatchlistCompanyNames, buildWatchlistChatHint } from '../lib/watchlist'
 
 export default function Chat() {
   const { user, profile } = useAuth()
@@ -12,9 +13,10 @@ export default function Chat() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [onboarding, setOnboarding] = useState(null)
+  const [watchlist, setWatchlist] = useState([])
   const bottomRef = useRef(null)
 
-  useEffect(() => { loadHistory(); loadOnboarding() }, [user])
+  useEffect(() => { loadHistory(); loadOnboarding(); loadWatchlist() }, [user])
 
   // Arriving from Intelligence Feed's "Draft outreach" button, prefill the input
   // with context so the recruiter doesn't retype what Annie already knows.
@@ -26,6 +28,14 @@ export default function Chat() {
   async function loadOnboarding() {
     const { data } = await supabase.from('onboarding').select('*').eq('user_id', user.id).single()
     setOnboarding(data)
+  }
+
+  // "Annie always learning" — same reasoning as buildCustomerWatchlistHint
+  // in the scan pipeline (scanShared.js), reused here so Ask Annie is aware
+  // of this recruiter's own tracked companies too, not just their onboarding
+  // sectors/functions/markets — see watchlist.js's own header.
+  async function loadWatchlist() {
+    setWatchlist(await getWatchlistCompanyNames())
   }
 
   async function loadHistory() {
@@ -63,6 +73,7 @@ Functions this recruiter places candidates into: ${onboarding?.functions?.join('
 Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Communication tone: ${onboarding?.tone || 'professional'}.
 ${onboarding?.writing_style ? `\nWhen drafting any message, email, or LinkedIn copy on the recruiter's behalf, follow their real writing style closely:\n${onboarding.writing_style}\n` : ''}
+${buildWatchlistChatHint(watchlist)}
 You help with: BD strategy, outreach messages, market intelligence, interview prep, candidate pitches, objection handling, and anything recruitment business development related.
 Be specific, actionable and concise. No waffle.`
 
@@ -86,6 +97,22 @@ Be specific, actionable and concise. No waffle.`
       await supabase.from('chat_messages').insert({ user_id: user.id, role: 'assistant', content: text })
       trackEvent('ask_annie_message_sent')
     } catch (err) {
+      // 2026-08-26 audit fix: this used to always show a generic "something
+      // went wrong" regardless of what actually failed. callChatStream()
+      // throws new Error(err.error || 'Request failed') for every non-ok
+      // response, and chat.js's own error bodies are already written to be
+      // shown to the user verbatim — most importantly its 402 for hitting
+      // the monthly Ask Annie cap ("You've used all 100 Ask Annie messages
+      // included this month. Upgrade to Growth for unlimited messages."),
+      // which a Starter user hitting their limit was previously never told
+      // at all. Only fall back to the generic copy for the cases where
+      // err.message genuinely isn't something a user should see: no
+      // message, the generic 'Request failed' used when the server didn't
+      // send a JSON body, or a raw browser network-error string.
+      const serverMessage = err?.message
+      const friendly = serverMessage && serverMessage !== 'Request failed' && !/fetch|network/i.test(serverMessage)
+        ? serverMessage
+        : 'Sorry, something went wrong. Please try again.'
       setMessages(prev => {
         const next = [...prev]
         // Replace the streaming placeholder in place (it may already have
@@ -93,9 +120,9 @@ Be specific, actionable and concise. No waffle.`
         // failed request should leave exactly one assistant message, not a
         // half-written one plus a separate apology underneath it.
         if (assistantIndex != null && next[assistantIndex]?.streaming) {
-          next[assistantIndex] = { role: 'assistant', content: 'Sorry, something went wrong. Please try again.' }
+          next[assistantIndex] = { role: 'assistant', content: friendly }
         } else {
-          next.push({ role: 'assistant', content: 'Sorry, something went wrong. Please try again.' })
+          next.push({ role: 'assistant', content: friendly })
         }
         return next
       })

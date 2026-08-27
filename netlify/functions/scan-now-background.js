@@ -46,6 +46,8 @@ import {
   writeToSignalPool,
   POOL_PERSONALIZE_MAX_TOKENS,
   logMarketCoverage,
+  getCustomerWatchlistCompanies,
+  buildCustomerWatchlistHint,
 } from './lib/scanShared.js'
 
 // How many sector groups to research in parallel.
@@ -197,6 +199,7 @@ Write anything you find this way as its own "live_job" entry the same way as an 
 For every company you write up as a signal above (funding, expansion, leadership change, M&A, anything), before moving to the next one, do one direct follow-up check of that specific company's own website: search for its careers or jobs page (e.g. "[company] careers", "[company] jobs", or "site:[company's domain] careers") to see whether it has a real, specific opening posted right now that matches this recruiter's target functions. If you find one, write it as an ADDITIONAL, separate "live_job" entry for that same company, same rules as above — a real title, sourceUrl pointing straight at that company's own posting. This is deliberately different from the general job-board sweep above: it's a targeted check on a company you've already flagged as newsworthy, not a blind search, and it's what turns "this company just raised funding" into a complete BD story with a live opening to point to in the same outreach. Skip it if the company genuinely has no findable careers page.
 ${buildRegionalSourceHint(onboarding?.locations, sectorsForPrompt, opts.learned)}
 ${buildTargetFirmHint(sectorsForPrompt, opts.learned)}
+${buildCustomerWatchlistHint(opts.watchlist)}
 This is a brand new account with no history yet, so there is nothing to avoid repeating: ${recentCompanies.join(', ') || 'None yet'}.
 
 Every signal must have a real, citable source you actually found via search. Do not invent anything. Return up to 8 signals, fewer if you can't find genuinely good ones after searching thoroughly, never pad with weak filler.
@@ -306,11 +309,12 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
 // round actually searches for NEW real signals instead of re-finding (or
 // worse, being tempted to pad with near-duplicates of) what round 1 already
 // wrote.
-async function runAdditionalRound(ob, tierConfig, recentNames, round, learned, userId, supabase, resourceCaps) {
+async function runAdditionalRound(ob, tierConfig, recentNames, round, learned, userId, supabase, resourceCaps, watchlist) {
   const text = await callAnthropic(process.env.ANTHROPIC_API_KEY, buildScanPrompt(ob, recentNames, {
     broaden: true,
     broadenReason: `this is chained research round ${round} for this account — the earlier round(s) already found real signals, so widen further still (older lookback, adjacent function connections) to find genuinely NEW ones rather than repeating what's already been found`,
     learned,
+    watchlist,
   }), { maxUses: tierConfig.anthropicBroadenMaxUses, maxTokens: tierConfig.anthropicMaxTokens, supabase, userId, anthropicCaps: resourceCaps.anthropicTokens })
   const { learned: learnedFound, rest } = splitLearnedEntries(extractJson(text))
   return { found: rest, learnedFound, rawText: text }
@@ -378,6 +382,10 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   // broaden pass below — see getLearnedSources's own header for why this
   // is a single shared, cross-account table rather than a per-call lookup.
   const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
+  // Same "fetch once, reuse across every call" shape as `learned` above —
+  // see getCustomerWatchlistCompanies's own header for why this is
+  // personal-to-this-account rather than shared.
+  const watchlist = await getCustomerWatchlistCompanies(supabase, ob)
   const learnedEntries = []
 
   const groups = chunkSectors(ob.sectors, MAX_SECTOR_GROUPS)
@@ -394,7 +402,7 @@ async function runResearchPhase(ob, tierConfig, ctx) {
       discoverTheirStackJobs(theirStackApiKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }, supabase, userId, resourceCaps.theirStack),
     ])
     try {
-      const promptOpts = { sectorsOverride: sectorGroup, apolloLeads, adzunaLeads, theirStackLeads, learned }
+      const promptOpts = { sectorsOverride: sectorGroup, apolloLeads, adzunaLeads, theirStackLeads, learned, watchlist }
       if (noAdzunaCoverage) {
         promptOpts.broaden = true
         promptOpts.broadenReason = "this recruiter's market has no live-jobs-board coverage to seed leads from (e.g. UAE/GCC), so cast a wide net from this very first pass rather than waiting to come back thin first"
@@ -867,7 +875,8 @@ export default async (req) => {
       const { data: existingRows } = await supabase.from('intelligence_signals').select('company_name').eq('user_id', userId)
       const recentNames = [...new Set((existingRows || []).map(r => r.company_name).filter(Boolean))].slice(0, 60)
       const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
-      const { found, learnedFound, rawText } = await runAdditionalRound(ob, tierConfig, recentNames, round, learned, userId, supabase, resourceCaps)
+      const watchlist = await getCustomerWatchlistCompanies(supabase, ob)
+      const { found, learnedFound, rawText } = await runAdditionalRound(ob, tierConfig, recentNames, round, learned, userId, supabase, resourceCaps, watchlist)
       if (learnedFound.length) recordLearnedDiscoveries(supabase, learnedFound).catch(() => {})
       groups = [ob.sectors || []]
       capped = dropGenericHiringWhereLiveJobsExist(found).slice(0, MAX_TOTAL_SIGNALS)

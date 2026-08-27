@@ -36,6 +36,8 @@ import {
   writeToSignalPool,
   POOL_PERSONALIZE_MAX_TOKENS,
   logMarketCoverage,
+  getCustomerWatchlistCompanies,
+  buildCustomerWatchlistHint,
 } from './lib/scanShared.js'
 
 // Hard ceiling on how many NEW (never-seen-before) signals get enriched via
@@ -93,6 +95,7 @@ Write anything you find this way as its own "live_job" entry the same way as an 
 For every company you write up as a signal above (funding, expansion, leadership change, M&A, anything), before moving to the next one, do one direct follow-up check of that specific company's own website: search for its careers or jobs page to see whether it has a real, specific opening posted right now that matches this recruiter's target functions. If you find one, write it as an ADDITIONAL, separate "live_job" entry for that same company, same rules as above — a real title, sourceUrl pointing straight at that company's own posting. Skip it if the company genuinely has no findable careers page.
 ${buildRegionalSourceHint(onboarding?.locations, onboarding?.sectors, opts.learned)}
 ${buildTargetFirmHint(onboarding?.sectors, opts.learned)}
+${buildCustomerWatchlistHint(opts.watchlist)}
 Companies already surfaced recently, don't re-report the same event for these unless there is a brand new development: ${recentCompanies.join(', ') || 'None yet'}.
 
 Every signal must have a real, citable source you actually found via search. Do not invent anything. Return up to 5 entries total (signal and live_job entries combined), fewer if you can't find genuinely good ones after searching thoroughly, never pad with weak filler.
@@ -305,8 +308,9 @@ async function scanOneCustomer(ob, ctx) {
     // reserveApolloCredits already has for Apollo.
     const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, ob.user_id, resourceCaps.theirStack)
     const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
+    const watchlist = await getCustomerWatchlistCompanies(supabase, ob)
 
-    const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned }), supabase, { maxTokens: tierConfig.anthropicMaxTokens, maxUses: tierConfig.anthropicMaxUses, userId: ob.user_id, anthropicCaps: resourceCaps.anthropicTokens })
+    const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }), supabase, { maxTokens: tierConfig.anthropicMaxTokens, maxUses: tierConfig.anthropicMaxUses, userId: ob.user_id, anthropicCaps: resourceCaps.anthropicTokens })
     const { learned: learnedFound, rest: rawFound } = splitLearnedEntries(extractJson(text))
     // Fire-and-forget on purpose — this is Annie's own research memory
     // growing for next time (see getLearnedSources/recordLearnedDiscoveries's

@@ -11,9 +11,10 @@ import {
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs,
-  looksTruncatedByTokenLimit, getLearnedSources,
+  looksTruncatedByTokenLimit, getLearnedSources, recordLearnedDiscoveries,
   writeToSignalPool, fetchSignalPoolMatches, personalizePoolHits,
   logMarketCoverage, getMarketCoverageReport,
+  getCustomerWatchlistCompanies, buildCustomerWatchlistHint,
 } from './scanShared.js'
 
 // Full behavioural coverage for extractJson now lives in
@@ -1610,6 +1611,69 @@ describe('getLearnedSources — error handling (2026-08-26 audit fix)', () => {
   })
 })
 
+// 2026-08-27 fix, Michael: "I think we need to up that cap... are you happy
+// how Annie applies these learnings, or do you see any gaps?" — this was a
+// real bug, not just a size question: ordering by first_seen_at ascending
+// meant the OLDEST-ever-discovered entries permanently occupied every slot
+// once a sector's list filled up, so brand new discoveries (the actual
+// "getting smarter over time" this table exists for) could never surface
+// again. Fixed to order by last_confirmed_at descending instead.
+describe('getLearnedSources — recency ordering (2026-08-27 fix)', () => {
+  it('queries ordered by last_confirmed_at descending, not first_seen_at, so freshest-confirmed entries win the available per-sector slots', async () => {
+    const orderSpy = vi.fn(() => ({ limit: async () => ({ data: [], error: null }) }))
+    const supabase = { from: () => ({ select: () => ({ in: () => ({ in: () => ({ order: orderSpy }) }) }) }) }
+    await getLearnedSources(supabase, ['Technology'], ['United Kingdom'])
+    expect(orderSpy).toHaveBeenCalledWith('last_confirmed_at', { ascending: false })
+  })
+
+  it('keeps the freshest-confirmed companies for a sector once it hits the per-sector cap, dropping the stalest rather than the newest', async () => {
+    // Query already returns rows in last_confirmed_at-descending order (as
+    // the real Supabase query now does) — freshest first. With a cap of 300
+    // and only 2 rows here, both are kept regardless; this pins that the
+    // bucket fill respects whatever order the query hands it rather than
+    // re-sorting on its own.
+    const rows = [
+      { kind: 'company', sector: 'Technology', value: 'Newest Co' },
+      { kind: 'company', sector: 'Technology', value: 'Older Co' },
+    ]
+    const supabase = { from: () => ({ select: () => ({ in: () => ({ in: () => ({ order: () => ({ limit: async () => ({ data: rows, error: null }) }) }) }) }) }) }
+    const result = await getLearnedSources(supabase, ['Technology'], ['United Kingdom'])
+    expect(result.companies.Technology).toEqual(['Newest Co', 'Older Co'])
+  })
+})
+
+describe('recordLearnedDiscoveries — last_confirmed_at refresh (2026-08-27 fix)', () => {
+  // The bug: ignoreDuplicates: true (ON CONFLICT DO NOTHING) meant a repeat
+  // discovery of the same company never refreshed last_confirmed_at, so it
+  // stayed frozen at its very first insert forever — starving
+  // getLearnedSources' new recency ordering of any real signal for the bulk
+  // of what's in this table (Annie's own AI-discovered rows, as opposed to
+  // customer-CRM-added ones, which the separate SQL trigger already handled
+  // correctly).
+  it('upserts WITHOUT ignoreDuplicates, so a repeat discovery updates the existing row instead of being silently ignored', async () => {
+    const upsertSpy = vi.fn().mockResolvedValue({ error: null })
+    const supabase = { from: () => ({ upsert: upsertSpy }) }
+    await recordLearnedDiscoveries(supabase, [{ kind: 'company', sector: 'Technology', value: 'Acme Corp', foundVia: 'techcrunch.com' }])
+    expect(upsertSpy).toHaveBeenCalledWith(
+      [expect.objectContaining({ kind: 'company', sector: 'Technology', value: 'Acme Corp' })],
+      { onConflict: 'kind,sector,location,value_key' },
+    )
+    // No ignoreDuplicates key at all — its presence (even true) would put
+    // this straight back into the ON CONFLICT DO NOTHING bug.
+    expect(upsertSpy.mock.calls[0][1]).not.toHaveProperty('ignoreDuplicates')
+  })
+
+  it('stamps last_confirmed_at fresh on every write, but never touches first_seen_at, so a repeat discovery reads as "still active" without losing when it was first found', async () => {
+    const upsertSpy = vi.fn().mockResolvedValue({ error: null })
+    const supabase = { from: () => ({ upsert: upsertSpy }) }
+    await recordLearnedDiscoveries(supabase, [{ kind: 'company', sector: 'Technology', value: 'Acme Corp' }])
+    const row = upsertSpy.mock.calls[0][0][0]
+    expect(row.last_confirmed_at).toBeTruthy()
+    expect(new Date(row.last_confirmed_at).toString()).not.toBe('Invalid Date')
+    expect(row).not.toHaveProperty('first_seen_at')
+  })
+})
+
 describe('writeToSignalPool (cross-customer signal pool write-through)', () => {
   it('upserts a pool row per entry, tagged with the discovering customer\'s own sector/location/function selections', async () => {
     const upsertSpy = vi.fn().mockResolvedValue({ error: null })
@@ -1937,5 +2001,132 @@ describe('getMarketCoverageReport (aggregating scan history into a per sector+lo
     expect(result).toEqual([])
     expect(consoleSpy).toHaveBeenCalledWith('[scanShared] market_coverage_log read failed:', 'db down')
     consoleSpy.mockRestore()
+  })
+})
+
+// "Annie always learning" extension #4, 2026-08-27 (Michael: "annie starts
+// to analyze the companies either they are adding, or that have come from
+// their CSV, start monitoring those companies and their competitors").
+describe('getCustomerWatchlistCompanies (personal, per-account company watchlist fed from the CRM)', () => {
+  function makeWatchlistSupabase({ teamId = null, companiesByUser = [], candidatesByUser = [], companiesByTeam = [], candidatesByTeam = [], errorTable = null } = {}) {
+    return {
+      from: (table) => {
+        if (table === 'team_members') {
+          return {
+            select: () => ({
+              eq: () => ({
+                limit: () => ({
+                  single: async () => (errorTable === 'team_members'
+                    ? { data: null, error: { message: 'db down' } }
+                    : { data: teamId ? { team_id: teamId } : null, error: null }),
+                }),
+              }),
+            }),
+          }
+        }
+        if (table === 'companies' || table === 'candidates') {
+          const byUser = table === 'companies' ? companiesByUser : candidatesByUser
+          const byTeam = table === 'companies' ? companiesByTeam : candidatesByTeam
+          return {
+            select: () => ({
+              eq: (col) => ({
+                order: () => ({
+                  limit: async () => {
+                    if (errorTable === table) return { data: null, error: { message: 'db down' } }
+                    return { data: col === 'team_id' ? byTeam : byUser, error: null }
+                  },
+                }),
+              }),
+            }),
+          }
+        }
+        throw new Error(`unexpected table ${table}`)
+      },
+    }
+  }
+
+  it('returns an empty array without a supabase client or without a user_id', async () => {
+    expect(await getCustomerWatchlistCompanies(null, { user_id: 'u1' })).toEqual([])
+    expect(await getCustomerWatchlistCompanies(makeWatchlistSupabase(), {})).toEqual([])
+  })
+
+  it('collects company names from both companies added directly and candidates\' current employers', async () => {
+    const supabase = makeWatchlistSupabase({
+      companiesByUser: [{ name: 'Acme Corp' }],
+      candidatesByUser: [{ company: 'Beta Industries' }],
+    })
+    const result = await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })
+    expect(result.sort()).toEqual(['Acme Corp', 'Beta Industries'])
+  })
+
+  it('dedupes the same company name showing up from both a companies row and a candidate\'s employer', async () => {
+    const supabase = makeWatchlistSupabase({
+      companiesByUser: [{ name: 'Acme Corp' }],
+      candidatesByUser: [{ company: 'Acme Corp' }],
+    })
+    const result = await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })
+    expect(result).toEqual(['Acme Corp'])
+  })
+
+  it('also pulls in a teammate\'s companies/candidates when this user belongs to a team, on top of their own', async () => {
+    const supabase = makeWatchlistSupabase({
+      teamId: 'team_1',
+      companiesByUser: [{ name: 'Acme Corp' }],
+      companiesByTeam: [{ name: 'Teammate Co' }],
+      candidatesByTeam: [{ company: 'Teammate Candidate Employer' }],
+    })
+    const result = await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })
+    expect(result.sort()).toEqual(['Acme Corp', 'Teammate Candidate Employer', 'Teammate Co'])
+  })
+
+  it('does not query companies/candidates by team_id at all when this user has no team', async () => {
+    const supabase = makeWatchlistSupabase({ companiesByUser: [{ name: 'Solo Co' }] })
+    const result = await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })
+    expect(result).toEqual(['Solo Co'])
+  })
+
+  it('respects the requested cap on how many company names come back', async () => {
+    const supabase = makeWatchlistSupabase({
+      companiesByUser: [{ name: 'A' }, { name: 'B' }, { name: 'C' }],
+    })
+    const result = await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' }, 2)
+    expect(result).toHaveLength(2)
+  })
+
+  it('logs rather than throws when one of the underlying queries fails, and still returns whatever the other queries found', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const supabase = makeWatchlistSupabase({
+      companiesByUser: [{ name: 'Acme Corp' }],
+      errorTable: 'candidates',
+    })
+    const result = await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })
+    expect(result).toEqual(['Acme Corp'])
+    expect(consoleSpy).toHaveBeenCalledWith('[scanShared] failed to read customer watchlist companies:', 'db down')
+    consoleSpy.mockRestore()
+  })
+
+  it('never throws even if the whole call blows up unexpectedly', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const supabase = { from: () => { throw new Error('kaboom') } }
+    const result = await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })
+    expect(result).toEqual([])
+    expect(consoleSpy).toHaveBeenCalledWith('[scanShared] failed to read customer watchlist companies:', 'kaboom')
+    consoleSpy.mockRestore()
+  })
+})
+
+describe('buildCustomerWatchlistHint', () => {
+  it('returns an empty string when there are no companies to mention', () => {
+    expect(buildCustomerWatchlistHint([])).toBe('')
+    expect(buildCustomerWatchlistHint(null)).toBe('')
+    expect(buildCustomerWatchlistHint(undefined)).toBe('')
+  })
+
+  it('names every company and explicitly asks for their competitors to be checked too, as an addition rather than a replacement', () => {
+    const hint = buildCustomerWatchlistHint(['Acme Corp', 'Beta Industries'])
+    expect(hint).toContain('Acme Corp')
+    expect(hint).toContain('Beta Industries')
+    expect(hint).toContain('competitors')
+    expect(hint).toContain('In addition to the sector/location/function-driven search above')
   })
 })
