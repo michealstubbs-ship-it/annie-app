@@ -33,7 +33,18 @@
 // stage-count tiles, a different, older consumer of this same taxonomy.
 export const SIGNAL_TYPE_META = {
   funding: { label: 'Funding', icon: '💰', color: 'text-amber-700 bg-amber-100', feedTopicColor: 'bg-[#fef3e2] text-[#b45309]', racy: false },
-  leadership_change: { label: 'Leadership change', chipLabel: 'Leadership', icon: '👤', color: 'text-blue-700 bg-blue-100', racy: false },
+  // 2026-08-26 audit fix: racy was false here, meaning the Feed's own
+  // "time-sensitive" flag (driven by RACY_SIGNAL_TYPES below) never applied
+  // to leadership_change — while Today's Actions independently treats a
+  // leadership change as urgent for up to 60 days after it happens (a new
+  // exec is a real, time-boxed BD window). Same signal type, same concept
+  // ("is this worth acting on before the window closes"), two different
+  // answers depending which page you were on. This file's own header
+  // explains it exists specifically to prevent that kind of drift; fixing
+  // it here (rather than removing Today's Actions' urgency window) since a
+  // fresh leadership change is genuinely one of the more time-sensitive
+  // signal types, not less.
+  leadership_change: { label: 'Leadership change', chipLabel: 'Leadership', icon: '👤', color: 'text-blue-700 bg-blue-100', racy: true },
   hiring_activity: { label: 'Hiring activity', chipLabel: 'Hiring', icon: '📈', color: 'text-green-700 bg-green-100', racy: true },
   expansion: { label: 'Expansion', icon: '🌍', color: 'text-teal-700 bg-teal-100', racy: true },
   team_building: { label: 'Team building', icon: '💬', color: 'text-fuchsia-700 bg-fuchsia-100', racy: true },

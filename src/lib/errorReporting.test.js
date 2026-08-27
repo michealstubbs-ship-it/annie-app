@@ -39,6 +39,34 @@ describe('reportClientError', () => {
     reportClientError()
     expect(insertMock).toHaveBeenCalledWith(expect.objectContaining({ message: 'Unknown error' }))
   })
+
+  it('strips the URL hash before logging, so a Supabase recovery/invite token in the hash never lands in error_logs', () => {
+    // This test environment runs under Node (see vitest.config's
+    // `environment: 'node'`, matching every other test in this repo — no
+    // jsdom dependency to add just for this one check), so `window` isn't
+    // a real global here either; stub it the same way the source's own
+    // `typeof window !== 'undefined'` guard anticipates a caller might not
+    // have one.
+    vi.stubGlobal('window', {
+      location: { href: 'https://app.meetannie.ai/reset-password#access_token=secret-recovery-token&type=recovery' },
+    })
+    try {
+      reportClientError('boom')
+      expect(insertMock).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://app.meetannie.ai/reset-password' }))
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('keeps a plain URL with no hash unchanged', () => {
+    vi.stubGlobal('window', { location: { href: 'https://app.meetannie.ai/dashboard/pipeline' } })
+    try {
+      reportClientError('boom')
+      expect(insertMock).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://app.meetannie.ai/dashboard/pipeline' }))
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })
 
 describe('installGlobalErrorReporting', () => {

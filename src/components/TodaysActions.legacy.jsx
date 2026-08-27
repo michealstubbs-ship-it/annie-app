@@ -235,7 +235,7 @@ export default function TodaysActions() {
             maxTokens: 1200,
             model: 'claude-haiku-4-5-20251001',
           })
-          const pitches = extractJson(text)
+          const pitches = extractJson(text, { shape: 'string' })
           pitchByItem = new Map(pitchTargets.map(({ item }, i) => [item, stripAiArtifacts(pitches[i]) || '']))
         } catch {
           // A failed/malformed pitch batch just means no 💡 pill this time —

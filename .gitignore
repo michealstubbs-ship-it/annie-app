@@ -11,3 +11,8 @@ e2e/test-results
 e2e/playwright-report
 playwright-report
 test-results
+
+# team-data-request.mjs --mode=export writes real customer PII here by
+# default (team-export-<teamId>.json) — never committed, deleted locally
+# after being sent to the requester.
+team-export-*.json

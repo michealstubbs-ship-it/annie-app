@@ -1,0 +1,7 @@
+# 2026-08-27: added after a past session's local tooling silently rewrote
+# ~60 unrelated files with CRLF line endings and a spurious +x bit, none of
+# which had any real content change — it took a full manual file-by-file
+# review to separate that noise from the handful of genuine fixes mixed in
+# with it. Normalizing line endings in git itself (not just relying on an
+# editor setting) stops this recurring silently the same way again.
+* text=auto eol=lf

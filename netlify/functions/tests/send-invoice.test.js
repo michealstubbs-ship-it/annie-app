@@ -125,22 +125,39 @@ it('rejects an invoice with no bill_to_email, before any PDF/email work', async 
   expect(mockGenerateInvoicePdf).not.toHaveBeenCalled()
 })
 
-it('mints a new invoice number via the RPC on first send, and threads it through the PDF and email', async () => {
+// 2026-08-27 audit fix: this used to be "read invoice.invoice_number, mint
+// one via next_invoice_number(p_team_id) if it's still null" — safe for one
+// request at a time, but two "Send" clicks on the same draft at nearly the
+// same moment could both read null before either wrote a number back,
+// minting two distinct numbers for one invoice. claim_invoice_number(uuid)
+// replaces both the read-check and the mint call with a single atomic RPC
+// (a Postgres row lock on the specific invoice serializes concurrent calls
+// for the SAME invoiceId — see the migration's own header for why that
+// can't be exercised from a unit test and is covered by the DB function
+// itself instead).
+it('claims the invoice number via the atomic RPC on first send, and threads it through the PDF and email', async () => {
   const supabase = makeSupabase()
   mockGetAuthedClient.mockResolvedValue({ client: supabase, user: { id: 'user_1' }, error: null })
   const resp = await handler(makeRequest())
   expect(resp.status).toBe(200)
-  expect(supabase.rpc).toHaveBeenCalledWith('next_invoice_number', { p_team_id: 'team_1' })
+  expect(supabase.rpc).toHaveBeenCalledWith('claim_invoice_number', { p_invoice_id: 'inv_1' })
   expect(mockGenerateInvoicePdf.mock.calls[0][0]).toEqual(expect.objectContaining({ invoice_number: 'INV-2026-0001' }))
   expect(mockSendInvoiceEmail).toHaveBeenCalledWith('client@example.com', expect.objectContaining({ invoiceNumber: 'INV-2026-0001' }))
 })
 
-it('does not mint a second invoice number when resending an already-numbered invoice', async () => {
+it('resending an already-numbered invoice claims the same existing number, exactly once, never a second one', async () => {
   const supabase = makeSupabase({ invoice: { ...BASE_INVOICE, invoice_number: 'INV-2026-0001', status: 'sent' } })
   mockGetAuthedClient.mockResolvedValue({ client: supabase, user: { id: 'user_1' }, error: null })
   const resp = await handler(makeRequest())
   expect(resp.status).toBe(200)
-  expect(supabase.rpc).not.toHaveBeenCalled()
+  // claim_invoice_number is still called (it's the single source of truth
+  // for the number now, not a JS-side null check) — its own row lock and
+  // "already set? just return it" branch, not this test, is what actually
+  // guarantees no second number gets minted for this invoice.
+  expect(supabase.rpc).toHaveBeenCalledWith('claim_invoice_number', { p_invoice_id: 'inv_1' })
+  expect(supabase.rpc).toHaveBeenCalledTimes(1)
+  const body = await resp.json()
+  expect(body.invoice.invoice_number).toBe('INV-2026-0001')
 })
 
 it('names the actual role and candidate on the PLACEMENT block via whatever getInvoice-shaped joins were returned', async () => {

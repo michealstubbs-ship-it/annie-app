@@ -63,11 +63,47 @@ function wrapText(text, font, size, maxWidth) {
 // fields that aren't set rather than showing blanks or placeholder text).
 export async function generateInvoicePdf(invoice, lineItems, details) {
   const pdf = await PDFDocument.create()
-  const page = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT])
+  let page = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT])
+  const pages = [page]
   const font = await pdf.embedFont(StandardFonts.Helvetica)
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold)
 
   let y = PAGE_HEIGHT - MARGIN
+
+  // 2026-08-27 audit fix: this used to be a single fixed A4 page with no
+  // overflow handling at all — a long bill-to address, enough line items,
+  // a long notes field, or a full bank-details block could push content
+  // below y=0 (invisible once printed/viewed) or straight through the
+  // fixed-position footer at y=30, silently dropping whatever came last —
+  // most likely the bank-details block a client actually needs to pay the
+  // invoice. FOOTER_BAND reserves room above the footer on every page;
+  // ensureSpace starts a fresh page rather than letting anything overrun
+  // that band. The footer itself is now drawn on every page (not just
+  // whichever page happened to be last), each carrying a page number once
+  // there's more than one.
+  const FOOTER_BAND = 50
+  const MIN_Y = MARGIN + FOOTER_BAND
+
+  function addPage() {
+    page = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT])
+    pages.push(page)
+    y = PAGE_HEIGHT - MARGIN
+    return page
+  }
+
+  function ensureSpace(neededHeight) {
+    if (y - neededHeight < MIN_Y) addPage()
+  }
+
+  function drawTableHeaderRow() {
+    const tableTop = y
+    page.drawRectangle({ x: MARGIN, y: tableTop - 18, width: PAGE_WIDTH - MARGIN * 2, height: 18, color: NAVY })
+    page.drawText('DESCRIPTION', { x: col.desc + 6, y: tableTop - 13, size: 8, font: bold, color: rgb(1, 1, 1) })
+    page.drawText('QTY', { x: col.qty, y: tableTop - 13, size: 8, font: bold, color: rgb(1, 1, 1) })
+    page.drawText('UNIT', { x: col.unit, y: tableTop - 13, size: 8, font: bold, color: rgb(1, 1, 1) })
+    page.drawText('AMOUNT', { x: col.amount, y: tableTop - 13, size: 8, font: bold, color: rgb(1, 1, 1) })
+    y = tableTop - 18
+  }
 
   // --- Header: firm name/address (left) + INVOICE title/number (right) ---
   const businessName = details?.business_name || 'Your Business'
@@ -117,6 +153,7 @@ export async function generateInvoicePdf(invoice, lineItems, details) {
   const companyName = invoice.companies?.name
   const candidateName = invoice.candidates?.name
   if (jobTitle || candidateName) {
+    ensureSpace(38)
     y -= 10
     page.drawText('PLACEMENT', { x: MARGIN, y, size: 9, font: bold, color: GOLD })
     y -= 14
@@ -124,6 +161,7 @@ export async function generateInvoicePdf(invoice, lineItems, details) {
     if (jobTitle) parts.push(`Role: ${jobTitle}${companyName ? ` at ${companyName}` : ''}`)
     if (candidateName) parts.push(`Candidate placed: ${candidateName}`)
     for (const line of parts) {
+      ensureSpace(14)
       page.drawText(line, { x: MARGIN, y, size: 10, font, color: BLACK })
       y -= 14
     }
@@ -132,19 +170,24 @@ export async function generateInvoicePdf(invoice, lineItems, details) {
   y -= 16
 
   // --- Line items table ---
-  const tableTop = y
   const col = { desc: MARGIN, qty: 330, unit: 390, amount: 470 }
-  page.drawRectangle({ x: MARGIN, y: tableTop - 18, width: PAGE_WIDTH - MARGIN * 2, height: 18, color: NAVY })
-  page.drawText('DESCRIPTION', { x: col.desc + 6, y: tableTop - 13, size: 8, font: bold, color: rgb(1, 1, 1) })
-  page.drawText('QTY', { x: col.qty, y: tableTop - 13, size: 8, font: bold, color: rgb(1, 1, 1) })
-  page.drawText('UNIT', { x: col.unit, y: tableTop - 13, size: 8, font: bold, color: rgb(1, 1, 1) })
-  page.drawText('AMOUNT', { x: col.amount, y: tableTop - 13, size: 8, font: bold, color: rgb(1, 1, 1) })
-  y = tableTop - 18
+  ensureSpace(18)
+  drawTableHeaderRow()
 
   const currency = invoice.currency || ''
   for (const li of lineItems || []) {
     const descLines = wrapText(li.description, font, 10, col.qty - col.desc - 12)
     const rowHeight = Math.max(20, descLines.length * 12 + 6)
+    // 2026-08-27 audit fix: a long invoice (many line items) used to just
+    // keep drawing rows past the bottom of the one fixed page — invisible
+    // once y went negative. Starting a fresh page (and repeating the
+    // column header, so a reader landing on page 2 alone still knows what
+    // each column means) keeps every row visible regardless of how many
+    // there are.
+    if (y - rowHeight < MIN_Y) {
+      addPage()
+      drawTableHeaderRow()
+    }
     y -= rowHeight
     page.drawLine({ start: { x: MARGIN, y: y + rowHeight }, end: { x: PAGE_WIDTH - MARGIN, y: y + rowHeight }, thickness: 0.5, color: LIGHT_GREY })
     let lineY = y + rowHeight - 12
@@ -160,6 +203,11 @@ export async function generateInvoicePdf(invoice, lineItems, details) {
   page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 1, color: LIGHT_GREY })
 
   // --- Totals ---
+  // Kept together as one block (ensureSpace checked once, up front, for the
+  // full block's height) rather than letting the divider line or TOTAL DUE
+  // row land alone at the top of a fresh page, split from Subtotal/Tax
+  // above it.
+  ensureSpace(20 + 16 + 16 + 6 + 16)
   y -= 20
   // 290, not 400: at 400 the bold 13pt "TOTAL DUE" label and a real
   // (4-5 digit) total's value literally overlapped on the page — the two
@@ -184,8 +232,6 @@ export async function generateInvoicePdf(invoice, lineItems, details) {
   y -= 24
   const hasBankDetails = details?.bank_account_name || details?.bank_account_number || details?.bank_iban
   if (hasBankDetails) {
-    page.drawText('PAYMENT DETAILS', { x: MARGIN, y, size: 9, font: bold, color: GOLD })
-    y -= 14
     const bankLines = [
       details.bank_account_name ? `Account name: ${details.bank_account_name}` : null,
       details.bank_name ? `Bank: ${details.bank_name}` : null,
@@ -194,7 +240,14 @@ export async function generateInvoicePdf(invoice, lineItems, details) {
       details.bank_iban ? `IBAN: ${details.bank_iban}` : null,
       details.bank_swift_bic ? `SWIFT/BIC: ${details.bank_swift_bic}` : null,
     ].filter(Boolean)
+    // Heading kept with at least its first line, rather than a bare
+    // "PAYMENT DETAILS" label stranded alone at the bottom of a page with
+    // every actual bank field pushed onto the next one.
+    ensureSpace(14 + 12)
+    page.drawText('PAYMENT DETAILS', { x: MARGIN, y, size: 9, font: bold, color: GOLD })
+    y -= 14
     for (const line of bankLines) {
+      ensureSpace(12)
       page.drawText(line, { x: MARGIN, y, size: 9, font, color: BLACK })
       y -= 12
     }
@@ -205,15 +258,27 @@ export async function generateInvoicePdf(invoice, lineItems, details) {
   if (noteText) {
     y -= 16
     for (const line of wrapText(noteText, font, 9, PAGE_WIDTH - MARGIN * 2)) {
+      ensureSpace(12)
       page.drawText(line, { x: MARGIN, y, size: 9, font, color: GREY })
       y -= 12
     }
   }
 
-  // Page footer — always at a fixed position, not flowing with content, so
-  // it never collides with a long invoice's own content above.
+  // Page footer — always at a fixed position on every page, not flowing
+  // with content, so it never collides with a long invoice's own content
+  // above. Drawn on every page now (2026-08-27 audit fix — a multi-page
+  // invoice used to only ever get one page in the first place, so this
+  // ran once by construction; now that content can genuinely span more
+  // than one page, each page needs its own footer, and a page number once
+  // there's more than one so a reader can tell it's not the whole invoice).
   const footerLeft = invoice.created_by_name ? `Prepared by ${invoice.created_by_name} · ${businessName}` : `Generated by Annie · ${businessName}`
-  page.drawText(footerLeft, { x: MARGIN, y: 30, size: 8, font, color: LIGHT_GREY })
+  pages.forEach((p, i) => {
+    p.drawText(footerLeft, { x: MARGIN, y: 30, size: 8, font, color: LIGHT_GREY })
+    if (pages.length > 1) {
+      const pageText = `Page ${i + 1} of ${pages.length}`
+      p.drawText(pageText, { x: PAGE_WIDTH - MARGIN - font.widthOfTextAtSize(pageText, 8), y: 30, size: 8, font, color: LIGHT_GREY })
+    }
+  })
 
   return pdf.save()
 }

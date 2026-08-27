@@ -133,4 +133,70 @@ describe('generateInvoicePdf', () => {
     const bytes = await generateInvoicePdf(FULL_INVOICE, longItem, FULL_DETAILS)
     expect(await isValidPdf(bytes)).toBe(1)
   })
+
+  // 2026-08-27 audit fix: enough line items used to just draw straight past
+  // the bottom of the one fixed A4 page — invisible below y=0 once printed
+  // or viewed, with the totals/bank-details block that came after silently
+  // lost entirely. These confirm it now actually flows onto more pages
+  // instead, and nothing real (every line item, the total, the bank
+  // details) goes missing when it does.
+  describe('pagination for content that overflows a single page', () => {
+    const manyLineItems = Array.from({ length: 60 }, (_, i) => ({
+      description: `Placement fee — Role number ${i + 1}`,
+      quantity: 1,
+      unit_amount: 1000,
+      amount: 1000,
+    }))
+
+    it('spans more than one page instead of clipping or overlapping the footer', async () => {
+      const bytes = await generateInvoicePdf(FULL_INVOICE, manyLineItems, FULL_DETAILS)
+      const doc = await PDFDocument.load(bytes)
+      expect(doc.getPageCount()).toBeGreaterThan(1)
+    })
+
+    it('still renders every single line item, the correct total, and the bank details, none silently dropped off the end', async () => {
+      const bytes = await generateInvoicePdf(FULL_INVOICE, manyLineItems, FULL_DETAILS)
+      const text = extractPdfText(bytes)
+      expect(text).toContain('Role number 1 ')
+      expect(text).toContain('Role number 60')
+      expect(text).toContain('TOTAL DUE')
+      expect(text).toContain('PAYMENT DETAILS')
+      expect(text).toContain('AE070331234567890123456')
+    })
+
+    it('repeats the column header on the continuation page and numbers every page', async () => {
+      const bytes = await generateInvoicePdf(FULL_INVOICE, manyLineItems, FULL_DETAILS)
+      const doc = await PDFDocument.load(bytes)
+      const pageCount = doc.getPageCount()
+      const text = extractPdfText(bytes)
+      // One DESCRIPTION/QTY/UNIT/AMOUNT header per page the table actually
+      // reaches — a bare re-count would also pass if the header were only
+      // ever drawn once, so this checks the header repeats at least twice.
+      const headerCount = (text.match(/DESCRIPTION/g) || []).length
+      expect(headerCount).toBeGreaterThanOrEqual(2)
+      expect(text).toContain(`Page 1 of ${pageCount}`)
+      expect(text).toContain(`Page ${pageCount} of ${pageCount}`)
+    })
+
+    it('still fits on a single, unnumbered page for an ordinary invoice with a handful of line items', async () => {
+      const bytes = await generateInvoicePdf(FULL_INVOICE, FULL_LINE_ITEMS, FULL_DETAILS)
+      const doc = await PDFDocument.load(bytes)
+      expect(doc.getPageCount()).toBe(1)
+      const text = extractPdfText(bytes)
+      expect(text).not.toContain('Page 1 of')
+    })
+
+    it('never lets a line item collide with the fixed footer, even right at a page boundary', async () => {
+      // 51 items lands the last row of page 1 close to the footer band —
+      // exactly the boundary condition MIN_Y exists to guard.
+      const boundaryItems = Array.from({ length: 51 }, (_, i) => ({
+        description: `Item ${i + 1}`, quantity: 1, unit_amount: 100, amount: 100,
+      }))
+      const bytes = await generateInvoicePdf(FULL_INVOICE, boundaryItems, FULL_DETAILS)
+      expect(await isValidPdf(bytes)).toBeGreaterThanOrEqual(1)
+      const text = extractPdfText(bytes)
+      expect(text).toContain('Item 1 ')
+      expect(text).toContain('Item 51')
+    })
+  })
 })

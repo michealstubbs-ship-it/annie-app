@@ -128,7 +128,13 @@ describe('cache handling', () => {
     mockSelectIn.mockResolvedValue({ data: [] })
     global.fetch.mockResolvedValue({
       ok: true,
-      json: async () => ({ organizations: [{ primary_domain: 'acme.com', industry: 'Staffing', city: 'London' }] }),
+      // 2026-08-26 audit fix: name is required now — the handler runs
+      // candidates through pickBestOrgMatch (shared with scanShared.js's
+      // enrichCompany, see that file), which needs a real org name to match
+      // against the searched company name. A real Apollo response always
+      // includes one; this mock simply hadn't needed it before the guard
+      // existed.
+      json: async () => ({ organizations: [{ name: 'Acme', primary_domain: 'acme.com', industry: 'Staffing', city: 'London' }] }),
     })
     const res = await handler(makeRequest({ companies: ['Acme'] }))
     expect(res.status).toBe(200)
@@ -150,6 +156,56 @@ describe('cache handling', () => {
     expect(mockUpsert).not.toHaveBeenCalled()
     const body = await res.json()
     expect(body.results[0]).toEqual(expect.objectContaining({ company_name_key: 'acme', matched: false }))
+  })
+
+  // 4th-pass audit fix (2026-08-26): this endpoint's own direct Apollo call
+  // used to be a bare fetch() (no AbortController-backed timeout, unlike
+  // every other Apollo call in the codebase) and never released the credit
+  // it reserved when the call failed — a real Apollo outage or an expired
+  // key permanently cost credit here exactly as if the call had succeeded.
+  it('releases the reserved credit when the Apollo call returns a non-ok response, and never caches the failure as a real miss', async () => {
+    mockSelectIn.mockResolvedValue({ data: [] })
+    global.fetch.mockResolvedValue({ ok: false, status: 401, text: async () => 'unauthorized' })
+    const res = await handler(makeRequest({ companies: ['Acme'] }))
+    expect(res.status).toBe(200)
+    expect(mockRpc).toHaveBeenCalledWith('apollo_release_credits', { p_credits: 1, p_user_id: 'user_123' })
+    // 2026-08-27 audit fix: an outright call failure must not be written to
+    // company_enrichment — that cache is shared across every customer with
+    // no re-check path, so caching an outage as "checked, no match" would
+    // permanently mark this company unmatched for everyone, forever.
+    expect(mockUpsert).not.toHaveBeenCalled()
+    const body = await res.json()
+    expect(body.results[0]).toEqual(expect.objectContaining({ company_name_key: 'acme', matched: false }))
+  })
+
+  it('releases the reserved credit when the Apollo call throws outright, and never caches the failure as a real miss', async () => {
+    mockSelectIn.mockResolvedValue({ data: [] })
+    global.fetch.mockRejectedValue(new Error('network down'))
+    const res = await handler(makeRequest({ companies: ['Acme'] }))
+    expect(res.status).toBe(200)
+    expect(mockRpc).toHaveBeenCalledWith('apollo_release_credits', { p_credits: 1, p_user_id: 'user_123' })
+    expect(mockUpsert).not.toHaveBeenCalled()
+  })
+
+  // 2026-08-27 audit fix: pickBestOrgMatch rejecting a wrong-name candidate
+  // is the actual behavior change this same pass made (per_page 5 +
+  // pickBestOrgMatch instead of blindly trusting organizations[0]) — this
+  // was previously untested.
+  it("does not match a same-industry but differently-named company, even as Apollo's only returned candidate", async () => {
+    mockSelectIn.mockResolvedValue({ data: [] })
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ organizations: [{ name: 'Acme Consulting Group', primary_domain: 'acmeconsulting.com', industry: 'Staffing' }] }),
+    })
+    const res = await handler(makeRequest({ companies: ['Acme'] }))
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.results[0]).toEqual(expect.objectContaining({ company_name_key: 'acme', matched: false }))
+    // A genuine no-match (not a failure) is still a real, cacheable result.
+    expect(mockUpsert).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ company_name_key: 'acme', matched: false })]),
+      expect.objectContaining({ onConflict: 'company_name_key' })
+    )
   })
 })
 

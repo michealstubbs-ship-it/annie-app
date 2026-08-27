@@ -64,15 +64,19 @@ export default async (req) => {
 
     // Invoice number is assigned once, on the first successful send —
     // resending an already-sent invoice (e.g. after editing a note) must
-    // never mint a second number for the same invoice, which is why this
-    // is gated on invoice.invoice_number already being set, not on
-    // invoice.status.
-    let invoiceNumber = invoice.invoice_number
-    if (!invoiceNumber) {
-      const { data: numberData, error: numberErr } = await supabase.rpc('next_invoice_number', { p_team_id: invoice.team_id })
-      if (numberErr) throw numberErr
-      invoiceNumber = numberData
-    }
+    // never mint a second number for the same invoice. This used to be a
+    // plain "read invoice.invoice_number, mint one if it's still null" —
+    // safe for one request at a time, but two "Send" clicks on the same
+    // draft at nearly the same moment could both read null before either
+    // wrote its own number back, minting two distinct numbers for what's
+    // really one invoice (2026-08-27 audit fix). claim_invoice_number takes
+    // a row lock on this specific invoice and does the whole check-then-
+    // maybe-mint-then-write sequence atomically — a second concurrent call
+    // for the same invoiceId blocks until the first finishes, then just
+    // sees the number already set and returns it, rather than minting a
+    // second one.
+    const { data: invoiceNumber, error: claimErr } = await supabase.rpc('claim_invoice_number', { p_invoice_id: invoiceId })
+    if (claimErr) throw claimErr
 
     // Best-effort "prepared by" snapshot — never worth failing the send
     // over, same reasoning as support-escalate.js's own firmName lookup.

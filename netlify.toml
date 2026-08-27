@@ -31,14 +31,41 @@
     X-Frame-Options = "SAMEORIGIN"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
+    # 2026-08-26 security-header audit: added challenges.cloudflare.com
+    # (Turnstile's widget script + challenge iframe — src/components/
+    # Turnstile.jsx injects api.js and renders the challenge in an iframe
+    # from that host). This was a REAL gap, not theoretical: Login.jsx
+    # already requires Turnstile on signup in production as of this same
+    # audit round, and the CSP as it stood before this change would have
+    # silently blocked both the script and the iframe, breaking signup
+    # entirely rather than just failing loudly. Also added object-src/
+    # base-uri/form-action — standard 2026 hardening on top of default-src,
+    # cheap and non-breaking (this app never uses plugin content, a <base>
+    # tag, or submits a form to anywhere but itself).
+    #
     # Scoped to what the app actually calls from the browser (confirmed via
     # grep, not guessed): Supabase (auth/DB/storage/edge functions), Google
-    # Fonts (index.html's <link>), and PostHog (analytics.js) — everything
-    # else (Anthropic, Apollo, Stripe's server API) is only ever called
-    # server-side from Netlify functions, never directly from the browser.
-    # Stripe's hosted Checkout/Portal pages are full-page redirects, not an
-    # embedded frame or script, so no stripe.com entry is needed here.
-    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://us.i.posthog.com https://eu.i.posthog.com; frame-ancestors 'self'"
+    # Fonts (index.html's <link>), PostHog (analytics.js), and now Turnstile
+    # — everything else (Anthropic, Apollo, Stripe's server API) is only
+    # ever called server-side from Netlify functions, never directly from
+    # the browser. Stripe's hosted Checkout/Portal pages are full-page
+    # redirects, not an embedded frame or script, so no stripe.com entry is
+    # needed here.
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://us.i.posthog.com https://eu.i.posthog.com https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+    # Missing entirely before this audit — Netlify's automatic TLS does NOT
+    # inject this by default (it's a separate dashboard opt-in under Domain
+    # settings, invisible from this repo), so a SaaS with login/billing
+    # shouldn't rely on that being toggled somewhere nobody can see in
+    # version control. includeSubDomains/preload assume every subdomain
+    # under meetannie.ai genuinely serves HTTPS-only — confirm that holds
+    # before this is submitted to any browser preload list.
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    # Missing entirely before this audit — cheap, standard baseline that
+    # closes off browser APIs this app never uses. payment=() assumes
+    # Stripe stays a full-page Checkout/Portal redirect (true today, see
+    # the CSP comment above) rather than an embedded Payment Request API —
+    # revisit if that ever changes.
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), interest-cohort=(), payment=(), usb=()"
 
 # A scale-readiness audit (2026-08-22) found every push building straight
 # against production with no rehearsal environment. This context override

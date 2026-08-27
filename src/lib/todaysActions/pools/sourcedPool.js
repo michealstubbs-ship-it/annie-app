@@ -55,11 +55,18 @@ export function scoreSourced(s) {
   const isLiveJob = s.signal_type === 'live_job'
   // A newly appointed leader is one of the highest-value signals this pool
   // surfaces — someone new in a role is, almost by definition, about to
-  // evaluate their team and often bring in their own people. Bumped here
-  // on its own terms rather than folded into RACY_SIGNAL_TYPES, since "the
-  // news might get scooped" and "a decision-maker is actively deciding who's
-  // on their team" are different reasons that happen to both deserve
-  // urgency=2.
+  // evaluate their team and often bring in their own people. Scored here on
+  // its own terms with a wider window (60 days, not the ordinary racy
+  // window of a few days) — "the news might get scooped" and "a
+  // decision-maker is actively deciding who's on their team" are different
+  // reasons that happen to both deserve urgency=2, just on different
+  // timescales. (2026-08-26: leadership_change is now also flagged racy:
+  // true in signalTypes.js, so the Feed's own "time-sensitive" badge
+  // matches this page's treatment of the same signal — see that file's
+  // comment. That only affects the `isRacy && daysFound <= 3` branch below,
+  // which the isLeadershipChange branch already covers for days 0-3 and
+  // extends on its own past it; the scoring above and the 60-day window
+  // here are unchanged.)
   const isLeadershipChange = s.signal_type === 'leadership_change'
   const score = Math.min(100, decayFall(daysFound, 3, 55) + 25 + (s.contact_verified ? 15 : 0) + (isLiveJob ? 10 : 0) + (isLeadershipChange ? 15 : 0))
   const isRacy = RACY_SIGNAL_TYPES.includes(s.signal_type)

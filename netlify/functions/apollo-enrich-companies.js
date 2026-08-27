@@ -3,7 +3,7 @@
 // company name text. Results are cached in Supabase, shared across every customer,
 // so the same company is never enriched twice, only cache misses spend a credit.
 import { createClient } from '@supabase/supabase-js'
-import { reserveApolloCredits, createTimeoutFetch } from './lib/scanShared.js'
+import { reserveApolloCredits, releaseApolloCredits, fetchWithTimeout, createTimeoutFetch, pickBestOrgMatch } from './lib/scanShared.js'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { jsonError } from './lib/httpError.js'
@@ -109,14 +109,67 @@ export default async (req, context) => {
           return { company_name: name, company_name_key: normalize(name), matched: false, skipCache: true }
         }
         try {
-          const resp = await fetch('https://api.apollo.io/v1/mixed_companies/search', {
+          // 4th-pass audit fix: this was previously a bare fetch() — the one
+          // Apollo call site in the codebase with no AbortController-backed
+          // timeout at all, unlike every other Apollo call in scanShared.js.
+          // 5th-pass audit fix: the 4th-pass fix first reached for
+          // fetchWithRetry — the same helper every OTHER Apollo call site
+          // uses — but this call site isn't like those others: it runs up
+          // to MAX_COMPANIES_PER_REQUEST (1000) times, 5-at-a-time,
+          // sequentially, inside ONE synchronous request/response function
+          // with no background-function time budget to spend. fetchWithRetry
+          // retries a 429/5xx twice with real backoff before giving up,
+          // stretching a single failing company from "fails near-instantly"
+          // (the bare-fetch behaviour before ANY of this) to up to ~38s
+          // (three attempts at the default 12s timeout, plus backoff) — so a
+          // real Apollo outage, exactly the scenario the credit-release fix
+          // above exists to handle gracefully, now risks this function
+          // running for potentially hours across a large batch and getting
+          // hard-killed by Netlify's own execution ceiling mid-loop, which
+          // leaks the credit reserved for whatever company was in flight at
+          // that instant (nothing ever reaches the catch/release below it —
+          // reproducing the exact bug this whole fix set out to close, just
+          // via a different mechanism). fetchWithTimeout alone — no
+          // retries, and a short 8s ceiling rather than the background-
+          // function-oriented 12s default — keeps the original fix's actual
+          // goal (bound a hang, don't let it sit forever) without
+          // reintroducing a multi-outage-scale slowdown a synchronous,
+          // batch-processing endpoint can't afford.
+          // 2026-08-26 audit fix: per_page was 1 and the org variable below
+          // took that single result unconditionally — the one Apollo call
+          // site in the codebase with no name-match guard, unlike
+          // enrichCompany() in scanShared.js (which exists specifically
+          // because a short/generic company name's top Apollo search hit
+          // isn't reliably the right company — the "Stitch vs Stitch Fix"
+          // case documented on pickBestOrgMatch). This screen renders its
+          // result as "Verified via real company data", the same visual
+          // weight as a confirmed match, so a wrong guess here was
+          // presented to the user exactly as confidently as a right one.
+          // per_page: 5 (matching scanShared's own fix) so pickBestOrgMatch
+          // has real candidates to choose between instead of only Apollo's
+          // single top-ranked guess.
+          const resp = await fetchWithTimeout('https://api.apollo.io/v1/mixed_companies/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apiKey },
-            body: JSON.stringify({ q_organization_name: name, page: 1, per_page: 1 }),
-          })
-          if (!resp.ok) return { company_name: name, company_name_key: normalize(name), matched: false }
+            body: JSON.stringify({ q_organization_name: name, page: 1, per_page: 5 }),
+          }, 8000)
+          if (!resp.ok) {
+            // 4th-pass audit fix: release the credit reserved above — the
+            // call failed outright, nothing was returned for it.
+            // 2026-08-27 audit fix: skipCache: true too — an Apollo outage
+            // or an expired key mid-batch must not get cached as a genuine
+            // "checked, no match" the way a real miss does (see the cache
+            // note at step 3 below). Without this, one bad Apollo response
+            // during a large import permanently marks every company hit
+            // during the outage unmatched for every customer, forever,
+            // since company_enrichment is a shared cross-customer cache
+            // with no re-check path.
+            await releaseApolloCredits(supabase, user.id, 1)
+            return { company_name: name, company_name_key: normalize(name), matched: false, skipCache: true }
+          }
           const data = await resp.json()
-          const org = (data.organizations && data.organizations[0]) || (data.accounts && data.accounts[0])
+          const candidates = [...(data.organizations || []), ...(data.accounts || [])]
+          const org = pickBestOrgMatch(candidates, name)
           if (!org) return { company_name: name, company_name_key: normalize(name), matched: false }
           return {
             company_name: name,
@@ -130,7 +183,12 @@ export default async (req, context) => {
             matched: true,
           }
         } catch {
-          return { company_name: name, company_name_key: normalize(name), matched: false }
+          // 4th-pass audit fix: same as the non-ok branch above — a thrown
+          // error means the reserved credit was never actually spent on a
+          // usable result. 2026-08-27 audit fix: skipCache: true, same
+          // reasoning as the non-ok branch above.
+          await releaseApolloCredits(supabase, user.id, 1)
+          return { company_name: name, company_name_key: normalize(name), matched: false, skipCache: true }
         }
       }))
       freshResults.push(...batchResults)
