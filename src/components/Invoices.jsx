@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { listInvoices, deleteInvoice, markInvoicePaid, voidInvoice } from '../lib/data/invoices'
-import { sendInvoice, getInvoiceDownloadUrl } from '../lib/invoiceApi'
+import { sendInvoice, fetchInvoicePdfBlobUrl } from '../lib/invoiceApi'
 import { formatMoney } from '../lib/invoiceCalc'
 import InvoiceFormModal from './InvoiceFormModal'
 import ConfirmDialog from './ConfirmDialog'
@@ -74,8 +74,11 @@ export default function Invoices() {
   async function handleDownload(inv) {
     setRowErr(inv.id, '')
     try {
-      const url = await getInvoiceDownloadUrl(inv.id)
-      window.open(url, '_blank', 'noopener')
+      const blobUrl = await fetchInvoicePdfBlobUrl(inv.id)
+      window.open(blobUrl, '_blank', 'noopener')
+      // Revoke once the new tab has had a chance to load the PDF — the blob
+      // URL only needs to live long enough for that navigation to fetch it.
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000)
     } catch (err) {
       setRowErr(inv.id, err.message || 'Could not open this invoice')
     }

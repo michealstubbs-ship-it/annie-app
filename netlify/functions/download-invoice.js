@@ -5,15 +5,18 @@
 // header comment) so what's downloaded here is always byte-for-byte the
 // same document email delivery attaches.
 //
-// GET, not POST: a plain link/window.open() download needs a GET request
-// the browser can navigate to directly (Invoices.jsx opens this in a new
-// tab), carrying the session token as a query param since a simple <a>
-// link/new-tab navigation can't attach an Authorization header. The token
-// is still verified exactly like every bearer-token call elsewhere (see
-// auth.js) — it's just read from the query string instead of the header
-// for this one function.
-import { createClient } from '@supabase/supabase-js'
-import { createTimeoutFetch } from './lib/scanShared.js'
+// Auth: same Authorization-header pattern as every other function
+// (getAuthedClient, auth.js). Security fix, 2026-08-27 audit: this used to
+// read the caller's real session access token from a URL query param
+// (?token=...) so a plain <a>/window.open() navigation could reach it
+// without setting a header. That token is a full bearer credential, not
+// scoped to this one download — anywhere that URL could be captured
+// (Netlify/CDN access logs, browser history, a shared screenshot) leaked a
+// token replayable against ANY authenticated endpoint, not just this one.
+// invoiceApi.js's getInvoiceDownloadUrl() now fetches this as a blob with a
+// real Authorization header instead of navigating a plain link, so the
+// token never appears in a URL at all.
+import { getAuthedClient } from './lib/auth.js'
 import { generateInvoicePdf } from './lib/invoicePdf.js'
 import { reportServerError } from './lib/reportError.js'
 
@@ -30,17 +33,12 @@ export default async (req) => {
 
   const url = new URL(req.url)
   const invoiceId = url.searchParams.get('invoiceId')
-  const token = url.searchParams.get('token')
-  if (!invoiceId || !token) {
-    return new Response(JSON.stringify({ error: 'invoiceId and token are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+  if (!invoiceId) {
+    return new Response(JSON.stringify({ error: 'invoiceId is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
   }
 
-  const supabase = createClient(supabaseUrl, anonKey, {
-    global: { headers: { Authorization: `Bearer ${token}` }, fetch: createTimeoutFetch() },
-    auth: { persistSession: false, autoRefreshToken: false },
-  })
-  const { data: authData, error: authErr } = await supabase.auth.getUser(token)
-  if (authErr || !authData?.user) {
+  const { client: supabase, error: authError } = await getAuthedClient(req, supabaseUrl, anonKey)
+  if (authError || !supabase) {
     return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401, headers: { 'Content-Type': 'application/json' } })
   }
 

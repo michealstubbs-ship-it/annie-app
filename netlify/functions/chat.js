@@ -5,6 +5,26 @@ import { reserveAnthropicTokens, reserveChatCall } from './lib/aiUsage.js'
 import { getEntitlements, resolveResourceCaps } from './lib/entitlements.js'
 import { createTimeoutFetch, fetchWithTimeout } from './lib/scanShared.js'
 import { parseIntEnv } from './lib/env.js'
+import { shouldSearchWeb } from './lib/chatWebSearch.js'
+
+// Pulls the plain text out of the most recent user turn, whatever shape its
+// `content` is in (a plain string for every real caller today, but Anthropic's
+// own message format also allows an array of content blocks) — used below to
+// re-derive server-side whether this message actually warrants a web search,
+// rather than trusting the client's webSearch flag on its own.
+function lastUserMessageText(messages) {
+  if (!Array.isArray(messages)) return ''
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m?.role !== 'user') continue
+    if (typeof m.content === 'string') return m.content
+    if (Array.isArray(m.content)) {
+      return m.content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n')
+    }
+    return ''
+  }
+  return ''
+}
 
 const DEFAULT_CHAT_PER_MINUTE_CAP = 20
 
@@ -157,6 +177,18 @@ export default async (req, context) => {
 
   const { messages, systemOverride, webSearch = false } = body
 
+  // Security fix, 2026-08-27 audit: this used to trust the client's webSearch
+  // boolean verbatim — the actual keyword gate (shouldSearchWeb) only lived
+  // in Chat.jsx, so any caller hitting this endpoint directly could set
+  // webSearch:true on every message regardless of content, forcing real
+  // per-search Anthropic cost with no gating at all. Re-derive it here from
+  // the real last user message so the client's flag can only ever narrow
+  // this (a caller that never asks for search still never gets it), never
+  // force a search the message content doesn't actually warrant. See
+  // netlify/functions/lib/chatWebSearch.js's own header for why this is a
+  // deliberate server-side duplicate of Chat.jsx's client-side copy.
+  const effectiveWebSearch = webSearch && shouldSearchWeb(lastUserMessageText(messages))
+
   // 2026-08-26 fix: chat.js used to ALWAYS request stream:true from
   // Anthropic and ALWAYS respond with NDJSON, regardless of who was
   // calling. That broke every caller still using the plain callChat()
@@ -197,7 +229,7 @@ export default async (req, context) => {
       messages,
       stream: wantsStream,
       ...(systemOverride && { system: systemOverride }),
-      ...(webSearch && {
+      ...(effectiveWebSearch && {
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxSearchUses }],
       }),
     }

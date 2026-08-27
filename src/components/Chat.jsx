@@ -7,6 +7,20 @@ import { trackEvent } from '../lib/analytics'
 import { getWatchlistCompanyNames, buildWatchlistChatHint } from '../lib/watchlist'
 import { shouldSearchWeb } from '../lib/chatWebSearch'
 
+// Security fix, 2026-08-27 audit: citation URLs come from Anthropic's own
+// web_search tool, so a malicious value getting into this field would be an
+// upstream problem, not a customer-supplied one — but rendering it as
+// `<a href>` with no scheme check at all meant a non-http(s) value (e.g. a
+// javascript: URL) would execute on click, since React escapes the visible
+// text but not the href attribute. Cheap to close either way.
+function isSafeHttpUrl(url) {
+  try {
+    return ['http:', 'https:'].includes(new URL(url).protocol)
+  } catch {
+    return false
+  }
+}
+
 export default function Chat() {
   const { user, profile } = useAuth()
   const location = useLocation()
@@ -175,7 +189,7 @@ Be specific, actionable and concise. No waffle.`
                   {m.citations?.length > 0 && (
                     <div className="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-400 space-y-0.5">
                       <div className="font-medium text-gray-400">Checked live just now:</div>
-                      {m.citations.slice(0, 5).map((c, ci) => (
+                      {m.citations.filter(c => isSafeHttpUrl(c.url)).slice(0, 5).map((c, ci) => (
                         <a key={ci} href={c.url} target="_blank" rel="noopener noreferrer" className="block truncate hover:text-gold hover:underline">
                           {c.title || c.url}
                         </a>

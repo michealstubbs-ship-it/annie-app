@@ -27,13 +27,26 @@ export async function sendInvoice(invoiceId) {
   return body.invoice
 }
 
-// Returns a URL that opens/downloads the invoice PDF directly — used as a
-// plain link target (window.open), not a fetch, so the browser handles the
-// PDF response itself. The session token has to travel as a query param
-// here rather than an Authorization header, since a browser navigation
-// can't attach custom headers — see download-invoice.js's own header
-// comment for why that's still safely verified server-side.
-export async function getInvoiceDownloadUrl(invoiceId) {
+// Fetches the invoice PDF with a real Authorization header (same pattern as
+// sendInvoice above) and returns a short-lived local blob: URL to open it in
+// a new tab. Security fix, 2026-08-27 audit: this used to just build a plain
+// URL with the caller's real session token as a `?token=` query param, for
+// window.open() to navigate to directly — that token is a full bearer
+// credential, not scoped to this one download, and a URL is exactly the
+// kind of thing that ends up in browser history, Netlify/CDN access logs, or
+// a shared screenshot. Fetching it here instead means the token only ever
+// travels in a header, never a URL. Caller should revoke the returned blob
+// URL (URL.revokeObjectURL) once the new tab has had a chance to load it —
+// see Invoices.jsx's handleDownload.
+export async function fetchInvoicePdfBlobUrl(invoiceId) {
   const token = await getToken()
-  return `/.netlify/functions/download-invoice?invoiceId=${encodeURIComponent(invoiceId)}&token=${encodeURIComponent(token)}`
+  const resp = await fetch(`/.netlify/functions/download-invoice?invoiceId=${encodeURIComponent(invoiceId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}))
+    throw new Error(body?.error || 'Could not open this invoice')
+  }
+  const blob = await resp.blob()
+  return URL.createObjectURL(blob)
 }

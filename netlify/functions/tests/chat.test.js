@@ -272,3 +272,33 @@ describe('Anthropic failures — the 2026-08-23 regression target', () => {
     expect(mockReportServerError).toHaveBeenCalledWith('chat', expect.objectContaining({ message: 'network down' }))
   })
 })
+
+// Security fix, 2026-08-27 audit: chat.js used to trust the client's
+// webSearch flag verbatim — the keyword gate (shouldSearchWeb) only lived in
+// Chat.jsx, so any caller hitting this endpoint directly could set
+// webSearch:true on every message regardless of content, forcing real
+// per-search Anthropic cost with no gating at all. chat.js now re-derives
+// this itself from the actual last user message; these tests are the
+// regression target for that fix.
+describe('web search gating is enforced server-side, not just trusted from the client', () => {
+  it('does NOT send the web_search tool when webSearch:true is requested but the message content does not warrant it', async () => {
+    global.fetch = vi.fn().mockResolvedValue(anthropicNonStreamResponse())
+    await handler(makeRequest({ messages: [{ role: 'user', content: 'help me draft a follow-up email' }], webSearch: true }))
+    const sentPayload = JSON.parse(global.fetch.mock.calls[0][1].body)
+    expect(sentPayload.tools).toBeUndefined()
+  })
+
+  it('sends the web_search tool when webSearch:true is requested and the message content genuinely warrants it', async () => {
+    global.fetch = vi.fn().mockResolvedValue(anthropicNonStreamResponse())
+    await handler(makeRequest({ messages: [{ role: 'user', content: "what's happening in the UK legal market right now?" }], webSearch: true }))
+    const sentPayload = JSON.parse(global.fetch.mock.calls[0][1].body)
+    expect(sentPayload.tools).toEqual([{ type: 'web_search_20250305', name: 'web_search', max_uses: expect.any(Number) }])
+  })
+
+  it('never sends the web_search tool when webSearch is omitted, even if the message content would otherwise warrant it', async () => {
+    global.fetch = vi.fn().mockResolvedValue(anthropicNonStreamResponse())
+    await handler(makeRequest({ messages: [{ role: 'user', content: "what's happening in the UK legal market right now?" }] }))
+    const sentPayload = JSON.parse(global.fetch.mock.calls[0][1].body)
+    expect(sentPayload.tools).toBeUndefined()
+  })
+})
