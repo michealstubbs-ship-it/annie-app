@@ -1752,6 +1752,40 @@ describe('fetchSignalPoolMatches (matching a pool entry back to a different, ove
     expect(consoleSpy).toHaveBeenCalledWith('[scanShared] signal_pool read failed:', 'db down')
     consoleSpy.mockRestore()
   })
+
+  describe('quality feedback (dismiss_count/positive_count, populated by the signal_outcomes trigger)', () => {
+    it('excludes an entry 3+ independent customers have dismissed with zero positive outcomes', async () => {
+      const supabase = makePoolSupabase([
+        { dedup_key: 'a', entry_type: 'signal', sectors_hint: ['Technology'], locations_hint: ['United Kingdom'], functions_hint: [], dismiss_count: 3, positive_count: 0 },
+      ])
+      const ob = { sectors: ['Technology'], locations: ['United Kingdom'], functions: [] }
+      expect(await fetchSignalPoolMatches(supabase, ob, new Set(), 5)).toEqual([])
+    })
+
+    it('still includes an entry with 3+ dismissals if it has at least one positive outcome too', async () => {
+      const supabase = makePoolSupabase([
+        { dedup_key: 'a', entry_type: 'signal', sectors_hint: ['Technology'], locations_hint: ['United Kingdom'], functions_hint: [], dismiss_count: 5, positive_count: 1 },
+      ])
+      const ob = { sectors: ['Technology'], locations: ['United Kingdom'], functions: [] }
+      expect(await fetchSignalPoolMatches(supabase, ob, new Set(), 5)).toHaveLength(1)
+    })
+
+    it('includes an entry with fewer than the dismiss threshold even with zero positive outcomes', async () => {
+      const supabase = makePoolSupabase([
+        { dedup_key: 'a', entry_type: 'signal', sectors_hint: ['Technology'], locations_hint: ['United Kingdom'], functions_hint: [], dismiss_count: 2, positive_count: 0 },
+      ])
+      const ob = { sectors: ['Technology'], locations: ['United Kingdom'], functions: [] }
+      expect(await fetchSignalPoolMatches(supabase, ob, new Set(), 5)).toHaveLength(1)
+    })
+
+    it('includes an entry with no dismiss/positive counts on it at all (a pre-feedback-migration or brand new row)', async () => {
+      const supabase = makePoolSupabase([
+        { dedup_key: 'a', entry_type: 'signal', sectors_hint: ['Technology'], locations_hint: ['United Kingdom'], functions_hint: [] },
+      ])
+      const ob = { sectors: ['Technology'], locations: ['United Kingdom'], functions: [] }
+      expect(await fetchSignalPoolMatches(supabase, ob, new Set(), 5)).toHaveLength(1)
+    })
+  })
 })
 
 describe('personalizePoolHits (cheap, no-web-search re-voicing of an already-discovered pool fact)', () => {

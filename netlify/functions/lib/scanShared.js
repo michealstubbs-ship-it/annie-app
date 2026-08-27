@@ -2145,6 +2145,24 @@ export async function writeToSignalPool(supabase, entries, ob) {
   }
 }
 
+// A pooled signal several independent customers have already dismissed,
+// with not one of them ever acting on it (added it to Today's BD Actions,
+// or it led to a placement — see the real stage values in
+// signalOutcomes.js/IntelligenceFeed.jsx/Candidates.jsx), is a real,
+// learnable fact about that signal's quality — see
+// 2026-08-27-signal-pool-quality-feedback.sql for how dismiss_count/
+// positive_count actually get populated (a DB trigger off signal_outcomes,
+// not application code, so every existing outcome call site already
+// contributes with no frontend change). Deliberately a small, defensible
+// bar rather than a single dismissal counting against it: one recruiter
+// dismissing something is just as likely to be "not relevant to me right
+// now" as "this is a bad signal", three independent dismissals with zero
+// positive outcomes across that many different accounts is a much stronger
+// signal it's genuinely not landing with anyone. This never deletes the
+// row or stops it being written — it only stops it being RECOMMENDED to a
+// new pool consumer going forward.
+const POOL_QUALITY_DISMISS_THRESHOLD = 3
+
 // Reads recent global pool entries and filters, in JS, to ones this
 // specific customer's own profile could plausibly have found themselves —
 // at least one sector AND one location in common with whoever discovered
@@ -2181,6 +2199,7 @@ export async function fetchSignalPoolMatches(supabase, ob, existingKeys, limit) 
       if (!overlaps(row.sectors_hint, sectors)) return false
       if (!overlaps(row.locations_hint, locations)) return false
       if (row.entry_type === 'live_job' && functions.size && !overlaps(row.functions_hint, functions)) return false
+      if ((row.dismiss_count || 0) >= POOL_QUALITY_DISMISS_THRESHOLD && !(row.positive_count > 0)) return false
       return true
     })
     return matches.slice(0, limit)
