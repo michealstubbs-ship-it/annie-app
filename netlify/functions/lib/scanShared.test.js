@@ -3,7 +3,7 @@
 // eventDate values that were never checked for plausibility. Pure logic,
 // no network calls, no Netlify runtime — this is the whole point of having
 // pulled it out of the two scan functions in the first place.
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   extractJson, normalizeKey, toEventIso, resolveSignalType, splitToKeywords, buildSearchKeywords,
   mapLocationsToAdzunaCountries, SIGNAL_TYPES, reserveApolloCredits, releaseApolloCredits,
@@ -12,6 +12,7 @@ import {
   enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs,
   looksTruncatedByTokenLimit, getLearnedSources,
+  writeToSignalPool, fetchSignalPoolMatches, personalizePoolHits,
 } from './scanShared.js'
 
 // Full behavioural coverage for extractJson now lives in
@@ -1605,5 +1606,225 @@ describe('getLearnedSources — error handling (2026-08-26 audit fix)', () => {
     const result = await getLearnedSources({ from: fromSpy }, [], ['United Kingdom'])
     expect(result).toEqual({ companies: {}, sources: {} })
     expect(fromSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('writeToSignalPool (cross-customer signal pool write-through)', () => {
+  it('upserts a pool row per entry, tagged with the discovering customer\'s own sector/location/function selections', async () => {
+    const upsertSpy = vi.fn().mockResolvedValue({ error: null })
+    const supabase = { from: vi.fn(() => ({ upsert: upsertSpy })) }
+    const ob = { sectors: ['Technology'], locations: ['United Kingdom'], functions: ['Engineering'] }
+    await writeToSignalPool(supabase, [{
+      company: 'Acme Corp', headline: 'Raises $50M Series B', signalType: 'funding',
+      whyItMatters: 'Likely hiring', sourceUrl: 'https://example.com/a', sourceLabel: 'example.com',
+      eventDate: '2026-08-20', whoToApproach: 'Head of Talent', titleKeywords: ['VP Engineering'],
+      candidateAngle: 'A strong engineering leader', benchStrengthAngle: 'Peer companies X, Y',
+      candidateProfile: { yearsMin: 5, yearsMax: 10 }, likelyRoles: ['VP Engineering', 'Head of Product'],
+    }], ob)
+    expect(supabase.from).toHaveBeenCalledWith('signal_pool')
+    expect(upsertSpy).toHaveBeenCalledWith(
+      [expect.objectContaining({
+        company: 'Acme Corp',
+        headline: 'Raises $50M Series B',
+        entry_type: 'signal',
+        signal_type: 'funding',
+        sectors_hint: ['Technology'],
+        locations_hint: ['United Kingdom'],
+        functions_hint: ['Engineering'],
+      })],
+      { onConflict: 'dedup_key', ignoreDuplicates: true },
+    )
+  })
+
+  it('never introduces intro_message — that field never exists on a pool row', async () => {
+    const upsertSpy = vi.fn().mockResolvedValue({ error: null })
+    const supabase = { from: vi.fn(() => ({ upsert: upsertSpy })) }
+    await writeToSignalPool(supabase, [{ company: 'Acme', headline: 'Appoints new CFO', introMessage: 'Dear Sir or Madam...' }], { sectors: [], locations: [], functions: [] })
+    const [rows] = upsertSpy.mock.calls[0]
+    expect(rows[0].intro_message).toBeUndefined()
+  })
+
+  it('does nothing when there are no entries or no supabase client', async () => {
+    const fromSpy = vi.fn()
+    await writeToSignalPool({ from: fromSpy }, [], {})
+    await writeToSignalPool(null, [{ company: 'Acme', headline: 'x' }], {})
+    expect(fromSpy).not.toHaveBeenCalled()
+  })
+
+  it('logs, rather than throws, on a query-level write failure', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const supabase = { from: vi.fn(() => ({ upsert: vi.fn().mockResolvedValue({ error: { message: 'db down' } }) })) }
+    await expect(writeToSignalPool(supabase, [{ company: 'Acme', headline: 'x' }], {})).resolves.not.toThrow()
+    expect(consoleSpy).toHaveBeenCalledWith('[scanShared] signal_pool write-through failed:', 'db down')
+    consoleSpy.mockRestore()
+  })
+})
+
+describe('fetchSignalPoolMatches (matching a pool entry back to a different, overlapping customer)', () => {
+  function makePoolSupabase(rows) {
+    return {
+      from: () => ({
+        select: () => ({
+          gte: () => ({
+            order: () => ({
+              limit: async () => ({ data: rows, error: null }),
+            }),
+          }),
+        }),
+      }),
+    }
+  }
+
+  it('matches a signal entry on sector + location overlap alone (no function required)', async () => {
+    const supabase = makePoolSupabase([
+      { dedup_key: 'a', entry_type: 'signal', sectors_hint: ['Technology'], locations_hint: ['United Kingdom'], functions_hint: [] },
+    ])
+    const ob = { sectors: ['Technology'], locations: ['United Kingdom'], functions: ['Sales'] }
+    const result = await fetchSignalPoolMatches(supabase, ob, new Set(), 5)
+    expect(result).toHaveLength(1)
+  })
+
+  it('excludes a live_job entry with no function overlap even when sector and location match', async () => {
+    const supabase = makePoolSupabase([
+      { dedup_key: 'a', entry_type: 'live_job', sectors_hint: ['Technology'], locations_hint: ['United Kingdom'], functions_hint: ['Legal'] },
+    ])
+    const ob = { sectors: ['Technology'], locations: ['United Kingdom'], functions: ['Engineering'] }
+    const result = await fetchSignalPoolMatches(supabase, ob, new Set(), 5)
+    expect(result).toEqual([])
+  })
+
+  it('includes a live_job entry when function does overlap', async () => {
+    const supabase = makePoolSupabase([
+      { dedup_key: 'a', entry_type: 'live_job', sectors_hint: ['Technology'], locations_hint: ['United Kingdom'], functions_hint: ['Engineering'] },
+    ])
+    const ob = { sectors: ['Technology'], locations: ['United Kingdom'], functions: ['Engineering'] }
+    const result = await fetchSignalPoolMatches(supabase, ob, new Set(), 5)
+    expect(result).toHaveLength(1)
+  })
+
+  it('excludes an entry with no sector overlap', async () => {
+    const supabase = makePoolSupabase([
+      { dedup_key: 'a', entry_type: 'signal', sectors_hint: ['Law'], locations_hint: ['United Kingdom'], functions_hint: [] },
+    ])
+    const ob = { sectors: ['Technology'], locations: ['United Kingdom'], functions: [] }
+    expect(await fetchSignalPoolMatches(supabase, ob, new Set(), 5)).toEqual([])
+  })
+
+  it('excludes an entry with no location overlap', async () => {
+    const supabase = makePoolSupabase([
+      { dedup_key: 'a', entry_type: 'signal', sectors_hint: ['Technology'], locations_hint: ['United States'], functions_hint: [] },
+    ])
+    const ob = { sectors: ['Technology'], locations: ['United Kingdom'], functions: [] }
+    expect(await fetchSignalPoolMatches(supabase, ob, new Set(), 5)).toEqual([])
+  })
+
+  it('excludes a dedup_key this customer already has, even if the profile overlaps', async () => {
+    const supabase = makePoolSupabase([
+      { dedup_key: 'already-have-this', entry_type: 'signal', sectors_hint: ['Technology'], locations_hint: ['United Kingdom'], functions_hint: [] },
+    ])
+    const ob = { sectors: ['Technology'], locations: ['United Kingdom'], functions: [] }
+    const result = await fetchSignalPoolMatches(supabase, ob, new Set(['already-have-this']), 5)
+    expect(result).toEqual([])
+  })
+
+  it('never returns more than the requested limit', async () => {
+    const rows = Array.from({ length: 5 }, (_, i) => ({ dedup_key: `k${i}`, entry_type: 'signal', sectors_hint: ['Technology'], locations_hint: ['United Kingdom'], functions_hint: [] }))
+    const supabase = makePoolSupabase(rows)
+    const ob = { sectors: ['Technology'], locations: ['United Kingdom'], functions: [] }
+    const result = await fetchSignalPoolMatches(supabase, ob, new Set(), 2)
+    expect(result).toHaveLength(2)
+  })
+
+  it('returns nothing without a supabase client or a zero limit, never querying anything', async () => {
+    expect(await fetchSignalPoolMatches(null, {}, new Set(), 5)).toEqual([])
+    const fromSpy = vi.fn()
+    expect(await fetchSignalPoolMatches({ from: fromSpy }, {}, new Set(), 0)).toEqual([])
+    expect(fromSpy).not.toHaveBeenCalled()
+  })
+
+  it('logs, rather than throws, on a query-level read failure, and returns no matches', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const supabase = {
+      from: () => ({ select: () => ({ gte: () => ({ order: () => ({ limit: async () => ({ data: null, error: { message: 'db down' } }) }) }) }) }),
+    }
+    const result = await fetchSignalPoolMatches(supabase, { sectors: ['Technology'], locations: ['United Kingdom'] }, new Set(), 5)
+    expect(result).toEqual([])
+    expect(consoleSpy).toHaveBeenCalledWith('[scanShared] signal_pool read failed:', 'db down')
+    consoleSpy.mockRestore()
+  })
+})
+
+describe('personalizePoolHits (cheap, no-web-search re-voicing of an already-discovered pool fact)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('returns nothing without an API key or without any pool hits, never calling fetch', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    expect(await personalizePoolHits('', [{ company: 'Acme', headline: 'x' }], {})).toEqual([])
+    expect(await personalizePoolHits('sk-ant-key', [], {})).toEqual([])
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('maps the AI\'s personalized text back onto each pool hit by index, preserving the pool\'s own facts', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [{ type: 'text', text: JSON.stringify([
+          { index: 0, whyItMatters: 'Rewritten for this recruiter', introMessage: 'Paragraph one.\n\nParagraph two.\n\nParagraph three.', candidateAngle: 'Rewritten angle', benchStrengthAngle: 'Peer firms A, B', whoToApproach: 'Head of Talent' },
+        ]) }],
+      }),
+    }))
+    const poolHits = [{
+      entry_type: 'signal', signal_type: 'funding', company: 'Acme Corp', headline: 'Raises $50M',
+      why_it_matters: 'original fact', source_url: 'https://x.com/a', source_label: 'x.com',
+      event_at: '2026-08-20T00:00:00.000Z', who_to_approach: 'CFO', appointed_name: null,
+      title_keywords: ['VP Finance'], candidate_angle: 'original angle', bench_strength_angle: 'original bench',
+      candidate_profile: { yearsMin: 5 }, likely_roles: ['VP Finance'],
+    }]
+    const result = await personalizePoolHits('sk-ant-key', poolHits, { firm_name: 'Acme Search', tone: 'friendly' })
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({
+      company: 'Acme Corp',
+      headline: 'Raises $50M',
+      whyItMatters: 'Rewritten for this recruiter',
+      introMessage: 'Paragraph one.\n\nParagraph two.\n\nParagraph three.',
+      candidateAngle: 'Rewritten angle',
+      benchStrengthAngle: 'Peer firms A, B',
+      whoToApproach: 'Head of Talent',
+      titleKeywords: ['VP Finance'],
+      likelyRoles: ['VP Finance'],
+    })
+  })
+
+  it('falls back to the pool\'s own facts (not the empty string) for any field the AI left out, and leaves introMessage blank rather than guessing', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ content: [{ type: 'text', text: '[]' }] }),
+    }))
+    const poolHits = [{ entry_type: 'signal', company: 'Acme', headline: 'x', why_it_matters: 'kept fact', candidate_angle: 'kept angle', bench_strength_angle: 'kept bench', who_to_approach: 'kept contact' }]
+    const result = await personalizePoolHits('sk-ant-key', poolHits, {})
+    expect(result[0].whyItMatters).toBe('kept fact')
+    expect(result[0].candidateAngle).toBe('kept angle')
+    expect(result[0].benchStrengthAngle).toBe('kept bench')
+    expect(result[0].whoToApproach).toBe('kept contact')
+    expect(result[0].introMessage).toBe('')
+  })
+
+  it('returns an empty array (falls back to fresh discovery) rather than throwing when the call fails', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 429 }))
+    const result = await personalizePoolHits('sk-ant-key', [{ company: 'Acme', headline: 'x' }], {})
+    expect(result).toEqual([])
+    consoleSpy.mockRestore()
+  })
+
+  it('returns an empty array when fetch itself throws', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
+    const result = await personalizePoolHits('sk-ant-key', [{ company: 'Acme', headline: 'x' }], {})
+    expect(result).toEqual([])
+    consoleSpy.mockRestore()
   })
 })

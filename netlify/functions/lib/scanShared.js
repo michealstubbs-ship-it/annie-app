@@ -2075,3 +2075,203 @@ export async function recordLearnedDiscoveries(supabase, entries) {
     console.error('[scanShared] failed to record learned discoveries', err.message)
   }
 }
+
+// 2026-08-27, Michael: "how do we get into a situation where if one
+// customer has the same market choices as another, our brain/back ops is
+// able to realise that, and share the same data between multiple
+// consultants... maybe this could also save credits?" — this is the same
+// principle company_enrichment/company_contacts/annie_learned_sources
+// already use (an objective fact, once discovered, benefits every other
+// account researching the same market — see getLearnedSources's own header
+// above for that exact reasoning), extended up one more level: from "which
+// companies/sources are worth checking" to the actual signal EVENT itself
+// (the funding round, the leadership appointment, the live job posting).
+//
+// What gets pooled is deliberately narrow: the discovered FACT and Annie's
+// own factual/analytical reasoning about it (whyItMatters, candidateAngle,
+// benchStrengthAngle, whoToApproach, candidateProfile, likelyRoles) — never
+// introMessage, which is written to explicitly name one specific
+// recruiter's own firm ("their firm is called X") and can never be reused
+// for a different one. See personalizePoolHits below, which regenerates
+// introMessage (and re-voices the rest in this recruiter's own tone) fresh
+// for every consumer — the discovery is shared, the interpretation isn't.
+//
+// A signal is only ever pooled once genuinely new to the customer whose
+// scan found it (never a pool-hit consuming its own source), and matching
+// a pool entry back to a DIFFERENT customer later is based on whether that
+// customer's own profile overlaps the ORIGINAL discoverer's sectors/
+// locations (and, for a live_job entry specifically, functions too) — see
+// fetchSignalPoolMatches below.
+export const SIGNAL_POOL_SCAN_LIMIT = 300
+
+export async function writeToSignalPool(supabase, entries, ob) {
+  if (!supabase || !entries?.length) return
+  const sectorsHint = ob?.sectors || []
+  const locationsHint = ob?.locations || []
+  const functionsHint = ob?.functions || []
+  const rows = entries
+    .filter(e => e?.company && e?.headline)
+    .map(e => ({
+      dedup_key: normalizeKey(e.company, e.headline, e.sourceUrl),
+      entry_type: e.entryType === 'live_job' ? 'live_job' : 'signal',
+      signal_type: e.signalType || null,
+      company: e.company,
+      headline: stripAiArtifacts(e.headline),
+      why_it_matters: stripAiArtifacts(e.whyItMatters) || null,
+      source_url: e.sourceUrl || null,
+      source_label: e.sourceLabel || null,
+      event_at: toEventIso(e.eventDate),
+      who_to_approach: stripAiArtifacts(e.whoToApproach) || null,
+      appointed_name: e.appointedName || null,
+      title_keywords: Array.isArray(e.titleKeywords) ? e.titleKeywords.slice(0, 6) : [],
+      candidate_angle: stripAiArtifacts(e.candidateAngle) || null,
+      bench_strength_angle: stripAiArtifacts(e.benchStrengthAngle) || null,
+      candidate_profile: sanitizeCandidateProfile(e.candidateProfile),
+      likely_roles: sanitizeStringList(e.likelyRoles, 5),
+      sectors_hint: sectorsHint,
+      locations_hint: locationsHint,
+      functions_hint: functionsHint,
+      found_at: new Date().toISOString(),
+    }))
+  if (!rows.length) return
+  try {
+    // First discoverer wins on a dedup_key collision — the fact itself
+    // doesn't change based on who found it second, so there's nothing to
+    // update, only a no-op to skip.
+    const { error } = await supabase.from('signal_pool').upsert(rows, { onConflict: 'dedup_key', ignoreDuplicates: true })
+    if (error) console.error('[scanShared] signal_pool write-through failed:', error.message)
+  } catch (err) {
+    console.error('[scanShared] signal_pool write-through failed:', err.message)
+  }
+}
+
+// Reads recent global pool entries and filters, in JS, to ones this
+// specific customer's own profile could plausibly have found themselves —
+// at least one sector AND one location in common with whoever discovered
+// it (a live_job entry additionally needs a function in common, since a
+// specific open role's relevance is tied to a function in a way a
+// company-wide funding/leadership signal isn't). Filtering here rather
+// than via a jsonb containment query keeps this simple to read and test;
+// SIGNAL_POOL_SCAN_LIMIT keeps the read itself bounded regardless of how
+// large the pool grows, the same discipline LEARNED_PER_SECTOR_CAP applies
+// to annie_learned_sources above. existingKeys excludes anything this
+// customer already has on file (including a pool hit they already
+// consumed on an earlier round of the same chain), same set already
+// computed for the ordinary dedup check every scan does.
+export async function fetchSignalPoolMatches(supabase, ob, existingKeys, limit) {
+  if (!supabase || !limit) return []
+  const cutoff = new Date(Date.now() - SIGNAL_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString()
+  try {
+    const { data, error } = await supabase
+      .from('signal_pool')
+      .select('*')
+      .gte('found_at', cutoff)
+      .order('found_at', { ascending: false })
+      .limit(SIGNAL_POOL_SCAN_LIMIT)
+    if (error) {
+      console.error('[scanShared] signal_pool read failed:', error.message)
+      return []
+    }
+    const sectors = new Set(ob?.sectors || [])
+    const locations = new Set(ob?.locations || [])
+    const functions = new Set(ob?.functions || [])
+    const overlaps = (arr, set) => Array.isArray(arr) && arr.some(v => set.has(v))
+    const matches = (data || []).filter(row => {
+      if (existingKeys?.has(row.dedup_key)) return false
+      if (!overlaps(row.sectors_hint, sectors)) return false
+      if (!overlaps(row.locations_hint, locations)) return false
+      if (row.entry_type === 'live_job' && functions.size && !overlaps(row.functions_hint, functions)) return false
+      return true
+    })
+    return matches.slice(0, limit)
+  } catch (err) {
+    console.error('[scanShared] signal_pool read failed:', err.message)
+    return []
+  }
+}
+
+// Deliberately a MUCH cheaper call than the discovery call it's replacing
+// for these entries: no web_search tool (no search round-trips), a small
+// fixed token budget, one batched call covering every pool hit this run
+// instead of one call per signal. The expensive part — finding the fact in
+// the first place — already happened once, globally, when the first
+// customer's own scan discovered it; this only ever writes new prose
+// around an already-known, already-verified fact for whichever new
+// recruiter is seeing it for the first time. Returns entries shaped
+// exactly like a fresh AI discovery's raw output, so callers can merge
+// pool hits and freshly-discovered signals through the exact same
+// downstream path (buildEnrichedSignalRows) without a special case.
+//
+// Deliberately does NOT reserve its own Anthropic token budget here — both
+// callers (scan-now-background.js, intelligence-scan.js) already import
+// reserveAnthropicTokens directly for their own callAnthropic, and this
+// module intentionally never imports aiUsage.js itself (aiUsage.js already
+// imports FROM this file — alertIfConfigured — so importing back would be
+// a circular dependency between the two). Callers must reserve
+// POOL_PERSONALIZE_MAX_TOKENS themselves before calling this, exactly the
+// same shape as every existing call to callAnthropic already does.
+export const POOL_PERSONALIZE_MAX_TOKENS = 3000
+
+export async function personalizePoolHits(anthropicKey, poolHits, ob) {
+  if (!anthropicKey || !poolHits?.length) return []
+  const firmClause = ob?.firm_name ? ` by name (their firm is called "${ob.firm_name}")` : ' generically (no firm name is on file — do not invent one)'
+  const prompt = `You are Annie, an expert BD researcher for a recruitment firm.
+This recruiter's firm: introduce it${firmClause}.
+Communication tone: ${ob?.tone || 'professional'}.
+${ob?.writing_style ? `The recruiter's real writing style, follow this closely:\n${ob.writing_style}\n` : ''}
+Below are BD signals Annie already discovered and verified for other recruiters researching overlapping markets — the facts are already confirmed real, do not re-research, question, or change them. Your only job is to write THIS recruiter's own version of the outreach text for each one.
+
+${poolHits.map((h, i) => `Signal ${i}: company="${h.company}", headline="${h.headline}", signalType="${h.signal_type || 'n/a'}", factsSoFar="${h.why_it_matters || ''}", candidateAngleSoFar="${h.candidate_angle || ''}"`).join('\n')}
+
+For each signal (by its index), write:
+- whyItMatters: 1-2 sentences, plain natural prose, explaining what this news means for THIS recruiter's business right now — you may draw on factsSoFar's reasoning but write your own version in this recruiter's own tone. No citation markup or bracketed references.
+- introMessage: the BODY of a ready-to-send outreach message, 3 short paragraphs separated by a blank line, no greeting or sign-off at the start/end (the app adds those automatically using the real contact and recruiter names). Paragraph 1: a brief warm opening line (for signalType "leadership_change", instead congratulate them on the new role). Paragraph 2: introduces the recruiter's firm as above, states what this recruiter specialises in recruiting for tailored to this exact signal, explains the insight in plain language, names relevant regional experience, and closes on being a value-adding partner through the recruiter's candidate network. Paragraph 3: a short close simply asking for a call. Natural prose, no em dashes/en dashes as connectors, no template brackets, finished sendable text only.
+- candidateAngle: same intent as candidateAngleSoFar, rewritten in this recruiter's own voice, phrased as an opening gambit not a guarantee; leave blank if it doesn't call for one.
+- benchStrengthAngle: a positioning pitch naming 1-2 real, specific peer companies to ${'`company`'}, in this recruiter's own voice; leave blank if you cannot confidently name genuine ones.
+- whoToApproach: the specific person or role to approach and why.
+
+Return a single JSON array, one object per signal, each with exactly: { "index": <number>, "whyItMatters": "...", "introMessage": "...", "candidateAngle": "...", "benchStrengthAngle": "...", "whoToApproach": "..." }. Only return the JSON array, nothing else.`
+
+  try {
+    const resp = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: POOL_PERSONALIZE_MAX_TOKENS,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    }, 30000, 1)
+    if (!resp.ok) {
+      console.error('[scanShared] pool personalization call failed:', resp.status)
+      return []
+    }
+    const data = await resp.json()
+    const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
+    const parsed = extractJson(text)
+    return poolHits.map((h, i) => {
+      const p = parsed.find(x => x?.index === i) || {}
+      return {
+        entryType: h.entry_type,
+        company: h.company,
+        signalType: h.signal_type,
+        headline: h.headline,
+        whyItMatters: p.whyItMatters || h.why_it_matters || '',
+        sourceUrl: h.source_url,
+        sourceLabel: h.source_label,
+        eventDate: h.event_at ? h.event_at.slice(0, 10) : null,
+        whoToApproach: p.whoToApproach || h.who_to_approach || '',
+        appointedName: h.appointed_name || null,
+        titleKeywords: h.title_keywords || [],
+        introMessage: p.introMessage || '',
+        candidateAngle: p.candidateAngle || h.candidate_angle || '',
+        benchStrengthAngle: p.benchStrengthAngle || h.bench_strength_angle || '',
+        candidateProfile: h.candidate_profile || {},
+        likelyRoles: h.likely_roles || [],
+      }
+    })
+  } catch (err) {
+    console.error('[scanShared] pool personalization call failed:', err.message)
+    return []
+  }
+}

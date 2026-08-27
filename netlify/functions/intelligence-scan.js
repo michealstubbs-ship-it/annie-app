@@ -31,6 +31,10 @@ import {
   getLearnedSources,
   recordLearnedDiscoveries,
   splitLearnedEntries,
+  fetchSignalPoolMatches,
+  personalizePoolHits,
+  writeToSignalPool,
+  POOL_PERSONALIZE_MAX_TOKENS,
 } from './lib/scanShared.js'
 
 // Hard ceiling on how many NEW (never-seen-before) signals get enriched via
@@ -260,44 +264,78 @@ async function scanOneCustomer(ob, ctx) {
   const resourceCaps = resolveResourceCaps(tier)
 
   const recentCompanies = await fetchRecentCompanies(supabase, ob.user_id)
-  const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
-  // TheirStack fills the gap Adzuna leaves for UAE/GCC — see
-  // discoverTheirStackJobs's own header in scanShared.js. Only ever spends
-  // a credit for a customer whose locations actually include a market
-  // THEIRSTACK_COUNTRY_MAP covers, same "only pay for what's real" guard
-  // reserveApolloCredits already has for Apollo.
-  const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, ob.user_id, resourceCaps.theirStack)
-  const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
 
-  const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned }), supabase, { maxTokens: tierConfig.anthropicMaxTokens, maxUses: tierConfig.anthropicMaxUses, userId: ob.user_id, anthropicCaps: resourceCaps.anthropicTokens })
-  const { learned: learnedFound, rest: rawFound } = splitLearnedEntries(extractJson(text))
-  // Fire-and-forget on purpose — this is Annie's own research memory
-  // growing for next time (see getLearnedSources/recordLearnedDiscoveries's
-  // own headers), it has zero bearing on this customer's signals and
-  // should never slow this run down or fail it. recordLearnedDiscoveries
-  // already fails soft internally.
-  if (learnedFound.length) recordLearnedDiscoveries(supabase, learnedFound).catch(() => {})
-  // Enforce "replace, not supplement" here in code — see the function's own
-  // comment in scanShared.js for why this can't just be a prompt instruction
-  // alone.
-  const found = dropGenericHiringWhereLiveJobsExist(rawFound)
-  if (!found.length) {
-    // Log a preview so a zero-result customer is diagnosable from the log,
-    // not guessed at. See looksTruncatedByTokenLimit's own header — tells
-    // "genuinely nothing found" apart from "max_tokens cut the response
-    // off before it finished", which used to be indistinguishable here.
-    const preview = (text || '').trim().slice(0, 400)
-    const truncated = looksTruncatedByTokenLimit(text)
-    console.log('[intelligence-scan] nothing found for', ob.user_id, truncated ? '| LIKELY TRUNCATED BY max_tokens (raise anthropicMaxTokens for this tier if this keeps happening)' : '', '| raw response preview:', preview || '(empty response)')
-    return 0
+  // 2026-08-27, Michael: cross-customer signal pool — before spending an
+  // Anthropic web-search call rediscovering something from scratch, check
+  // whether another customer whose profile genuinely overlaps this one
+  // (same sector, same market — see fetchSignalPoolMatches in
+  // scanShared.js) already had it discovered and verified. Dedup against
+  // this customer's full signal history first, same as always (see
+  // fetchExistingDedupKeys's own comment) — just moved earlier so the pool
+  // check can use it too. A full pool hit (covers this run's whole
+  // MAX_SIGNALS_PER_RUN target) skips the AI call entirely; anything less
+  // falls straight through to the exact same discovery this function has
+  // always run, with the partial pool hit merged in as a free bonus —
+  // never a reason this customer gets less than today.
+  const existingKeys = await fetchExistingDedupKeys(supabase, ob.user_id)
+  const poolMatches = await fetchSignalPoolMatches(supabase, ob, existingKeys, MAX_SIGNALS_PER_RUN)
+  let poolPersonalized = []
+  if (poolMatches.length) {
+    const reserved = await reserveAnthropicTokens(supabase, ob.user_id, POOL_PERSONALIZE_MAX_TOKENS, resourceCaps.anthropicTokens)
+    if (reserved) {
+      poolPersonalized = (await personalizePoolHits(anthropicKey, poolMatches, ob)).map(e => ({ ...e, fromPool: true }))
+      if (poolPersonalized.length) {
+        console.log(`[intelligence-scan] signal pool contributed ${poolPersonalized.length} pre-verified signal(s) for`, ob.user_id, '- skipping fresh discovery for those')
+      }
+    } else {
+      console.log('[intelligence-scan] Anthropic daily token cap reached — skipping pool personalization for', ob.user_id, ', falling back to fresh discovery only')
+    }
   }
 
-  // Dedupe against this customer's full signal history BEFORE spending any
-  // Apollo credit, not after — see fetchExistingDedupKeys's own comment.
-  const existingKeys = await fetchExistingDedupKeys(supabase, ob.user_id)
-  const newSignals = found
-    .filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
-    .slice(0, MAX_SIGNALS_PER_RUN)
+  let newSignals
+  if (poolPersonalized.length >= MAX_SIGNALS_PER_RUN) {
+    newSignals = poolPersonalized.slice(0, MAX_SIGNALS_PER_RUN)
+  } else {
+    const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
+    // TheirStack fills the gap Adzuna leaves for UAE/GCC — see
+    // discoverTheirStackJobs's own header in scanShared.js. Only ever spends
+    // a credit for a customer whose locations actually include a market
+    // THEIRSTACK_COUNTRY_MAP covers, same "only pay for what's real" guard
+    // reserveApolloCredits already has for Apollo.
+    const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, ob.user_id, resourceCaps.theirStack)
+    const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
+
+    const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned }), supabase, { maxTokens: tierConfig.anthropicMaxTokens, maxUses: tierConfig.anthropicMaxUses, userId: ob.user_id, anthropicCaps: resourceCaps.anthropicTokens })
+    const { learned: learnedFound, rest: rawFound } = splitLearnedEntries(extractJson(text))
+    // Fire-and-forget on purpose — this is Annie's own research memory
+    // growing for next time (see getLearnedSources/recordLearnedDiscoveries's
+    // own headers), it has zero bearing on this customer's signals and
+    // should never slow this run down or fail it. recordLearnedDiscoveries
+    // already fails soft internally.
+    if (learnedFound.length) recordLearnedDiscoveries(supabase, learnedFound).catch(() => {})
+    // Enforce "replace, not supplement" here in code — see the function's own
+    // comment in scanShared.js for why this can't just be a prompt instruction
+    // alone. Pool hits are merged in first — mergeSignals isn't imported here
+    // (this file only ever had one AI call, unlike scan-now-background.js's
+    // several), so a plain array concat is enough; the downstream dedup
+    // filter below still catches the (rare) case where fresh discovery
+    // independently re-found the exact same event a pool hit already covers.
+    const found = dropGenericHiringWhereLiveJobsExist([...poolPersonalized, ...rawFound])
+    if (!found.length) {
+      // Log a preview so a zero-result customer is diagnosable from the log,
+      // not guessed at. See looksTruncatedByTokenLimit's own header — tells
+      // "genuinely nothing found" apart from "max_tokens cut the response
+      // off before it finished", which used to be indistinguishable here.
+      const preview = (text || '').trim().slice(0, 400)
+      const truncated = looksTruncatedByTokenLimit(text)
+      console.log('[intelligence-scan] nothing found for', ob.user_id, truncated ? '| LIKELY TRUNCATED BY max_tokens (raise anthropicMaxTokens for this tier if this keeps happening)' : '', '| raw response preview:', preview || '(empty response)')
+      return 0
+    }
+
+    newSignals = found
+      .filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
+      .slice(0, MAX_SIGNALS_PER_RUN)
+  }
 
   if (!newSignals.length) {
     console.log('[intelligence-scan] only duplicates found for', ob.user_id, ', skipping enrichment')
@@ -312,6 +350,13 @@ async function scanOneCustomer(ob, ctx) {
   // (see pickBestOrgMatch in scanShared.js).
   const rows = await buildEnrichedSignalRows(newSignals, { userId: ob.user_id, apolloKey, companiesHouseKey, supabase, logPrefix: '[intelligence-scan]', locationHints: ob.locations || [], apolloContactRetry: tierConfig.apolloContactRetry, apolloCaps: resourceCaps.apollo })
   if (!rows.length) return 0
+
+  // Write genuinely fresh discoveries through to the shared pool (see
+  // writeToSignalPool's own header in scanShared.js) so the next customer
+  // with an overlapping profile benefits from this run — never re-writes
+  // an entry that itself came from the pool. Best-effort, fails soft.
+  const freshDiscoveries = newSignals.filter(s => !s.fromPool)
+  if (freshDiscoveries.length) await writeToSignalPool(supabase, freshDiscoveries, ob)
 
   // Throwing here (rather than swallowing) is deliberate: this function's
   // caller already reports to error_logs and moves on to the next customer,

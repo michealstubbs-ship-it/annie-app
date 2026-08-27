@@ -41,6 +41,10 @@ import {
   getLearnedSources,
   recordLearnedDiscoveries,
   splitLearnedEntries,
+  fetchSignalPoolMatches,
+  personalizePoolHits,
+  writeToSignalPool,
+  POOL_PERSONALIZE_MAX_TOKENS,
 } from './lib/scanShared.js'
 
 // How many sector groups to research in parallel.
@@ -334,6 +338,41 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   // of only reacting after the fact.
   const noAdzunaCoverage = mapLocationsToAdzunaCountries(ob.locations).length === 0
 
+  // 2026-08-27, Michael: cross-customer signal pool — this is round 1,
+  // which is also this account's very first scan ever, so it's exactly
+  // the "first day sign up" moment this was built for. Before spending
+  // anything on fresh discovery, check whether another customer whose
+  // profile genuinely overlaps this one (same sector, same market — see
+  // fetchSignalPoolMatches in scanShared.js) has already had a real signal
+  // discovered and verified today. If the pool alone already covers this
+  // account's whole feed target, skip the parallel sector-group discovery
+  // entirely — this account gets a populated dashboard in the time it
+  // takes one small, no-web-search personalization call to run, instead of
+  // waiting on however long several parallel 90-120s web-search calls take.
+  // If the pool falls short, nothing here changes: the full discovery pass
+  // below still runs exactly as it always has, with any pool hits merged
+  // in afterwards as bonus signals on top — never a reason this account
+  // gets LESS than it would have gotten today.
+  const { data: existingRows } = await supabase.from('intelligence_signals').select('dedup_key').eq('user_id', userId)
+  const existingKeys = new Set((existingRows || []).map(r => r.dedup_key))
+  const poolMatches = await fetchSignalPoolMatches(supabase, ob, existingKeys, tierConfig.feedSignalTarget)
+  let poolPersonalized = []
+  if (poolMatches.length) {
+    const reserved = await reserveAnthropicTokens(supabase, userId, POOL_PERSONALIZE_MAX_TOKENS, resourceCaps.anthropicTokens)
+    if (reserved) {
+      poolPersonalized = (await personalizePoolHits(anthropicKey, poolMatches, ob)).map(e => ({ ...e, fromPool: true }))
+      if (poolPersonalized.length) {
+        console.log(`[scan-now] signal pool contributed ${poolPersonalized.length} pre-verified signal(s) for`, userId, '- skipping fresh discovery for those')
+      }
+    } else {
+      console.log('[scan-now] Anthropic daily token cap reached — skipping pool personalization for', userId, ', falling back to fresh discovery only')
+    }
+  }
+  if (poolPersonalized.length >= tierConfig.feedSignalTarget) {
+    const capped = dropGenericHiringWhereLiveJobsExist(poolPersonalized).slice(0, MAX_TOTAL_SIGNALS)
+    return { groups: [ob.sectors || []], capped, broadened: false, broadenPreview: null, noAdzunaCoverage, poolContribution: poolPersonalized.length }
+  }
+
   // Fetched once per scan, reused across every sector-group call and the
   // broaden pass below — see getLearnedSources's own header for why this
   // is a single shared, cross-account table rather than a per-call lookup.
@@ -423,6 +462,14 @@ async function runResearchPhase(ob, tierConfig, ctx) {
     }
   }
 
+  // Merge in any pool hits that fell short of covering the full target on
+  // their own (see the pool check above this function's group calls) — a
+  // partial pool match is still a real, free bonus signal layered on top
+  // of full discovery, never a reason to discover less. mergeSignals'
+  // sourceUrl-based dedup means a company the fresh discovery also
+  // independently re-found just collapses to one entry, not two.
+  if (poolPersonalized.length) merged = mergeSignals([merged, poolPersonalized])
+
   // Enforce "replace, not supplement" deterministically in code, once, on
   // the final merged list — rather than trusting every individual AI call
   // (several parallel sector-group calls plus a possible broaden pass, none
@@ -446,7 +493,7 @@ async function runResearchPhase(ob, tierConfig, ctx) {
     recordLearnedDiscoveries(supabase, learnedEntries).catch(() => {})
   }
 
-  return { groups, capped, broadened, broadenPreview, noAdzunaCoverage }
+  return { groups, capped, broadened, broadenPreview, noAdzunaCoverage, poolContribution: poolPersonalized.length }
 }
 
 // Real, current progress for this account against its tier's targets —
@@ -475,7 +522,7 @@ async function checkTierProgress(supabase, userId) {
 // signals, enriches what's genuinely new, and writes it. Returns the rows
 // actually written (may be empty) and any write error.
 async function enrichAndWriteSignals(capped, ctx) {
-  const { userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints, apolloContactRetry, apolloCaps } = ctx
+  const { userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints, apolloContactRetry, apolloCaps, ob } = ctx
 
   // Dedupe against this customer's existing signals BEFORE spending Apollo
   // credits, not after. For a brand new account this set is normally empty,
@@ -498,6 +545,17 @@ async function enrichAndWriteSignals(capped, ctx) {
   // — see pickBestOrgMatch in scanShared.js for the full reasoning behind
   // why this exists (a real wrong-company match this fixes).
   const rows = await buildEnrichedSignalRows(newEntries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix: '[scan-now]', locationHints, apolloContactRetry, apolloCaps })
+
+  // 2026-08-27: write genuinely fresh discoveries through to the shared
+  // cross-customer pool (see writeToSignalPool's own header in
+  // scanShared.js) so the NEXT customer with an overlapping profile can
+  // benefit from this exact scan — never re-writes an entry that itself
+  // came from the pool (fromPool), since that's already there and
+  // re-discovering nothing new about it. Best-effort by design (fails soft
+  // internally) — a pool write hiccup should never affect this customer's
+  // own scan succeeding.
+  const freshDiscoveries = newEntries.filter(s => !s.fromPool)
+  if (freshDiscoveries.length) await writeToSignalPool(supabase, freshDiscoveries, ob)
 
   // The exact bug that made a live customer's first scan report success
   // with zero signals actually written: the upsert's own `error` was never
@@ -572,15 +630,54 @@ function fireNextRound(userId, round, chainStartedAt) {
     reportServerError('scan-now-background', new Error(msg), { userId, stage: 'chain-fire', round }).catch(() => {})
     return
   }
-  fetch(`${baseUrl}/.netlify/functions/scan-now-background`, {
+
+  // 2026-08-27 audit fix: found via a 19-scenario staged first-scan audit —
+  // 4 Growth-tier scans fired within ~15s of each other (same kind of burst
+  // a real marketing push or a few signups from the same company minutes
+  // apart could cause) all froze forever at round 1 with zero signals, and
+  // NOTHING was written to error_logs anywhere. Root cause: this call was
+  // only ever guarded against the fetch() PROMISE rejecting (a DNS/network
+  // failure) — it never checked the response it got back. Netlify's own
+  // gateway rejecting the request under a concurrent-invocation burst
+  // (a 429/503) resolves fetch() normally rather than throwing, so that
+  // failure mode was completely invisible: the chain just silently stopped,
+  // and scan-status.js's own staleness check was the only thing that ever
+  // surfaced it, many minutes later, with no root cause attached. One
+  // immediate retry (still inside the same unawaited promise chain this
+  // function already relies on completing post-return — no new timer,
+  // nothing this runtime hasn't already proven it lets finish) covers the
+  // realistic case: a momentary burst that's very likely gone by the retry.
+  // A repeat failure now reports exactly like every other failure path in
+  // this file, instead of vanishing.
+  const attemptFire = () => fetch(`${baseUrl}/.netlify/functions/scan-now-background`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-scan-secret': INTERNAL_SCAN_SECRET },
     body: JSON.stringify({ userId, round, chainStartedAt }),
+  })
+
+  attemptFire().then(resp => {
+    if (resp.ok) return
+    const msg = `chain continuation for round ${round} got HTTP ${resp.status} for ${userId} — retrying once`
+    console.error('[scan-now]', msg)
+    return attemptFire().then(retryResp => {
+      if (retryResp.ok) return
+      const retryMsg = `chain continuation for round ${round} got HTTP ${retryResp.status} for ${userId} on retry — giving up (this account will stop short of its tier target)`
+      console.error('[scan-now]', retryMsg)
+      return reportServerError('scan-now-background', new Error(retryMsg), { userId, stage: 'chain-fire', round })
+    })
   }).catch(err => {
     console.error('[scan-now] failed to fire round', round, 'for', userId, ':', err.message)
     reportServerError('scan-now-background', err, { userId, stage: 'chain-fire', round }).catch(() => {})
   })
 }
+
+// Exported solely so the retry/report behavior above can be unit tested
+// directly against a mocked global.fetch — everything else in this file is
+// tested through the handler (see this file's test header), but reaching
+// fireNextRound that way would mean also mocking the entire research
+// pipeline (Apollo/Adzuna/Anthropic), which is scanShared.js's own tested
+// territory, not this file's.
+export { fireNextRound }
 
 export default async (req) => {
   if (req.method !== 'POST') return
@@ -760,9 +857,9 @@ export default async (req) => {
     // additional, wider-net call per round — see runAdditionalRound's own
     // header for why it's deliberately cheaper than repeating round 1's
     // full parallel sweep every time.
-    let groups, capped, broadened, broadenPreview, noAdzunaCoverage
+    let groups, capped, broadened, broadenPreview, noAdzunaCoverage, poolContribution
     if (round === 1) {
-      ;({ groups, capped, broadened, broadenPreview, noAdzunaCoverage } = await runResearchPhase(ob, tierConfig, {
+      ;({ groups, capped, broadened, broadenPreview, noAdzunaCoverage, poolContribution } = await runResearchPhase(ob, tierConfig, {
         userId, anthropicKey, apolloKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase, startedAt, resourceCaps,
       }))
     } else {
@@ -776,6 +873,11 @@ export default async (req) => {
       broadened = true
       broadenPreview = capped.length ? null : (rawText || '').trim().slice(0, 400)
       noAdzunaCoverage = mapLocationsToAdzunaCountries(ob.locations).length === 0
+      // Pool check only runs on round 1 (see runResearchPhase) — by round 2+
+      // the account already has real coverage from round 1 and is chasing
+      // gaps, a narrower case where a fresh pool re-check is low value
+      // relative to the added complexity; scoped out deliberately.
+      poolContribution = 0
     }
 
     if (!capped.length) {
@@ -789,7 +891,7 @@ export default async (req) => {
     // it — see enrichAndWriteSignals's own comment. Safe to call even when
     // capped is empty (newEntries just resolves to []).
     const { rows, writeError } = await enrichAndWriteSignals(capped, {
-      userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints: ob.locations || [], apolloContactRetry: tierConfig.apolloContactRetry, apolloCaps: resourceCaps.apollo,
+      userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints: ob.locations || [], apolloContactRetry: tierConfig.apolloContactRetry, apolloCaps: resourceCaps.apollo, ob,
     })
 
     // Real, current progress against this account's tier targets — see
@@ -847,6 +949,13 @@ export default async (req) => {
       sectorsScanned: ob.sectors || [],
       groupsRun: groups.length,
       broadened,
+      // 2026-08-27: purely observational, for measuring the cross-customer
+      // signal pool's real-world impact — how many of this round's signals
+      // came from another customer's overlapping-profile scan rather than
+      // fresh discovery. 0 on every round after round 1 (see the pool-check
+      // scoping note above) and 0 whenever no pool hit matched, same as
+      // today for any account with no overlap yet.
+      poolContribution: poolContribution || 0,
     })
   } catch (err) {
     console.error('[scan-now] failed for', userId, err.message)
