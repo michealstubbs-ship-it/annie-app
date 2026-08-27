@@ -1,0 +1,37 @@
+Third-pass audit: fix regressions found in round 2's own fixes
+
+Ran a third adversarial review, same methodology as round 2 but now aimed
+at round 2's diff itself (commit c-round2) rather than round 1's. Also
+confirmed, via a codebase grep prompted by a direct question, that the
+"Today's BD Actions v2" feature set (funding/expansion/leadership/live_job
+whitelist, mandatory contacts, News tab, persistent AI-pitch pill) is fully
+built and already live — an earlier claim in this session that it was
+unbuilt was wrong and has been corrected. This commit is what the round-3
+review found worth fixing; it does not touch v2 itself, which needed no
+changes.
+
+- Pipeline.jsx: same bug class round 2 itself fixed in Settings.jsx, missed
+  here — a single `error` state backed both the page-level list banner and
+  the Add/Edit modal's local banner. A load failure and a save-validation
+  failure could each show behind or on top of the wrong surface, and
+  neither was cleared when the other's action later succeeded. Split into
+  `listError` (load/delete, page-level banner) and `saveError`
+  (validation/save, modal-local banner, now explicitly cleared whenever the
+  modal opens or closes so a previous save error can never linger behind a
+  fresh Add Deal form).
+- jsonExtract.js: the array-of-objects shape guard round 2 added to stop a
+  malformed real array from being silently replaced by an unrelated later
+  array was correct for the signal-extraction callers, but wrong for
+  buildCandidatePitchPrompt's two callers (useTodaysActions.js and
+  TodaysActions.legacy.jsx), which explicitly ask the model for an array of
+  plain strings, not objects. That guard rejected every legitimate pitch
+  response, silently zeroing the "Annie's read" candidate-pitch pill on
+  every single Today's Actions load since round 2 shipped — a real,
+  always-triggering regression, not a hypothetical. extractJson now takes
+  an optional `shape` ('object', unchanged default, or 'string'); both
+  pitch call sites now pass `{ shape: 'string' }` explicitly. The
+  malformed-real-array-vs-later-unrelated-array protection from round 2 is
+  preserved for both shapes.
+
+Full test suite (722 tests, up from 717 — 5 new shape-option cases) and the
+production build both pass. No SQL migrations in this round.

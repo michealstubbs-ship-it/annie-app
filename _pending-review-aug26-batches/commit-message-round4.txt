@@ -1,0 +1,78 @@
+Pre-launch readiness pass: RLS sweep, third-party outage handling,
+monitoring/alerting inventory, live E2E walkthrough, rollback check, and a
+4th adversarial audit against round 3's own fixes
+
+Ran the full set of pre-go-live checks: an RLS policy sweep across every
+table (all admin RPCs correctly gate on is_admin internally, the
+"no-policy" tables are all backend-only, my_active_team_ids is correctly
+scoped to auth.uid() — no changes needed), a review of how Apollo/
+TheirStack/Anthropic/Stripe failures are handled, a live walkthrough of the
+real logged-in user journey (Overview -> Today's Actions -> Intelligence
+Feed incl. the News tab -> Pipeline -> Billing, zero console errors), a
+rollback-plan check (netlify.toml already gates every deploy on the full
+test suite passing first, confirmed), and a 4th adversarial review of round
+3's own diff. This commit is what those checks found worth fixing.
+
+- Pipeline.jsx: round 3 split the shared error state into listError/
+  saveError, but save() is async and every way to dismiss the modal
+  (Cancel/Escape/backdrop/x) closes it synchronously — if a save was still
+  in flight when the user dismissed the modal, its eventual failure called
+  setSaveError on a banner that no longer renders, so the error vanished
+  with nobody ever seeing it; worse, if the user then immediately opened a
+  DIFFERENT deal's edit form before that stale save resolved, its error
+  could land on the new, unrelated form. Added a save-attempt token that
+  invalidates the instant the modal closes or reopens for a different deal;
+  a stale save's failure now surfaces via the always-visible listError
+  banner instead of vanishing or misattributing, and `saving` is reset on
+  every open/close so a stranded in-flight save can never leave a freshly
+  opened modal's Save button permanently disabled.
+- Apollo credit reservations never had a release-on-failure path anywhere
+  in the codebase — unlike TheirStack, which got exactly this fix earlier
+  the same day. A timeout, 429, 500, or expired/rotated key still
+  permanently cost credits against both the per-customer and platform-wide
+  daily caps, exactly as if the call had succeeded — during a real Apollo
+  outage this made the platform-wide cap exhaust FASTER than normal
+  operation, throttling every other customer's genuine usage on top of the
+  outage itself. Added releaseApolloCredits (mirrors releaseTheirStackCredits)
+  and wired it into every real Apollo call site's failure paths:
+  discoverHotCompanies, verifyContact's search call (both lookupContact and
+  lookupContactByName), both functions' email-reveal calls, enrichCompany,
+  and apollo-enrich-companies.js's own direct call. New migration:
+  supabase-migrations/2026-08-26-apollo-credit-release.sql (already applied
+  directly to production).
+- apollo-enrich-companies.js's own direct Apollo fetch was the one Apollo
+  call site in the codebase still using a bare fetch() with no
+  AbortController-backed timeout, unlike every other Apollo call — a true
+  hang there had nothing forcing it closed. Routed through the same
+  fetchWithRetry every other Apollo call site already uses.
+- chat.js's direct Anthropic call had the same gap — the one Anthropic call
+  site with no timeout guard, unlike the scan pipeline's callAnthropic. A
+  stalled network path during an Ask Annie / support-widget / writing-
+  style-analyser message could hang indefinitely with no error ever
+  surfaced. Routed through fetchWithTimeout (60s).
+
+Verified separately (no code change, verification only):
+- Confirmed via pg_get_functiondef that every admin RPC the security
+  advisor flags as callable by authenticated/anon correctly raises
+  'Not authorized' unless profiles.is_admin is true, and
+  my_active_team_ids correctly scopes to auth.uid().
+- Live browser walkthrough of the real logged-in journey end to end,
+  reading console messages at every step — zero errors, News tab (v2)
+  confirmed live and correctly separating M&A/regulatory/commentary from
+  BD Actions.
+- Confirmed netlify.toml's build command is `npm test && npm run build`
+  for production, deploy-preview, AND branch-deploy contexts, so a real
+  regression can't reach production even if a future push skips running
+  tests by hand.
+- Monitoring/alerting inventory (informational, not a code change): a real
+  Slack-webhook spike alert already exists (error-rate-monitor.js, hourly,
+  20 errors/hr aggregate threshold) plus targeted alerts for zero-signal
+  scans and credit-cap hits; Sentry is wired in conditionally on
+  SENTRY_DSN being set in Netlify's env (not verifiable from this repo);
+  the only place to see raw error data is the admin-gated Insights page
+  (pull, not push). Flagged to Michael as an area worth his own judgment
+  call, not something this pass changed.
+
+Full test suite (734 tests, up from 722 — 12 new: releaseApolloCredits
+unit tests, enrichCompany/verifyContact/apollo-enrich-companies release-
+on-failure tests) and the production build both pass.

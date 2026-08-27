@@ -1,0 +1,80 @@
+Second-pass audit: fix regressions found in round 1's own fixes
+
+After the "fix everything, High through Low" pass (commit 78deaef), I ran a
+second adversarial review specifically against that diff itself — treating
+my own fixes as new, unreviewed code rather than re-confirming the original
+bugs were fixed. Also ran two real concurrency races (team-invite seat cap,
+stripe-webhook event dedup) against disposable production data and verified
+both held under an actual race, not just in the unit tests. This commit is
+what that review found worth fixing.
+
+- stripe-webhook.js: the new release-reservation-on-failure delete used
+  `.then(() => {}, () => {})`, which only catches a thrown rejection — a
+  query-level failure (RLS denial, a transient Postgres error) resolves
+  normally with `{ error }` set and vanished silently. If that release then
+  genuinely failed, the reservation stayed in place forever and a real
+  Stripe retry would be wrongly treated as "already processed." Now checked,
+  logged, and reported.
+- scan-now-background.js: one status write (the rescan-cooldown guard) still
+  used `startedAt` instead of `chainStartedAt` like every other write in the
+  file — harmless today (the two are numerically identical on the only path
+  that reaches it), but not guaranteed to stay that way. Made consistent.
+- Overview.jsx: the onDone callback added in round 1 now calls the page's
+  full load() from a background scan-poll, but load() itself had no
+  try/catch at all — a thrown Supabase error (exactly the kind round 1
+  itself made these functions start throwing) would leave "Needs your
+  attention" frozen on "Loading..." forever, silently, mid-session, with no
+  error anywhere. Also added a request-token guard so an in-flight
+  mount-load and a newer scan-triggered load can't overwrite each other out
+  of order.
+- useTodaysActions.js / IntelligenceFeed.jsx: round 1 added error banners
+  for failed writes (mark done / mark seen / mark actioned / add to
+  actions), but nothing ever cleared them on a later success — one
+  transient failure left a stale error message showing indefinitely even
+  after the next action succeeded. Now cleared on success.
+- Pipeline.jsx: round 1's Company-required validation set an error message,
+  but the page-level error banner sits behind the Add Deal modal's overlay
+  — invisible while the modal is open. A whitespace-only company (passes
+  the native `required` check, fails the .trim() check) made Save silently
+  do nothing with no visible reason. Added an error banner inside the modal
+  itself.
+- Settings.jsx: round 1's two new write-error checks (paste-and-analyse,
+  save style profile) shared one error state rendered via two separate
+  banners — any single error showed up twice, and a save failure
+  specifically rendered its copy next to the unrelated "paste messages"
+  box, implying that had also failed. Split into two states so each error
+  renders once, next to the control it actually belongs to.
+- jsonExtract.js: the narration-before-array fix in round 1 (retry the next
+  '[' on a failed parse) had two real problems. First, a genuine correctness
+  regression: if the real (first) array was malformed but a later bracketed
+  aside in the same text happened to be independently valid JSON, it would
+  silently return that unrelated array instead of failing safely to [] —
+  worse than the bug it fixed. Now a parsed candidate is only accepted if
+  it's an array of objects (or empty), the one shape every real caller
+  wants, so a stray array of strings is treated as a failed candidate.
+  Second, a performance regression: a pathological string dominated by
+  unclosed '[' characters (a real LLM repetition-loop failure mode, and
+  exactly what scanShared.js's looksTruncatedByTokenLimit uses this
+  function to diagnose) forced one full rescan per bracket — O(n^2),
+  measured at ~25 seconds on a 100KB adversarial string. Fixed with two
+  cheap bounds: bail immediately if there's no ']' anywhere left to close
+  against, and a hard cap on retry attempts.
+
+Verified separately (no code change, verification only):
+- Fired two genuinely concurrent calls at the team-invite seat-cap RPC
+  against a disposable test team at its seat limit — exactly one succeeded,
+  the advisory-lock serialization held under a real race.
+- Fired two concurrent inserts of the same event_id at stripe_webhook_events
+  — the second correctly hit the unique-constraint violation the dedup
+  logic depends on.
+- Confirmed get_admin_opex's new TheirStack line and the underlying
+  platform-total tables return real, correctly-joined data in production.
+- Confirmed the free-month redemption-count query runs cleanly against the
+  new column with the exact filter start-trial-checkout.js uses.
+- Browser smoke test against the live, already-deployed app: Pipeline's
+  required-field validation genuinely blocks submission, Intelligence Feed
+  and Contacts load clean with no console errors under the new error-
+  handling paths, Billing's normal resubscribe flow is unaffected.
+
+Full test suite (717 tests, up from 712) and the production build both
+pass.

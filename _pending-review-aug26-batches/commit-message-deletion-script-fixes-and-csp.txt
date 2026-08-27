@@ -1,0 +1,84 @@
+Fix real bugs in the deletion runbook found by adversarial review + live
+testing; close a live CSP gap breaking Turnstile
+
+Two independent follow-ups from the same audit pass, bundled together since
+both are small and both landed the same day:
+
+1. scripts/team-data-request.mjs — an independent adversarial review of
+   yesterday's new deletion runbook found several real bugs, and running the
+   actual script end-to-end against a disposable Supabase branch (seeded
+   with a realistic 2-member team across every affected table, then really
+   deleted) confirmed the fixes work and surfaced nothing further:
+
+   - countRows() hardcoded 'id' as the column to select for its exact-count
+     query, but anthropic_usage/apollo_usage/theirstack_usage/
+     chat_rate_limit have no 'id' column at all (composite primary keys) —
+     the dry-run's row count silently errored for exactly those 4 tables.
+     Now selects the same column being filtered on, which is guaranteed to
+     exist by construction.
+   - The header comment's central premise — "no public.* table has a
+     foreign key to auth.users" — was wrong, checked directly against
+     pg_constraint this time rather than trusted from a prior read of
+     migration files. Most tables DO cascade; support_messages is the one
+     real exception. Corrected the comment; the delete order itself needed
+     no change, since it was already deleting explicitly regardless.
+   - Stripe cancellation checked `err.code === 'resource_missing'` to treat
+     "already canceled" as a safe no-op on re-run — that's the wrong error
+     shape for that case (Stripe returns invalid_request_error for an
+     already-canceled-but-still-existing subscription, not
+     resource_missing), so the exact partial-failure re-run scenario the
+     comment claimed was safe would have falsely aborted. Now checks the
+     subscription's actual status before deciding whether to cancel it.
+   - The per-member deletion loops (chat_messages, profiles, the final
+     auth.users removal, etc.) reused the membership list captured before
+     the 5-second abort window, not re-checked after it — a member added
+     during that window would keep their login while their team_members
+     row still got deleted by the team-scoped pass; a member removed during
+     that window would still have their real account deleted here even
+     though they'd already left. Now re-fetches membership fresh after the
+     wait.
+   - The dry-run's "Members (N): ..." line could show a count that didn't
+     match the id list right next to it (team_members includes pending,
+     not-yet-accepted invites with no user_id) — the exact line the
+     script's own README points at as the safeguard against taking down a
+     multi-person team by mistake. Now prints both numbers explicitly and
+     calls out pending invites separately.
+   - Two defensive additions found worth making while in there: the Stripe
+     subscription lookup now also checks by each member's user_id, not
+     team_id alone (subscriptions.team_id is nullable with no constraint
+     forcing it set — not observed as a live problem today, but nothing
+     stops it); export mode's row fetches are now paginated instead of one
+     unbounded select, since PostgREST's default row cap could otherwise
+     silently truncate a large team's export with no error, which is
+     exactly wrong for a script whose job is answering "give me all my
+     data."
+
+   Verified for real, not just read: created a disposable Supabase branch,
+   seeded a 2-member team (plus one pending invite) with a row in every
+   TEAM_SCOPED_TABLES/USER_SCOPED_TABLES table, ran dry-run, export, the
+   --user-id resolution path, both confirm-guard rejection cases, and a
+   real --mode=delete — every table zeroed correctly in the right order,
+   company_contacts (the shared cache) was untouched, and a re-run against
+   the now-gone team failed cleanly with no partial state. The only failure
+   was the final auth.users deletion itself, which requires real
+   service-role credentials no tool in this environment exposes — the
+   script's own error handling for that failure mode is what actually ran,
+   and it behaved exactly as designed (clear message, continues, doesn't
+   crash). Branch deleted immediately after.
+
+2. netlify.toml — a security-header review found the CSP was missing
+   challenges.cloudflare.com entirely. This is live, not theoretical:
+   Login.jsx already requires the Turnstile widget on signup in production,
+   and Turnstile.jsx injects its script and renders its challenge in an
+   iframe from that host — the CSP as it stood would have silently blocked
+   both, breaking signup rather than failing loudly. Added it to script-src/
+   connect-src/frame-src. Also added Strict-Transport-Security and
+   Permissions-Policy (both missing entirely — Netlify's automatic TLS does
+   not inject HSTS on its own) and object-src/base-uri/form-action
+   hardening on top of the existing default-src, standard practice that
+   costs nothing given this app never uses plugin content, a <base> tag, or
+   submits a form anywhere but itself.
+
+Full test suite (734 tests, unaffected — this is an admin script plus a
+deploy-config file, neither touches app code) and the production build both
+still pass. No migration to apply.

@@ -1,0 +1,93 @@
+Align pricing copy with the real product; fix a real company-dedup bug
+
+Two things, from Michael's direct follow-up on the customer-journey audit.
+
+1) Pricing/marketing copy vs. code — resolved, not just flagged
+
+Last round flagged three pricing-page claims with no matching code and
+asked whether to build them or fix the copy. Found the answer already
+sitting in the codebase itself, dated the same day as this work:
+SupportWidget.jsx's system prompt was rewritten on 2026-08-26 specifically
+because its old version "described features that don't exist" — and its
+rewritten fact base already states plainly that there's no target-company
+list, and that LinkedIn re-import works "for anyone, regardless of plan."
+support-escalate.js's own header is equally direct: "There is no ticketing
+system yet — per Michael's own call (2026-08-26), this goes straight to
+his real inbox... since he's the entire support team today." All three
+questions were already decided; the pricing page and entitlements.js just
+hadn't been updated to match.
+
+- src/lib/pricing.js: removed "LinkedIn re-import on demand" and "Priority
+  support" from Growth's feature list (neither is real — re-import has no
+  tier check anywhere in the code, and support has no priority queue when
+  every ticket goes to the same one inbox). Removed "Shared target-company
+  list" from Team's feature list — replaced with "Shared CRM across your
+  team," which is real and already Team-exclusive by construction (a solo
+  Starter/Growth account has no teammates to share with) but wasn't
+  actually listed as a selling point anywhere. Reworded Growth's research
+  bullet from "onboarding research pass" to "deeper, ongoing research
+  scans" — entitlements.js's own comment confirms the deeper budget
+  applies to the permanent background cron, not just a signup-day boost,
+  which the old wording undersold.
+- netlify/functions/lib/entitlements.js: removed the unused
+  linkedinReimportOnDemand flag from TIER_LIMITS entirely, rather than
+  leaving a dead gate with a misleading name sitting around for someone to
+  wire up later on the strength of its name alone.
+- src/components/SupportWidget.jsx: the system prompt had contradicted
+  itself — its top-line plan summary still sold Growth on "LinkedIn
+  re-import on demand" and "priority support" while its own more detailed
+  sections, a few paragraphs down, already said neither is tiered. Fixed
+  the summary to match the rest of the same prompt, and added an explicit
+  line so Annie's support chat corrects a customer directly if asked about
+  either as a paid perk, instead of contradicting itself depending which
+  part of its own knowledge it draws from.
+
+Login.jsx's "free trial, no credit card needed" line, flagged alongside
+these last round, wasn't touched — SupportWidget.jsx's own re-verified
+TRIAL & SIGNUP section already describes exactly this as the intended
+design (in-app signup is a no-card trial; only the marketing-site →
+Stripe path is card-gated), so the copy matches what's actually decided,
+not a bug.
+
+Marketing site pricing page (a separate repo, meetannie-deploy) wasn't
+touched here — flagging that it should get the same three corrections
+next time that site is worked on, so it doesn't drift back out of sync
+with the in-app Billing page.
+
+2) LinkedIn CSV import — real company-deduplication bug found and fixed
+
+Michael asked me to specifically re-verify the "two contacts from the same
+company, only one company record gets created" behavior. It doesn't
+always hold. runImport() in src/pages/LinkedInImport.jsx built its list of
+company names to create via `[...new Set(toImport.map(c => c.company))]`
+— a Set on the RAW company string from the CSV, then checked each of
+those raw names against existing companies with a single one-shot filter
+over the whole list. Two contacts in the same import batch whose CSV rows
+spelled the same company slightly differently ("Acme Trading" vs "acme
+trading," or a stray trailing space — both realistic in real LinkedIn
+export data) were treated as two different names by the Set, and the
+filter checked both against the same not-yet-updated snapshot of what
+already exists — so neither ever saw the other, both got queued, and the
+batch insert created two separate company rows for one real company.
+Confirmed against the live schema (no unique constraint on companies.name,
+only a plain non-unique index) that nothing at the database level would
+have caught this either.
+
+Both contacts still end up correctly linked to a real company afterward
+(companyMap's last-write-wins rebuild after the insert means they both
+point at whichever of the two rows got created last) — so nothing looked
+broken to a customer looking at their own contacts. But the other row sits
+in Companies with zero contacts forever, which is exactly the "same
+client never gets added twice" duplication Companies.jsx's own page copy
+promises can't happen.
+
+Fixed by deduplicating company names by their normalized (trimmed,
+lowercased) form up front, before anything gets checked against existing
+companies — every casing/whitespace variant of one company now collapses
+to a single canonical entry (the first one seen in the CSV) before the
+create-or-reuse decision is ever made, closing the gap for good rather
+than just for the cases already caught by the existing-company lookup.
+
+Full test suite (736 tests) and the production build both pass.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>

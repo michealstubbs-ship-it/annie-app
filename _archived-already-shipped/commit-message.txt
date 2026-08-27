@@ -1,0 +1,125 @@
+Line-by-line audit: fix everything found, High through Low
+
+Michael's instruction after the full-codebase audit: "Fix everything from
+High, Medium and then Low." This is that whole batch (the CRITICAL RPC
+lockdown, the parseIntEnv fix, and the free-trial/OpEx/contact-resolution
+fixes from the earlier commits on this branch are NOT included here --
+already delivered separately).
+
+HIGH
+- Turnstile bot-check was fully built (component + verify-turnstile.js) but
+  never actually wired into Login.jsx's signup flow -- both env vars were
+  already live in production, so this was a real, live gap with zero
+  upside from leaving it unwired. Now blocks signup until a challenge
+  passes.
+- team-invite.js's seat-cap check and the insert that used it were two
+  separate round-trips -- two concurrent invites for the last open seat
+  could both pass the check and both insert, going over the seat limit.
+  Fixed with two new atomic, per-team-locked RPCs (pg_advisory_xact_lock)
+  applied directly to production: team_invite_add_active_member /
+  team_invite_add_pending_member.
+- Billing.jsx routed a past_due/unpaid subscription (still live, Stripe
+  still retrying) through the same "Choose a plan to resubscribe" flow as a
+  genuinely cancelled one -- clicking it started a BRAND NEW Stripe
+  subscription instead of opening the billing portal that already handles
+  this correctly. Now shows a dedicated "update payment method" card
+  instead.
+- stripe-webhook.js: (a) the subscription update/delete handler assumed a
+  zero-row UPDATE sets `error` (it doesn't, in PostgREST) -- now checks the
+  actual returned row count via .select('id'); (b) the event-dedup check
+  was SELECT-then-INSERT-at-the-end, a real TOCTOU window for genuinely
+  concurrent Stripe redelivery -- now an atomic INSERT up front (event_id
+  is the table's PRIMARY KEY), with the reservation released on failure so
+  a genuine retry isn't blocked forever.
+
+MEDIUM
+- email.js's sendEmail silently dropped both the "Resend returned an
+  error" and "the SDK threw" cases -- now logs both (the "not configured"
+  no-RESEND_API_KEY case stays silent on purpose, that's expected in dev).
+- .env.example's documented defaults for the three daily resource caps had
+  drifted from entitlements.js's real values; updated, and documented the
+  previously-undocumented FREE_MONTH_MAX_REDEMPTIONS.
+- Settings.jsx's saveProfile/saveWritingStyle never checked the Supabase
+  write's own error -- showed "Saved!" even on a failed write. Now checked,
+  with an error banner.
+- scanShared.js's discoverTheirStackJobs reserved a flat `limit` (10)
+  credits before every call regardless of how many jobs actually came back
+  -- TheirStack bills per job returned, not per call. Added the missing
+  release half via a new theirstack_release_credits RPC (applied to
+  production), refunding the gap on every exit path.
+- scan-now-background.js: fireNextRound's two guard failures and its
+  fetch's own .catch() only ever did a bare console.error, unlike every
+  other failure path in this file, which explicitly calls reportServerError
+  per the file's own stated philosophy ("a bare console.error vanishes into
+  Netlify's own ephemeral logs"). Also added reporting to an internal
+  chain-continuation request that fails auth (an out-of-sync
+  INTERNAL_SCAN_SECRET), scoped so an ordinary unauthenticated browser hit
+  stays console-only as before.
+- scan-now-background.js: the very first status write of every round (plus
+  3 other terminal writes) used the per-invocation `startedAt` instead of
+  the whole chain's `chainStartedAt` -- for round 2+, this could briefly
+  overwrite the correct chain-start timestamp and delay scan-status.js's
+  own timeout detection.
+- Pipeline.jsx's "Add Deal" form had no validation on the required Company
+  field -- a blank company saved fine, producing an unidentifiable card,
+  and previously surfaced a raw database error instead of a friendly one.
+  Added the same required-field pattern already used in
+  ContactFormModal.jsx/JobFormModal.jsx (including making Save a real form
+  submit so the `required` attribute actually fires).
+- Several places optimistically confirmed a write ("Marked seen," "Added,"
+  "Marked done") without checking whether it actually succeeded: Intelligence
+  Feed's mark-seen/mark-actioned/add-to-actions, and Today's Actions'
+  mark-done. All four now check the real result and surface a failure
+  instead of silently drifting out of sync with the database.
+- Every frontend list-loading function (contacts, companies, candidates,
+  deals, jobs, meetings, tasks, signals, team activity -- 9 files) treated
+  a real Supabase error identically to "no rows," so an outage or
+  permissions issue looked exactly like an empty list everywhere in the
+  app. All now throw on a query-level error instead of silently falling
+  back to `data || []`; every page that loads through them now catches it
+  and shows a real error banner instead of a false empty state.
+
+LOW
+- useScanStatusPoll.js's header already claimed it replaced Overview.jsx's
+  and Settings.jsx's duplicated polling logic -- neither actually used it.
+  Both now do; the hook itself gained an onTick callback (for Overview's
+  live "N found so far" progress) and a generalized version of the
+  token-superseding guard Overview used to hand-roll itself.
+- Two cache-read spots in scanShared.js (the contact cache, the company
+  enrichment cache) checked for a Supabase error inconsistently or not at
+  all before treating a query-level failure as an ordinary cache miss --
+  now logged, matching the pattern already used elsewhere in the same
+  file. getLearnedSources had the same gap (error was checked, just never
+  logged).
+- AdminOverview's "Revenue by tier" chart approximated each tier's MRR as
+  `count * full monthly price`, ignoring annual-billing discounts entirely
+  and always showing Team at a flat 0%. summarizeAccounts now sums the
+  real, already-billing-interval-and-seat-aware per-row revenue
+  (monthlyRevenueFor) into a real per-tier total instead of a second, wrong
+  guess.
+- Overview's "Needs your attention" card didn't refresh when a background
+  scan poll found new signals -- it kept calling a narrower pollSignals()
+  that only touched the signal list, not the actual Today's Actions pool
+  computation. Now reruns the same full pipeline on a fresh scan result.
+- Fixed a dead ternary in IntelligenceFeed.jsx (both branches said
+  "Happened") and a scan-status.js timeout fallback that hardcoded 10
+  minutes instead of referencing SCAN_TIER_CONFIG.starter.maxWallClockMs
+  directly.
+- jsonExtract.js: narration appearing BEFORE the real JSON array, when that
+  narration itself contained a bracket character, made extraction give up
+  entirely -- it only ever tried the first '[' found. Now tries every '['
+  in order until one actually parses, instead of stopping at the first
+  failure.
+- Spot-checked every Supabase-advisor-flagged get_admin_*/get_error_logs/
+  get_support_* function plus my_active_team_ids: all ten admin-facing ones
+  correctly self-gate on is_admin and RAISE on failure (same pattern
+  already reviewed and accepted); my_active_team_ids is safe by
+  construction (filtered by auth.uid(), so an anon caller matches nothing).
+  No code change needed.
+
+Full test suite (712 tests) and the production build both pass. Every fix
+above with a matching test file has new or updated tests locking in the
+new behavior.
+
+All 5 new SQL migrations in this batch were applied directly to production
+during this session (not just committed to the repo).

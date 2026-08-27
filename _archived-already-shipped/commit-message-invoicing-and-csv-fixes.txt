@@ -1,0 +1,68 @@
+Build real, professional invoicing (PDF + email, bank details, role/candidate named) and a second CSV-import audit round
+
+INVOICING (new feature, Michael's explicit ask: "build the invoicing... name
+of the role and the candidate placed... professional... bank details...
+do it legit"):
+
+- Document-generation-and-email only, by design — Annie never charges a
+  card or creates a payment link, no money moves through Annie. The
+  invoice carries the firm's own bank details for the client to pay by
+  transfer, and "paid" is a status the recruiter sets themselves.
+- New Supabase tables (migration already applied to production):
+  invoicing_details (one row per team: business + bank details, default
+  currency/payment terms), invoices, invoice_line_items — team-scoped RLS
+  throughout, atomic next_invoice_number() RPC (gapless per-team sequence,
+  doesn't reset yearly, same UPDATE...RETURNING pattern as
+  apollo_reserve_credits).
+- netlify/functions/lib/invoicePdf.js: generateInvoicePdf() via pdf-lib
+  (new dependency — no headless browser, fits Netlify's ephemeral
+  runtime). Full A4 layout: header, bill-to, a PLACEMENT block explicitly
+  naming the role and the candidate placed, line items, totals, a
+  conditional bank-details block, notes/footer. Caught and fixed one real
+  layout bug by actually rendering a sample and looking at it: the bold
+  TOTAL DUE row overlapped its own value at the original column position.
+- netlify/functions/send-invoice.js: assigns the invoice number on first
+  send only, generates the PDF, emails it via Resend (email.js extended
+  with attachment support), marks the invoice sent. Uses the caller's own
+  RLS-scoped client throughout, not service-role, so "only your own team's
+  invoices" is enforced by the same RLS every other table already uses.
+- netlify/functions/download-invoice.js: same PDF, no email, for
+  preview/download (GET with the session token as a query param, since a
+  plain link navigation can't set an Authorization header).
+- Frontend: Invoices.jsx (list + status/actions), InvoiceFormModal.jsx
+  (Company -> Job [shows fee_value] -> Candidate ['placed' sorted first]
+  picker, auto-prefilled line item from the job's own fee, live total),
+  a new "Invoicing details" card in Settings.jsx, sidebar nav entry,
+  /dashboard/invoices route.
+- src/lib/invoiceCalc.js is the single source of truth for
+  subtotal/tax/total (integer-cents math), shared by the form and the PDF
+  so the two can never show different numbers for the same invoice.
+
+CSV / LinkedIn import — second deep-audit round:
+
+- Fixed a false-positive keyword-matching bug: plain .includes() against
+  short taxonomy keywords ('hr', 'ey', 'tax', 'oil', etc.) matched inside
+  unrelated words ("Bahrain", "Turkey") — replaced with a boundary-aware
+  matcher.
+- Added pagination past Supabase's default 1000-row select cap on the
+  companies dedup check.
+- Added contact-level dedup (linkedin_url/email) before insert, and made
+  both the 1000-row import cap and skipped-as-duplicate counts visible on
+  the completion screen instead of silent.
+- Fixed a swallowed profile-update error (now logged).
+- Closed a concurrent-double-import race: Promise.race's timeout can't
+  actually cancel the underlying import, so a second click after a
+  timeout message could start a real second import — a ref-based guard
+  now prevents that regardless of what the UI shows.
+
+Verification: 808 tests passing (up from 736 before this round), npm run
+build clean. New tests: invoiceCalc.test.js, invoices.test.js,
+invoicingDetails.test.js, send-invoice.test.js, download-invoice.test.js,
+invoicePdf.test.js (renders and decodes real PDF output, not just "it
+builds"), plus new cases in jobs.test.js/candidates.test.js/email.test.js.
+
+NOTE FOR DEPLOY: this adds a new npm dependency (pdf-lib). `npm install`
+must run before this builds locally — Netlify's own build already runs
+`npm install` from package.json/package-lock.json automatically, so a
+straight push-and-deploy needs nothing extra, but pull this locally first
+if you want to run/test it on your machine.

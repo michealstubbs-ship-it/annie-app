@@ -1,0 +1,53 @@
+Fix the same fire-and-forget bug client-side: 3 more scan-trigger call sites never checked the response status either
+
+Follow-up to the scan-chain-stall fix (see the previous commit). Michael
+asked whether the same logic that caught the server-side fireNextRound bug
+should be swept across the rest of the app -- it should, and it found
+exactly the same bug shape duplicated in three client-side call sites,
+all POSTing to the same scan-now-background endpoint:
+
+- src/pages/Onboarding.jsx  (kicks off a brand new account's first scan)
+- src/components/Settings.jsx  ("Run a new scan" button)
+- src/components/Overview.jsx  (dashboard "retry a thin scan" button)
+
+All three had their own copy of `fetch(...).catch(() => {})` -- only ever
+catching the fetch() PROMISE rejecting, never checking whether the
+response that came back was actually OK. Same gap, same real-world trigger
+(a Netlify gateway rejection under a concurrent-invocation burst), just on
+the client instead of the server.
+
+The client-side version of this bug is arguably worse than the server-side
+one: when the initial trigger silently fails, scan-status.js never even
+gets a status blob written for that user, so useScanStatusPoll's own
+window-timeout logic can't do anything smarter than eventually tell the
+customer the scan is "still running" -- when in fact it never started at
+all. There's no error to see anywhere; the dashboard just looks like a
+scan that's taking a long time.
+
+THE FIX: one new shared helper, src/lib/useScanStatusPoll.js's
+triggerScanNow(accessToken) -- does the POST, retries once on a non-OK
+response, and reports a repeat failure via reportClientError (same
+error_logs table the server-side reportServerError writes to) instead of
+letting it vanish. All three call sites now use this one helper instead of
+each carrying their own copy:
+
+- Settings.jsx and Overview.jsx now await it and show an inline error
+  ("Couldn't start a new scan just now. Please try again.") if it comes
+  back false, instead of silently doing nothing.
+- Onboarding.jsx calls it WITHOUT awaiting it, on purpose -- that screen's
+  whole design is to move the user on rather than block navigation on this
+  call, and that stays; it still gets the retry + error-reporting benefit,
+  it just doesn't gate the next screen on it.
+
+This generalizes across every market/function on the signup form by
+construction -- the bug was never about WHAT a scan searches for, only
+about whether the request to start one was ever checked for success, so
+there's nothing sector- or location-specific left to separately verify.
+
+New test: src/lib/useScanStatusPoll.test.js covers triggerScanNow directly
+(success, retry-then-success, retry-then-still-failing reports, and a
+genuine network-level throw reports) -- the hook itself (useScanStatusPoll)
+is untouched by this change and isn't covered here, since it needs a real
+DOM render environment this repo's test config doesn't provide.
+
+Verification: 816 tests passing (up from 812), npm run build clean.

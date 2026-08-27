@@ -1,0 +1,23 @@
+Fresh audit, prompted by Michael asking to double-check for anything the earlier line-by-line audit (26 Aug) missed. Two parts: (1) re-verified every one of that audit's 13 "not yet fixed" findings against the current code — all 13 are now genuinely fixed, no discrepancies found between docs and actual logic. (2) A new pass specifically over everything built SINCE that audit (invoicing, Ask Annie web search, the Government & Public Sector directory addition) — that code postdates the 26 Aug audit entirely, so it had never been reviewed this way. Found and fixed 3 real issues there:
+
+1. Ask Annie's web-search flag was trusted verbatim from the client. The actual "does this question need live search" keyword gate (shouldSearchWeb) only ever lived in Chat.jsx — chat.js itself just did `webSearch && {...}`. Anyone calling the endpoint directly (not through the UI) could set webSearch:true on every single message regardless of content, forcing real per-search Anthropic cost with zero gating. chat.js now re-derives this itself from the actual last user message (new netlify/functions/lib/chatWebSearch.js, a deliberate server-side twin of the frontend one — same "duplicated by design" pattern already used for verifyLeadershipChange across both scan files, rather than importing across the frontend/backend bundle boundary). 3 new tests cover: gated off when content doesn't warrant it even if requested, allowed on when it genuinely does, and never on when the client doesn't ask.
+
+2. download-invoice.js carried the caller's real Supabase session access token as a `?token=` URL query param, because a plain <a>/window.open() link can't set an Authorization header. That token is a full bearer credential, not scoped to this one download — anywhere that URL could be captured (Netlify/CDN access logs, browser history, a shared screenshot) leaked a token replayable against ANY authenticated endpoint in the app, not just invoice access. Fixed by switching to the same Authorization-header pattern (getAuthedClient) every other function already uses; the frontend now fetches the PDF as a blob with a real header and opens a local blob: URL instead of navigating a link with the token exposed. Test file rewritten to match the new auth contract (mocks getAuthedClient like send-invoice.test.js already does, rather than a raw token query param).
+
+3. Ask Annie's "Checked live just now" citation links rendered a citation's URL as an <a href> with no scheme check — React escapes the visible text but not the href attribute, so a non-http(s) value (e.g. javascript:) would execute on click if one ever reached that field. Citations come from Anthropic's own web-search tool, so this was defense-in-depth rather than a live exploit, but cheap to close: citations are now filtered to real http(s) URLs before rendering.
+
+Also reported, not yet fixed (lower severity / needs a decision, matching the same "report don't silently build" pattern the 26 Aug audit itself used):
+- send-invoice.js's invoice-number assignment is read-then-check, not atomic — two concurrent "Send" clicks on the same draft could each mint a distinct number and both email the client, gapping the sequence next_invoice_number was specifically designed to keep gapless. Same class of bug as the team-seat race already fixed elsewhere (team-invite.js's advisory-lock RPC) — would need the same pattern applied here.
+- invoicePdf.js has no pagination/overflow handling on its fixed single A4 page — a long address, many line items, or long notes could push content off-page or into the fixed footer, silently dropping something like the bank-details block.
+
+892/892 tests passing (3 new), production build clean.
+
+Files in this push:
+- netlify/functions/chat.js (server-side web-search gating)
+- netlify/functions/lib/chatWebSearch.js (new)
+- netlify/functions/download-invoice.js (header-based auth)
+- src/lib/invoiceApi.js (blob-based PDF fetch, no token in URL)
+- src/components/Invoices.jsx (updated to the new blob-based download)
+- src/components/Chat.jsx (citation href scheme check)
+- netlify/functions/tests/chat.test.js (3 new tests)
+- netlify/functions/tests/download-invoice.test.js (rewritten for the new auth contract)

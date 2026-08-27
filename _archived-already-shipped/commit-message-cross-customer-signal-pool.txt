@@ -1,0 +1,536 @@
+Add a cross-customer signal pool: share genuinely-discovered BD signals across overlapping-profile accounts, cut discovery cost, and seed new signups faster
+
+Michael's idea: "if one customer has the same market choices as another,
+our brain/back ops is able to realise that, and share the same data
+between multiple consultants... maybe this could also save credits? This
+could also potentially help with first day sign ups."
+
+This extends a pattern already live in this codebase at two other levels —
+company_enrichment/company_contacts (an objective company fact, once
+discovered, is reused by every account researching that company) and
+annie_learned_sources (which companies/sources are worth checking for a
+sector/market, grown by every account's own scan) — up one more level, to
+the actual signal EVENT itself: the funding round, the leadership
+appointment, the live job posting.
+
+WHAT'S SHARED, WHAT ISN'T: only the discovered FACT and Annie's own
+factual/analytical reasoning about it (why it matters, the candidate
+angle, the peer-company positioning, who to approach, the candidate
+profile) is pooled. introMessage is NEVER pooled — it explicitly names one
+specific recruiter's own firm ("their firm is called X") and can't be
+reused for a different one. A small, new, no-web-search Anthropic call
+(personalizePoolHits in scanShared.js) regenerates introMessage fresh, and
+re-voices the rest in the new recruiter's own tone/writing style, for
+every consumer of a pooled fact. Discovery is shared; interpretation
+isn't.
+
+HOW MATCHING WORKS: a pool entry carries the discovering customer's own
+sector/location/function selections as hints (not Apollo's own free-text
+industry classification, which uses a different taxonomy and would be an
+unreliable match key). A later, different customer's own scan only
+consumes a pool entry if their profile has real overlap: at least one
+shared sector AND one shared location, plus (for a live_job entry
+specifically, since a job posting's relevance is tied to a function in a
+way a company-wide funding/leadership signal isn't) at least one shared
+function.
+
+WHERE THIS IS WIRED IN (both scan entry points, scanShared.js has the
+actual shared logic):
+- scan-now-background.js, round 1 — this is also literally a brand new
+  account's first-ever scan, so the "help with first day sign ups" ask and
+  the cost-saving ask turn out to be the exact same code path. Before
+  running the expensive parallel sector-group discovery, check the pool
+  for fresh, overlapping, not-already-seen matches. A full pool hit (covers
+  this account's whole feed target on its own) skips the parallel sector-
+  group Anthropic web-search calls ENTIRELY for this round — this account's
+  first dashboard populates in the time it takes one cheap, few-seconds,
+  no-search personalization call to run, instead of however long several
+  parallel 90-120s web-search calls take. A partial or empty pool match
+  falls straight through to exactly the same discovery this file has
+  always run, with any partial pool hits merged in afterwards as a free
+  bonus signal — never a reason any account gets LESS than it would have
+  gotten today.
+- intelligence-scan.js, the recurring 12-hourly cron — same shape, scaled
+  to this file's smaller per-run signal cap (5): a full pool hit skips this
+  customer's one Anthropic call for this run, a partial hit merges in
+  alongside the normal single discovery call, unchanged.
+
+Every genuinely fresh discovery (not itself sourced from the pool) gets
+written through to the pool after enrichment, via a new signal_pool table
+(migration: supabase-migrations/2026-08-27-signal-pool.sql, applied to
+both staging and production already) — same RLS shape as
+company_enrichment/company_contacts (service-role writes only, readable by
+any authenticated customer). First discoverer wins on a duplicate — the
+fact doesn't change based on who found it second.
+
+New tests: netlify/functions/lib/scanShared.test.js covers
+writeToSignalPool (row shape, never includes intro_message, logs rather
+than throws on a write failure), fetchSignalPoolMatches (sector+location
+overlap required, function overlap additionally required for live_job
+only, excludes a dedup_key the customer already has, respects the
+requested limit, logs rather than throws on a read failure), and
+personalizePoolHits (maps AI output back onto each hit by index, falls
+back to the pool's own original facts for anything the AI call leaves out,
+returns an empty array — never throws — on any failure, which is what
+makes the whole mechanism fail safe back to today's exact behavior).
+
+IMPORTANT — what this does NOT change for any account with no pool
+overlap yet (the common case until enough overlapping accounts exist):
+byte-for-byte identical to today. The pool check runs, finds nothing, and
+every existing code path executes exactly as it always has. This is
+additive, not a replacement of the existing discovery pipeline.
+
+Verification: 838 tests passing (up from 816), npm run build clean. Real
+measurement of actual cost/speed impact on a live first scan needs this
+deployed first (same as every prior change this session) — proposed as an
+immediate follow-up once this is live: seed two staging accounts with the
+identical sector/location/function profile, run their first scans back to
+back, and compare signalsFound/poolContribution/time-to-done between the
+first (nothing in the pool yet) and second (the first one's discoveries
+now sitting in the pool) via scan-status.js's own status blob, which now
+also reports poolContribution on every run for exactly this kind of
+before/after visibility.
+
+FOLLOW-ON, added before this ever shipped (2026-08-27, same day):
+signal_outcomes (src/lib/signalOutcomes.js) has been logging what
+customers actually do with a signal — seen, dismissed, added to Today's BD
+Actions, placed — since 21 Aug, but its own file header says plainly
+"nothing reads this data yet". New migration
+(2026-08-27-signal-pool-quality-feedback.sql) adds a SECURITY DEFINER
+trigger on signal_outcomes (same established pattern as handle_new_user()
+on auth.users) that rolls each outcome up onto the matching signal_pool
+row by dedup_key: dismiss_count on 'dismissed', positive_count on
+'added_to_bd_actions'/'placed' (the REAL stage strings this codebase
+actually writes — verified directly in IntelligenceFeed.jsx/
+Candidates.jsx, not the original signal_outcomes migration's own stale
+comment, which names two stages, 'added_to_crm'/'outreach_drafted', that
+are never actually inserted anywhere). fetchSignalPoolMatches now excludes
+a pool entry 3+ independent customers have dismissed with zero positive
+outcomes from ever being recommended again — it stays in the table, it
+just stops being served to new pool consumers. This needs no frontend
+change at all: every existing outcome-logging call site starts
+contributing the moment this trigger exists.
+
+SECOND FOLLOW-ON, same "Annie always learning" thread (2026-08-27): two
+more additions, both extending mechanisms already proven above rather
+than inventing new ones.
+
+(1) Market coverage / thinness tracking (market_coverage_log table,
+migration 2026-08-27-market-coverage-log.sql). The 19-scenario staged
+audit run earlier this session was a one-time manual snapshot of which
+sector/location combos on the signup form turn up nothing. This makes
+that ongoing and self-updating instead: every scan attempt (both
+scan-now-background.js and intelligence-scan.js, whether or not it found
+anything) now logs one row — user_id, sectors, locations, functions,
+found_count. A new admin endpoint (admin-market-coverage.js, same
+is_admin gate as admin-resource-caps.js) and a new "Market coverage" card
+on the admin Overview tab (AdminOverview.jsx) surface any sector/location
+pair that's had at least 3 distinct customers and 5 scan attempts and
+STILL found zero signals — enough repetition to call it structurally thin
+rather than just quiet so far. getMarketCoverageReport lives in
+scanShared.js, unit-tested there, and is reused as-is by the endpoint
+rather than a second SQL implementation.
+
+(2) Learn from customer CRM data (migration
+2026-08-27-learn-from-customer-crm.sql). Michael's framing: "every
+customer that joins and adds information through the CRM, Annie is
+learning new companies, markets, competitors it should also look into ...
+becoming an expert among all the industries and functions we offer."
+annie_learned_sources already grows from Annie's OWN AI web-search
+discoveries (recordLearnedDiscoveries in scanShared.js) — this extends the
+exact same table with a second, human source: two new SECURITY DEFINER
+triggers (learn_from_customer_company/candidate, sharing one helper,
+learn_company_for_sectors) fire whenever a customer adds a company, or a
+candidate with a current employer, resolving that user's onboarding
+sectors (or, if the row was added by a teammate rather than the owner
+directly, falling back through team_id) and upserting the company into
+annie_learned_sources tagged found_via='customer-crm-company' or
+'customer-crm-candidate'. This is most valuable for exactly the
+harder-to-research niches Michael described — a customer's own CRM
+knowledge fills a gap Annie's own search may not surface on its own,
+compounding across every customer who joins in that space. Silent no-op
+if no onboarding row can be resolved at all (verified directly).
+
+SCHEMA DRIFT FOUND WHILE BUILDING THIS: annie_learned_sources — the table
+(1) above extends — existed on production but had NEVER been created on
+staging, meaning the entire learned-sources mechanism silently no-op'd on
+staging this whole time, including during the earlier 19-scenario staged
+audit (that audit's results for anything routed through learned-sources
+should be read with that in mind). Fixed by applying just that table's
+portion of the existing (production-only) migration
+2026-08-26-recovered-undocumented-schema-gaps-2.sql to staging. That same
+file documents 4 OTHER staging/production gaps (two admin RPC bugfixes, a
+protect_team_id() fix, a get_account_requests() fix) — those were
+deliberately left untouched here, since they're security/RLS-relevant and
+deserve their own reviewed pass rather than a silent bundle-in in an
+unrelated commit.
+
+Verified directly against staging via real SQL (not just unit tests,
+since these are pure Postgres trigger logic with no JS/Netlify deploy
+dependency): a company add for a Technology/UK customer correctly created
+a matching annie_learned_sources row; a candidate add with a company field
+correctly created a matching row tagged customer-crm-candidate; a company
+add for a real auth user with no onboarding row at all safely no-op'd
+(zero rows, no error). All test data cleaned up afterward.
+
+Full suite: 850 tests passing (up from 838), npm run build clean.
+
+THIRD FOLLOW-ON, same thread (2026-08-27), Michael: "along with the current
+prompt, annie starts to analyze the companies either they are adding, or
+that have come from their CSV, start monitoring those companies and their
+competitors... this adds to her prompt currently to learn and adapt, it
+doesn't replace it." Then: "see where it makes sense to apply the same
+logic on the app as well."
+
+This is deliberately separate from annie_learned_sources (SHARED/global —
+"this company exists in this sector" is an objective fact every account
+researching that sector benefits from) and from signal_pool (SHARED
+discovered events). This one is PERSONAL, per account: the exact companies
+THIS recruiter has added to their own CRM — one at a time, via a bulk CSV/
+LinkedIn import, or as a candidate's current employer — are the strongest
+possible signal of who they actually care about, stronger than a sector
+match alone.
+
+getCustomerWatchlistCompanies (scanShared.js) reads directly from
+companies/candidates (no new table — always reflects the account's current
+CRM exactly, nothing to keep in sync), capped at 20 most-recently-added
+names so a large CRM doesn't balloon the scan prompt's token cost.
+buildCustomerWatchlistHint composes one additive paragraph telling the AI
+to specifically check these named companies AND their genuine, real
+competitors (identified via the same web-search call already running — no
+second AI call, no hand-maintained competitor map) for the same signal
+types (funding, expansion, leadership change, live hiring, M&A) the rest of
+the prompt already looks for. Wired into every research call in both scan
+files (round 1's parallel sector groups, the broaden pass, round 2+, and
+the recurring cron's single call) — sitting alongside the existing sector/
+location/function-driven search, never replacing it, exactly as specified.
+
+APPLYING THE SAME LOGIC ELSEWHERE IN THE APP: Ask Annie (Chat.jsx) already
+tells Annie this recruiter's sectors/functions/markets/tone/writing style
+on every message, the same onboarding data the scan prompts use — but had
+no awareness at all of the companies this recruiter actually tracks. New
+src/lib/watchlist.js is the client-side twin of
+getCustomerWatchlistCompanies: simpler than the server version (no
+separate team_id resolution needed — companies/candidates are already
+team-scoped via RLS on the caller's own session, see companies.js/
+candidates.js), reused by Chat.jsx to add the same watchlist paragraph to
+every Ask Annie conversation. A recruiter can now ask Annie about their own
+target list, or ask for a BD angle, and Annie already knows which companies
+they track and can reference genuine competitors from her own knowledge —
+without needing web search on every chat message. Same additive-only rule:
+this sits alongside the existing sectors/functions/markets paragraph,
+never replacing it.
+
+New tests: scanShared.test.js covers getCustomerWatchlistCompanies (reads
+both companies and candidates, dedupes, includes a teammate's rows via
+team_id when this account has one, respects the requested cap, logs rather
+than throws on any query failure or an unexpected error) and
+buildCustomerWatchlistHint (empty with nothing to say, names every company
+and explicitly invites checking competitors otherwise). New
+src/lib/watchlist.test.js covers the client-side twin the same way.
+
+Full suite: 867 tests passing (up from 850), npm run build clean.
+
+FOURTH FOLLOW-ON, same thread (2026-08-27), Michael: "I think we need to up
+that cap no? What would the cost be to have no cap? Also, are you happy how
+annie applies these learnings, or do you see any gaps on that?"
+
+Raised LEARNED_PER_SECTOR_CAP (getLearnedSources/annie_learned_sources)
+100 -> 300 — real multi-year headroom without going fully uncapped, which
+would have been an open-ended, permanently-compounding Anthropic input-
+token cost concentrated on Law/Management Consulting specifically (the only
+two sectors where buildTargetFirmHint puts the WHOLE per-sector list
+straight into the prompt with no further slicing — every other sector's
+hint already caps display at 30 regardless of this number). Query limit
+raised 2000 -> 8000 alongside it, sized for the real worst case: 11 sectors
+x 2 kinds (company + source) x 300 = 6,600 rows needed if a customer
+selected every sector on the signup form, with margin above that.
+
+Also found and fixed two real bugs while answering "do you see any gaps,"
+not just a size question:
+
+1. getLearnedSources used to order by first_seen_at ASCENDING — so once a
+   sector's list filled its cap, the OLDEST-ever-discovered entries
+   permanently occupied every slot, and brand new discoveries (exactly the
+   "Annie getting smarter over time" this whole table exists for) could
+   never surface in a prompt again once that ceiling was hit, no matter how
+   current or relevant they were. Now orders by last_confirmed_at
+   DESCENDING — the most recently reconfirmed-active entries win the
+   available slots, so stale entries age out first instead of new ones
+   being locked out.
+
+2. That fix only works if last_confirmed_at actually means something.
+   recordLearnedDiscoveries (Annie's own AI-discovered rows) was upserting
+   with ignoreDuplicates: true (ON CONFLICT DO NOTHING) — so re-discovering
+   the same company for the hundredth time correctly avoided a duplicate
+   ROW, but also silently never refreshed last_confirmed_at, which stayed
+   frozen at whatever the very first insert set it to, forever. Only the
+   separate customer-CRM-add trigger (learn_company_for_sectors) was ever
+   correctly bumping that timestamp. Now a real upsert (ON CONFLICT DO
+   UPDATE) that stamps last_confirmed_at fresh on every write, matching the
+   SQL trigger's own behavior — first_seen_at is deliberately left out of
+   the upserted columns, so a repeat write still never loses when something
+   was originally discovered, only refreshes "still active."
+
+No migration needed — last_confirmed_at already exists on both environments
+from the CRM-learning migration. New tests cover the ordering fix, that a
+repeat discovery upserts without ignoreDuplicates, and that last_confirmed_at
+gets stamped while first_seen_at is left untouched.
+
+Flagged but NOT built in that pass, pending Michael's call on scope: no
+verification step exists today on a customer-typed CRM company name before
+it enters this shared table (a typo or test data would permanently seed
+itself into every other customer's prompt in that sector), and there is no
+admin visibility into this table at all — both real gaps, both bigger,
+separate pieces of work.
+
+Full suite: 871 tests passing (up from 867), npm run build clean.
+
+FIFTH FOLLOW-ON, same thread (2026-08-27), Michael: "Fix the other two gaps
+now" — both of the above.
+
+(1) Quality guard (2026-08-27-learned-sources-quality-guard.sql): two checks
+added to learn_company_for_sectors, the one shared helper both the
+companies and candidates CRM-learning triggers already call, so both get
+this for free with no duplicate logic. A minimum length of 2 on the
+normalized key rejects a single stray character while still allowing real
+short names ("EY", "BP", "3M" all pass). A small denylist of common CRM
+placeholder values ("Test", "N/A", "TBC", "Unknown", "None", and similar)
+is checked against that same normalized key, so casing/punctuation variants
+all collapse to the same check. Deliberately not a stronger "does this look
+like a real company" check — that risks false-positive-rejecting genuine
+unusual names, a worse failure mode than occasionally letting a wrong-but-
+plausible name through. Verified directly against staging: "Test", "N/A",
+"x", and "TBC" were all correctly rejected (no row created); "EY" and a
+real-looking test company name both correctly created rows, exactly as
+intended. Test data cleaned up afterward.
+
+(2) Admin visibility (same migration): two new admin-gated Postgres
+functions, same SECURITY DEFINER + explicit is_admin-check pattern as
+every function in 2026-08-24-admin-operator-dashboard.sql —
+get_admin_learned_sources (list/search by sector and/or a text match,
+capped and ordered by last-confirmed) and admin_delete_learned_source (
+remove one bad entry by id). This is the first admin-gated MUTATION
+function in this codebase, every admin action until now has been a read.
+New "Learned sources" tab on the admin Insights page (Insights.jsx ->
+AdminLearnedSources.jsx): a sector dropdown (reusing sectorTaxonomy.js's
+own SECTOR_PARENT_LABELS, no second hardcoded list), a search box, and a
+Remove button per row with a confirm prompt.
+
+Caught and fixed a real bug on first live test, before this ever shipped:
+get_admin_learned_sources's own RETURNS TABLE declares an `id` column,
+which becomes an implicit OUT parameter in scope for the whole function
+body — the is_admin check's own `where id = auth.uid()` was silently
+ambiguous against it (Postgres error 42702), the exact same class of bug
+get_account_requests() already hit and fixed per
+2026-08-26-recovered-undocumented-schema-gaps-2.sql's own notes. Fixed by
+aliasing profiles as p in both new functions' checks, then re-verified
+directly against staging: an unauthenticated call correctly throws "Not
+authorized"; a real admin account (simulated via a JWT claim in the same
+session) correctly lists and correctly deletes a row; a follow-up read
+confirms the deleted row is actually gone. All test data cleaned up
+afterward. Re-applied to production with the same fix already in place,
+so production never carried the broken version.
+
+New tests: src/lib/data/adminLearnedSources.test.js covers both RPC
+wrappers (correct params including the null-defaulting shape, empty-array-
+not-null on no rows, throws on a Supabase error).
+
+Full suite: 877 tests passing (up from 871), npm run build clean.
+
+SIXTH FOLLOW-ON, same thread (2026-08-27), Michael: "Anything else worth
+checking in terms of annies learning and application?" — one real
+asymmetry found and fixed.
+
+recordLearnedDiscoveries (scanShared.js) is the OTHER write path into
+annie_learned_sources: Annie's own AI-discovered companies/sources from a
+live scan, as opposed to the customer-CRM path the quality guard above
+just covered. It had no equivalent guard at all — only a truthy check
+(kind/sector/value all present) — even though it feeds the exact same
+shared, permanently-compounding table. A malformed fragment or a generic
+placeholder the model echoed back would have seeded itself into every
+future scan prompt for that sector, same failure mode as the CRM gap, just
+from the other direction.
+
+Fixed by extracting the SQL migration's own junk-value logic into a JS
+twin, isJunkLearnedSourceValue (new export, scanShared.js): same minimum
+length of 2, same denylist (kept in sync deliberately, both lists say so
+in their own comments), checked against the same normalized value_key
+recordLearnedDiscoveries already computes for its dedup constraint — so a
+value is judged identically regardless of which path wrote it. Junk rows
+are now dropped before the upsert, silently, same as the SQL side; a mixed
+batch keeps its legitimate entries and only drops the junk one.
+
+New tests in scanShared.test.js: isJunkLearnedSourceValue rejects
+sub-2-character keys and every denylisted value while still allowing real
+short/initialism names (EY, BP, 3M); recordLearnedDiscoveries drops an
+all-junk batch entirely (upsert never called) and keeps only the
+legitimate row in a mixed batch.
+
+Also checked and confirmed as non-issues, not acted on: sectors aren't
+self-serve editable post-onboarding (Settings.jsx: "contact support, this
+isn't self-serve editable yet"), so retroactive sector-reattribution of
+CRM-learned data isn't worth building — it's already support-mediated and
+rare. And there's no automated test coverage for the fully-assembled
+buildScanPrompt string in either scan file (only the individual hint
+builders are unit-tested) — a real but lower-priority gap, flagged for
+Michael rather than silently built into scope here.
+
+Full suite: 881 tests passing (up from 877), npm run build clean.
+
+SEVENTH FOLLOW-ON, same thread (2026-08-27), Michael: "Yes build that" —
+the market-coverage/learned-sources cross-reference proposed above.
+
+A "thin" sector+location pair from getMarketCoverageReport (real, repeated
+scan attempts, consistently nothing found) was ambiguous on its own: reads
+identically whether the market genuinely has nothing going on, or Annie
+simply doesn't yet know which companies/sources to check there. Fixed by
+reading annie_learned_sources once per report (grouped by sector — its
+location column is overwhelmingly 'Global' by default across both write
+paths, so a genuinely location-scoped count isn't something the data
+actually supports yet; sector-level is the honest granularity available)
+and labelling each thin pair with a new likelyCause: 'annie_under_informed'
+when fewer than 5 companies/sources are known for that sector (new
+MARKET_COVERAGE_UNINFORMED_THRESHOLD constant, scanShared.js), else
+'genuinely_quiet'. New knownCompanies/knownSources counts returned
+alongside, not just the label, so the admin view can show its work rather
+than asserting a conclusion.
+
+AdminOverview.jsx's existing "Market coverage" panel (Overview tab) now
+shows a small pill on every thin row — "Annie under-informed (N known)" in
+amber, or "Genuinely quiet (N known)" in neutral grey, with a hover tooltip
+spelling out the reasoning — instead of just the bare scan-count line it
+had before. No new endpoint or migration needed: admin-market-coverage.js
+already returns whatever getMarketCoverageReport returns, so the two new
+fields ride along automatically once the function above changed.
+
+New tests in scanShared.test.js: a thin pair with no annie_learned_sources
+rows at all labels as annie_under_informed; a thin pair with 4+ companies
+and 4+ sources for that sector labels as genuinely_quiet; a non-thin pair
+gets likelyCause: null; annie_learned_sources isn't queried at all when
+there's no scan history to report on in the first place. Existing tests'
+mock supabase updated to route by table name (from() is now called against
+two different tables in one report, not one).
+
+Full suite: 884 tests passing (up from 881), npm run build clean.
+
+EIGHTH FOLLOW-ON, same thread (2026-08-27), Michael: "What else should we
+look at?" — a real, previously unflagged security gap, found via
+get_advisors(security) on production rather than anything Michael asked
+about directly.
+
+Five SECURITY DEFINER functions had never had their default Postgres
+grants locked down, unlike every admin RPC this session has already
+hardened the same way. Postgres auto-grants EXECUTE to PUBLIC on every new
+function, and PostgREST auto-exposes every public-schema function as a
+callable REST RPC — regardless of whether it was ever meant to be called
+that way. Four of these five (learn_company_for_sectors,
+learn_from_customer_company, learn_from_customer_candidate,
+record_signal_pool_outcome) exist purely to be invoked by their own AFTER
+INSERT triggers — confirmed via grep across the whole codebase, zero
+direct .rpc(...) callers anywhere. Left as-is, this meant a fully
+unauthenticated visitor could call learn_company_for_sectors directly —
+POST /rest/v1/rpc/learn_company_for_sectors with any onboarding user's uuid
+— and write straight into the SHARED annie_learned_sources table,
+completely bypassing RLS via SECURITY DEFINER, no login required. The
+exact table this whole session has spent so much effort keeping clean.
+
+Fixed with the same REVOKE/GRANT pattern already used for the admin RPCs:
+revoked EXECUTE on all four from public/anon/authenticated entirely (no
+legitimate caller needs it — Postgres invokes a trigger function directly
+as part of statement execution, which isn't an EXECUTE-checked call path,
+so this doesn't touch normal operation at all). A fifth function,
+my_active_team_ids(), is different — team_members' own live RLS policy
+genuinely calls it as authenticated, so only anon's grant was removed,
+authenticated's was revoked-then-explicitly-re-granted.
+
+Separately, the same advisor pass flagged three usage-cap reservation
+functions (apollo_reserve_credits, anthropic_reserve_tokens,
+theirstack_reserve_credits — real, legitimately server-called functions,
+no RPC-exposure issue) missing SET search_path, unlike every other
+SECURITY DEFINER function in this schema. Re-created with identical
+bodies, only that clause added — closes a search_path-injection hardening
+gap with no behaviour change.
+
+Verified directly on staging first, then production: has_function_privilege
+confirms anon can no longer execute any of the five, authenticated still
+can call my_active_team_ids() (unaffected), and authenticated still cannot
+call the other four (correct, matches "no legitimate caller"). Live-tested
+the actual trigger flow after the REVOKE — inserted a real throwaway
+company row on staging, confirmed companies_learn_source still fired and
+wrote correctly into annie_learned_sources across every one of that
+account's sectors, then cleaned up both rows. Live-tested all three
+search_path-fixed reservation functions on production with a 1-unit
+reservation each (all returned 'ok'), then reversed the exact 1-unit write
+back out of each usage-platform table afterward so no real counters were
+left skewed. Migration: 2026-08-27-close-trigger-only-rpc-exposure.sql,
+applied directly to both staging and production this session — nothing
+new to push for this piece, it's already live.
+
+Also found and fixed while investigating: production's error_logs table
+had 127 stale rows worth clearing out, all already-understood, already-
+fixed issues, just never cleaned up — 95 + 19 fake "boom"/"again" rows
+from a CI-tests-writing-to-real-prod-error_logs bug already fixed
+2026-08-23 (see reportError.test.js's own header), 12 old "Apollo
+mixed_people/search returned 422" rows from the pre-apolloOrgId-fix era
+(see verifyContact's own header in scanShared.js), and 1 one-off "linkedin_
+url column not in schema cache" row from a transient PostgREST cache delay
+right after that column's own migration landed 2026-08-24 (the column
+exists now, confirmed, and no further occurrences since). None of these
+were live problems — just noise cluttering the admin Insights → Errors
+tab — deleted directly from production, nothing to push for this either.
+
+Checked and NOT acted on: get_advisors also flags 6 tables (anthropic_
+usage, anthropic_usage_platform, apollo_usage, apollo_usage_platform,
+chat_rate_limit, stripe_webhook_events) as "RLS enabled, no policy" — this
+is the CORRECT, intentional posture for these (service-role-only tables,
+nobody else should ever read/write them, so no policy is exactly right,
+not a gap) — and two "multiple permissive policies" perf warnings
+(intelligence_signals, todays_action_state each have two legitimately
+separate SELECT policies — own-row plus team-owner-view — that could in
+principle be merged into one combined policy for a small perf win, but at
+current scale this is a non-issue, flagging rather than touching it).
+
+Also noted in passing: staging (tqzafepeicfybxqysjjx) is missing three
+tables production has (apollo_usage_platform, anthropic_usage_platform,
+theirstack_usage_platform) — pre-existing drift unrelated to this fix,
+caught only because it made the reservation-function test fail there
+first. Means the three reserve functions are currently broken on staging
+specifically (would throw for any real usage there) — production is fine,
+this is a staging-only gap, flagged for Michael rather than silently
+fixed, since it wasn't asked about and isn't customer-facing.
+
+Full suite: 884 tests passing (no JS changed this round — this entire
+follow-on was pure Postgres grants/cleanup, applied directly via
+Supabase), npm run build clean (unchanged from the prior round).
+
+------------------------------------------------------------------------
+WHAT TO PUSH TO GO LIVE (2026-08-27, current as of this section)
+------------------------------------------------------------------------
+Everything in this entire commit-message-cross-customer-signal-pool.txt +
+commit-and-deploy-cross-customer-signal-pool.bat bundle is still
+UNPUSHED. Running that one .bat file is the only step needed to ship
+every follow-on above (signal pool, personal watchlist, cap raise + bug
+fixes, quality guard + admin visibility, this recordLearnedDiscoveries fix,
+and this market-coverage cross-reference) in one go:
+
+1. Run commit-and-deploy-cross-customer-signal-pool.bat from inside your
+   annie-app folder. It stages every changed file (already includes
+   scanShared.js, scanShared.test.js, and AdminOverview.jsx — no new files
+   this round, so no new git add lines were needed), commits with this
+   message, then pauses for you to confirm before each push.
+2. First push: origin test-payments (the staging branch).
+3. Second push: test-payments straight onto origin main — THIS is what
+   triggers the production Netlify deploy. Nothing goes live until this
+   step runs.
+
+Database side is already done — nothing else to apply. Every migration
+this thread has touched (signal_pool, market_coverage_log, the
+customer-CRM-learning triggers, the learned-sources quality guard, the two
+new admin RPCs, and now the trigger-only-RPC-exposure lockdown) has
+already been applied directly to BOTH staging (tqzafepeicfybxqysjjx) and
+production (tsnthomwislodczhshpt) this session. recordLearnedDiscoveries's
+guard and the market-coverage cross-reference are pure JS/JSX logic — no
+schema change, so nothing new to apply there either. The .bat file's own
+closing notes already say this; this section just restates it now that a
+new round has been added, so it's current.

@@ -1,0 +1,135 @@
+Customer-journey audit: 9 real claims-vs-reality gaps closed, sitewide
+
+Went through the whole customer journey end to end -- signup, onboarding,
+every sidebar destination, chat, billing -- checking every piece of
+user-facing copy against what the code actually does, the same process
+used all along. Five parallel reviews came back with a long list; these
+are the ones that were bounded, clearly correct to fix, and didn't need a
+product/pricing call from Michael first. What follows is grouped by page.
+
+Contacts & Companies (src/components/Contacts.jsx, Companies.jsx):
+A search that matched zero of your real records rendered the exact same
+"you have nothing yet, add your first contact/company" empty state as an
+actually-empty list -- the condition was just `filtered.length === 0`,
+true either way. A customer with hundreds of contacts and a typo'd search
+saw an onboarding-style empty state and the import/add buttons. Now
+distinguishes "no records at all" from "no results for this search," with
+a working "clear search" action for the latter.
+
+Ask Annie (src/components/Chat.jsx):
+chat.js already sends back a specific, useful message when a Starter
+customer hits their 100-messages-a-month cap ("Upgrade to Growth for
+unlimited messages"), correctly propagated all the way to the frontend --
+but Chat.jsx's catch block unconditionally overwrote it with "Sorry,
+something went wrong. Please try again." A customer hitting their real
+cap got no explanation and no idea an upgrade would fix it. Now shows the
+real server message when there is one, generic copy only for the cases
+that genuinely need it (no message, or a raw network error).
+
+Intelligence Feed / Today's Actions / Overview freshness claims
+(signalTypes.js, Overview.jsx, IntelligenceFeed.jsx, TodaysActions/index.jsx):
+"Every few hours" and "around the clock" both overstated the real cadence
+-- intelligence-scan.js's cron runs twice a day, confirmed against the
+live function config. Reworded to say what actually happens (twice a day,
+plus on demand whenever you run a scan yourself). Also fixed the reverse
+problem on Overview's "researching right now" banner, which promised
+results "within a couple of minutes" -- the real scan budget is 10-20
+minutes depending on tier, and the page's own poll window is sized at 24
+minutes specifically because a scan can legitimately run that long. A
+customer taking "couple of minutes" literally and refreshing at minute 3
+would reasonably conclude it was broken.
+
+Separately: Overview's "New signals, 7 days" stat counts every signal
+found in the last week, dismissed ones included -- while the Feed's own
+"N new" badge means status = new only. Same word, different number, one
+click apart. Relabelled to "Signals found, 7 days," which is what it
+actually is -- the count itself is still a useful stat, it just isn't
+"new" in the Feed's sense.
+
+Also: leadership_change was flagged as NOT time-sensitive in the shared
+signal taxonomy (signalTypes.js), so the Feed's "time-sensitive" badge
+never applied to it -- while Today's Actions independently treats a fresh
+leadership change as urgent for up to 60 days (a new exec is a real,
+time-boxed opportunity). Same signal, two different answers depending
+which page you were on. Fixed at the one shared source of truth this file
+exists specifically to be, so both pages agree now.
+
+LinkedIn import (src/pages/LinkedInImport.jsx):
+The "Annie will monitor these contacts for" list included "Job moves &
+promotions" and "Headcount growth signals" -- neither corresponds to any
+real signal type the scan can actually produce. That list is now derived
+straight from the same signal-type taxonomy every other page reads
+(signalTypes.js), so it can only ever show real, currently-tracked types
+and can't drift out of sync again. Also: the market-match description
+unconditionally claimed Apollo-verified company location, when that's
+only true if APOLLO_API_KEY is configured -- otherwise it's a lighter
+name-keyword match, with nothing telling the customer which one happened.
+Now says which. And the post-import "she's now monitoring all of them"
+line implied per-contact tracking that doesn't exist (the scan runs off
+your onboarding sectors/markets, not a watch-list of imported people) --
+reworded to what's actually true: any signal found does get matched back
+to these contacts by company.
+
+Apollo company enrichment (netlify/functions/apollo-enrich-companies.js):
+This is the one real code bug in this batch, not just copy. It took
+Apollo's single top search result unconditionally (`per_page: 1`, no
+name check at all) and rendered it as "Verified via real company data" --
+the same confident label a real match gets. scanShared.js's own
+enrichCompany() has exactly this guard already (pickBestOrgMatch, built
+specifically to stop a short/generic name matching the wrong company --
+that function's own comment cites "Stitch vs Stitch Fix" as the case it
+exists to catch) -- this endpoint just never used it. Exported
+pickBestOrgMatch and reused it here instead of a second, unguarded
+implementation: per_page bumped to 5 so it has real candidates to choose
+between, same exact-match / suffix-insensitive-match logic scanShared.js
+already relies on. One existing test's mock Apollo response had no `name`
+field at all (never needed one under the old unguarded code) -- updated
+to a realistic one.
+
+Not touched, and correctly so: Agent A's original finding flagged
+Welcome.jsx (`/welcome`) as dead/unreachable, based on there being no
+in-app navigation to it. Checked further: it's Stripe's own checkout
+success_url for the marketing-site trial signup (start-trial-checkout.js)
+-- a real, load-bearing page reached by a full-page redirect, which
+grepping for React Router navigation wouldn't catch. Its copy is accurate
+for that flow. Left alone.
+
+Full test suite (736 tests, 1 fixed mock) and the production build both
+pass.
+
+Flagged instead of changed -- these are product/pricing decisions, not
+bugs to silently fix:
+
+- Login.jsx's "Start your free trial, no credit card needed" doesn't
+  match what the in-app signup path actually does: no subscription row is
+  ever created, entitlements resolve to permanently-free Starter with no
+  expiry. The real card-gated trial only exists via the separate
+  marketing-site -> Stripe checkout path. This is the highest-stakes item
+  in the whole audit -- worth a direct conversation before anything
+  changes, since it could mean either building a real in-app trial or
+  changing what the page promises.
+- Three pricing-page claims with no matching code: "LinkedIn re-import on
+  demand" is sold as Growth/Team-exclusive but is available to every tier
+  today (nothing gates it) and the support widget already tells customers
+  so directly; "Priority support" has no differentiated support mechanism
+  anywhere -- one inbox, no tier checks; "Shared target-company list" is
+  advertised as a live Team feature while the support widget's own system
+  prompt is written to explicitly deny the feature exists, and a code
+  comment confirms it was removed. A customer who asks Annie's own support
+  widget about a feature the pricing page sells will be told it's not
+  real.
+- Ask Annie's system prompt (Chat.jsx) never includes any CRM data
+  (contacts/companies/deals), only onboarding profile fields -- while the
+  support widget claims Ask Annie's answers "come from the account's own
+  onboarding/CRM context." Build vs. relabel is a product call.
+- The Apollo-failure-vs-no-contact-found gap (a transient Apollo outage
+  and a genuine "nobody found" render identically, and can poison the
+  shared cross-customer contact cache as "no contact" for 60 days) and
+  Pipeline's free-text company field having no dedupe against the real
+  Companies list (already self-documented as a known gap in the support
+  widget's own copy) are both real and worth fixing, but both touch core
+  scan/cache logic or a real UI rebuild rather than a copy fix -- flagged
+  as follow-up work rather than rushed into this round, same call made
+  last round on the scan-concurrency gap.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>

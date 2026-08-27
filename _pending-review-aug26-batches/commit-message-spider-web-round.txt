@@ -1,0 +1,71 @@
+Drop a dead-code race condition; close a narrow recovery-token log leak
+
+Kept digging with the same process, into the smaller stuff that's easy to
+walk past: the credit-reservation RPCs themselves, and the password reset
+flow's own edges.
+
+- supabase-migrations/2026-08-26-drop-dead-reserve-credit-overloads.sql:
+  apollo_reserve_credits/theirstack_reserve_credits/anthropic_reserve_tokens
+  each existed as TWO functions — the current 4-arg per-customer version
+  every real call site actually uses, and an old 2-arg platform-only
+  version left over from before the per-customer-caps migration, never
+  called anywhere in the codebase (confirmed via grep). The old ones
+  weren't just unused clutter: they compute their day-total via a separate
+  SELECT after the INSERT rather than the INSERT...ON CONFLICT...RETURNING
+  pattern the current versions use, which is a genuine TOCTOU race — two
+  concurrent callers could each pass a cap check that combined they'd
+  already have failed. Confirmed EXECUTE was already revoked from
+  anon/authenticated on all of these (service_role only), so this was
+  never externally exploitable, but dead code with a real bug baked into it
+  is still worth removing outright rather than leaving as a landmine for a
+  future call site that happens to match the old signature. Dropped both
+  old overloads directly against production; the 4-arg versions are
+  untouched and still work exactly as before (verified after the drop).
+
+- src/lib/errorReporting.js: the global client-side error handler logs
+  window.location.href into error_logs on any uncaught error or unhandled
+  rejection, anywhere in the app, including /reset-password. Supabase's
+  password-recovery and invite links carry the actual session token in the
+  URL hash fragment (#access_token=...&type=recovery) — supabase-js does
+  strip that hash itself, but asynchronously, not before the page's first
+  paint. Any unrelated JS error firing in that narrow window would have
+  written the live, still-usable recovery token straight into error_logs.
+  Real exposure was bounded (error_logs has no SELECT policy for anon/
+  authenticated, only an admin-gated RPC can read it), but a token an admin
+  could read is still a token that shouldn't be there at all. This app is
+  path-routed, not hash-routed, so the URL hash is never meaningful for
+  anything here except Supabase's own auth tokens — stripped unconditionally
+  now, which closes the whole class of leak regardless of Supabase's own
+  strip timing, at zero cost (no error report has ever needed the hash
+  portion to be useful). Two new tests confirm the strip.
+
+Not fixed this round, flagged instead: an independent review found that
+intelligence-scan.js (the twice-daily cron) and scan-now-background.js
+(manual "Scan now", also what a brand-new signup's onboarding scan runs
+through) have no lock preventing them from genuinely running concurrently
+for the same customer — most plausible when a new signup's onboarding scan
+is still in flight right as the next 00:00/12:00 UTC cron tick starts. The
+credit-cap accounting itself is safe under that overlap (same atomic
+RPC pattern as above, verified), and the intelligence_signals unique
+index on (user_id, dedup_key) prevents any duplicate card from ever
+reaching the customer — but real Apollo/Companies House credits can get
+spent twice enriching the same fact before the second write is silently
+dropped by that constraint. Bounded, low-frequency waste, not a cap bypass
+or a customer-visible bug — a proper fix (a per-customer advisory lock
+around the scan) touches core scan orchestration in both files and
+deserved more test time than this round had, so it's recommended as
+follow-up work rather than rushed in.
+
+Also found and ruled out as real problems: ResetPassword.jsx currently
+checks "is there any session" rather than specifically a recovery session
+before showing the set-password form — in principle an already-logged-in
+user could reach that page and change their own password without
+re-entering the current one. Not fixed this round either: the same page
+is also where new customers set their FIRST password after a Stripe-
+checkout invite, and narrowing the check risks breaking that business-
+critical flow without being able to verify Supabase's exact event
+semantics for the invite case against a real recovery link in this
+environment. Flagged for Michael with the recommendation to test both link
+types before narrowing this check.
+
+Full test suite (736 tests, 2 new) and the production build both pass.

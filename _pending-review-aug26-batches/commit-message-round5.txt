@@ -1,0 +1,75 @@
+5th adversarial audit against round 4's own fixes, plus migration-drift,
+env-var hygiene, and scale-readiness checks
+
+Ran a 5th adversarial review the same way rounds 2-4 reviewed the round
+before them — this time against round 4's diff (Pipeline.jsx's save-token
+guard, releaseApolloCredits wiring, the two timeout fixes) — alongside
+three broader pre-launch checks: comparing every migration Supabase's own
+history records as applied to production against what's actually checked
+into the repo, sweeping which env vars the code reads versus what
+.env.example documents, and reviewing the real per-customer/platform-wide
+resource math against the 50-100 client cost-analysis doc. This commit is
+what all four found worth fixing.
+
+- Pipeline.jsx: the save-token guard's `stillCurrent` check was captured
+  ONCE right after the write resolved, then reused after a second await
+  (load()) without re-checking it. Since load() is itself an async round
+  trip, a save could resolve successfully, get treated as "still current,"
+  then have the user close the modal and open (even save) a completely
+  different deal before that first save's load() call finished — at which
+  point it would force-close the NEW modal out from under the user
+  mid-interaction and re-enable Save while a genuinely different save was
+  still in flight, reopening the exact duplicate-submit window the token
+  guard was built to prevent. Now re-checked after load(), not before.
+  Separately, a stale/abandoned save that still succeeds no longer calls
+  load() at all — it was never actually "silent" the way its own comment
+  claimed: load() unconditionally flips the page into its loading spinner
+  and clears listError, which could visibly interrupt whatever the user
+  is doing now, or wipe a different stale save's error message moments
+  after it was set. The deal is safely written either way; the list picks
+  it up on its next natural reload instead.
+- apollo-enrich-companies.js: round 4 fixed this endpoint's one
+  bare-fetch() timeout gap by reaching for fetchWithRetry — the same
+  helper every other Apollo call site uses. But this endpoint isn't like
+  those others: up to 1000 companies, 5-at-a-time, sequentially, inside
+  one synchronous request with no background-function time budget.
+  fetchWithRetry's real backoff-and-retry stretched a single failing
+  company from "fails near-instantly" to up to ~38s — during a real Apollo
+  outage (exactly what the credit-release fix exists to handle gracefully)
+  this risked the whole function running long enough to get hard-killed by
+  Netlify's own ceiling mid-batch, leaking whatever credit was reserved
+  for the in-flight company at that instant and reproducing the exact bug
+  the fix set out to close, just via a different mechanism. Switched to
+  fetchWithTimeout alone (8s, no retries) — still bounds a hang, without
+  the multi-outage-scale slowdown this specific batch endpoint can't
+  afford.
+- DEFAULT_THEIRSTACK_DAILY_CAP / DEFAULT_PLATFORM_CAPS.theirStack: raised
+  500 -> 3000/day. Annie-Cost-Analysis-50-100-Clients.md confirmed a flat,
+  unconditional 20 TheirStack credits/customer/day on every tier — the old
+  500/day platform-wide backstop was already short of that past ~25
+  customers, well before the 50-100 client scale that doc targets. Not a
+  bug in the caps mechanism itself, just a number set before real usage
+  was confirmed, now recalibrated the same way this constant has been
+  raised twice before as real data came in.
+- .env.example: added TURNSTILE_SECRET_KEY and INTERNAL_SCAN_SECRET, both
+  load-bearing in production already (bot verification on signup, and
+  multi-round Growth/Team scan chaining) but completely undocumented — a
+  fresh environment stood up from this file alone would have had both
+  silently broken. Also documented three minor previously-undocumented
+  optional vars (MARKETING_URL, SUPPORT_ESCALATION_EMAIL, SENTRY_DSN).
+- supabase-migrations/2026-08-26-recovered-undocumented-schema-gaps-2.sql:
+  new "recovered" file, same purpose as the existing one from 2026-08-24 —
+  five production migrations (annie_learned_sources,
+  fix_team_members_rls_recursion,
+  fix_admin_rpc_ambiguous_columns_and_is_admin_guard,
+  fix_protect_team_id_current_user_bug,
+  fix_get_account_requests_ambiguous_id) had no corresponding file
+  anywhere in the repo, found by cross-referencing Supabase's own migration
+  history against supabase-migrations/. All five are already correctly
+  live in production (verified directly against pg_get_functiondef/
+  pg_policies) — this file does not need to be re-run, it exists purely so
+  the repo can reconstruct production from an empty database. No SQL
+  migration to apply this round.
+
+Full test suite (734 tests, one updated to match the new TheirStack
+default) and the production build both pass.

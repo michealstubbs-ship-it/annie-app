@@ -1,0 +1,44 @@
+Add manual runbook for account deletion / data export requests
+
+Follow-up to the 2026-08-26 audit's data-deletion finding: Settings.jsx's
+"Request data export" and "Request account deletion" buttons only ever
+filed a row in account_requests for a human to see — nothing has ever
+actually deleted or exported anything. Investigated building this as an
+automated self-serve flow instead; decided against it for now (see the
+script's own header) — at this stage, with no real requests yet, a
+documented manual process fully satisfies what's actually required, and it
+stays reviewable (dry-run, explicit confirm, abort-safe) rather than
+handing an irreversible action to an unattended endpoint before this has
+ever been exercised for real.
+
+- scripts/team-data-request.mjs: three modes (dry-run, export, delete)
+  operating on one whole team at a time (teams are the data-owning unit
+  everywhere else in this app). Resolves a requester's user id to their
+  team via team_members, since account_requests only records the
+  individual who asked, not their team. delete mode always runs a fresh
+  dry-run first, prints it, waits 5s (Ctrl+C to abort), then deletes in an
+  order verified directly against production's actual foreign-key
+  constraints (via information_schema, not migration file text, which
+  turned out to be stale relative to what's live) — team-scoped tables
+  first (so the team_id -> teams NO ACTION constraint never blocks),
+  user-scoped tables per member next, then team_members/teams, and the
+  real auth.users account last. That ordering matters more than it might
+  look: confirmed no public.* table actually has a foreign key constraint
+  back to auth.users at all, so a bare deleteUser() call was never going to
+  fail loudly — it would have silently orphaned every row belonging to
+  that user with no error and no way back to trace whose data it was. This
+  closes that silently-orphaned-data gap along with the "nothing happens"
+  gap. Also cancels any live Stripe subscription before touching Supabase
+  when STRIPE_SECRET_KEY is set, so a deleted account's card doesn't keep
+  getting charged. Deliberately never touches company_contacts /
+  company_enrichment — shared, cross-tenant Apollo/TheirStack caches, not
+  this team's own data.
+- scripts/README-team-data-request.md: the actual day-to-day steps for
+  whoever (Michael or support) processes one of these requests, including
+  the "check the member count before deleting a multi-person team" warning
+  and why a one-person-on-a-shared-team request should go through
+  team-remove-member.js instead of this script.
+
+No app code changed, no migration to apply — this is a standalone admin
+script, never imported or run by the deployed app itself. Full test suite
+(734 tests, unaffected) and the production build both still pass.

@@ -1,0 +1,66 @@
+Fix a real, reproducible bug found by a 19-scenario staged first-scan audit: concurrent first scans can silently stall forever at round 1 with zero signals
+
+Ran 19 synthetic first-scan signups on staging (annie-staging Supabase
+project, test-payments branch deploy) covering 13 location/sector/function
+profiles across UAE-GCC/UK/US -- including deliberately niche and harder
+cases (Government/NGO, Automotive+Education, Real Estate, Luxury/Fashion,
+Law/Regulatory) -- with 3 flagship profiles also run at Starter/Growth/Team
+to compare tiers. No production customers or billing were touched; all
+accounts and their data have been cleaned up from staging afterward.
+
+THE BUG (found, root-caused, fixed):
+4 of the 19 scans -- all Growth-tier, all UAE/GCC, all fired within about
+15 seconds of each other -- came back with EXACTLY ZERO signals after
+running out their full tier ceiling, with nothing in error_logs anywhere.
+Root cause, confirmed directly in scan-now-background.js: fireNextRound()
+(the fire-and-forget call a scan makes to chain itself into its next
+research round) only ever guarded against the fetch() PROMISE itself
+rejecting (a DNS/network failure) -- it never checked the response it got
+back. Netlify's own gateway rejecting a request under a concurrent-
+invocation burst (a 429/503) resolves fetch() normally rather than
+throwing, so that failure was completely invisible: the chain just
+silently stopped after round 1, and scan-status.js's own staleness check
+was the only thing that ever surfaced it, many minutes later, with no
+root cause attached anywhere.
+
+This isn't just a test artifact -- it's the same shape of event a real
+marketing push, a webinar, or a few signups from the same company within
+minutes of each other would produce, and it means some fraction of those
+new customers could land on a genuinely empty first-scan dashboard with
+zero visibility into why, until they contact support or churn.
+
+THE FIX: netlify/functions/scan-now-background.js's fireNextRound() now
+checks the response status. A non-OK response gets one immediate retry
+(still inside the same unawaited promise chain this function already
+relies on completing post-return -- no new timer introduced, nothing this
+runtime hasn't already proven it lets finish). A repeat failure after the
+retry now calls reportServerError, same as every other failure path in
+this file, instead of vanishing.
+
+New tests (netlify/functions/tests/scan-now-background.test.js):
+fireNextRound is now exported specifically for direct unit testing against
+a mocked global.fetch (reaching it through the full handler would mean
+mocking the entire research pipeline, which is scanShared.js's own tested
+territory) -- covers success, retry-then-success, retry-then-still-failing
+(reports), and a genuine network-level throw (reports).
+
+OTHER AUDIT FINDINGS (not code bugs, logged for awareness / future
+follow-up, not touched in this pass):
+- Across the 15 scenarios unaffected by the bug, actual Feed signal counts
+  ranged 6-14 -- every profile got SOMETHING, including the niche ones
+  (Government/NGO, Automotive, Luxury/Fashion all produced real signals).
+  Niche/unusual sector-function combinations were not, by themselves, a
+  predictor of a thin scan.
+- However, only 6 of those 15 scenarios actually hit their tier's
+  Today's-BD-Actions target (a Feed full of funding/expansion/M&A signals
+  doesn't automatically mean a full Actions list, since only
+  leadership_change/live_job count there) -- most notably the UK
+  Automotive+Education/Training niche profile got 7 Feed signals but ZERO
+  actionable ones, and the US Tech/AI&Data profile got 11 Feed signals
+  (6 of them funding) but found no live_job entries at all. Worth a closer
+  look in a future pass, not fixed here.
+- Contact-verification hit rate was solid where the signal type was
+  eligible: ~89% for leadership_change, ~79% for live_job, across the
+  full 19-scenario dataset.
+
+Verification: 812 tests passing (up from 808), npm run build clean.
