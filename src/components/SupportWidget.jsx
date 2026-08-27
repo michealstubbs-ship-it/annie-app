@@ -3,6 +3,8 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { callChat } from '../lib/callChat'
 import { parseEscalation } from '../lib/supportEscalation'
+import { describeChatFailure, describeStaleTab } from '../lib/chatErrorMessage'
+import { isTabStale } from '../lib/staleBuild'
 
 // Rewritten 2026-08-26 after a real production incident: the previous
 // version of this prompt described features that don't exist (a "target
@@ -252,6 +254,17 @@ export default function SupportWidget() {
     const insertPromise = supabase.from('support_messages').insert({ user_id: user.id, role: 'user', content: userMsg.content }).select().single()
 
     try {
+      // Pre-flight check, 2026-08-27: same fix as Ask Annie's Chat.jsx, same
+      // reason — a tab left open across a deploy is still running JS that
+      // can't complete a request, so this checks for that BEFORE ever
+      // attempting one, rather than only reacting to the failure it would
+      // otherwise cause. See staleBuild.js's own header.
+      if (await isTabStale()) {
+        const { text: staleText, reloadSuggested } = describeStaleTab()
+        setMessages(prev => [...prev, { role: 'assistant', content: staleText, reloadSuggested }])
+        return
+      }
+
       const systemPrompt = accountContext
         ? `${SUPPORT_SYSTEM_PROMPT}\n\n=== THIS CUSTOMER'S REAL ACCOUNT (verified — trust this, don't guess) ===\n${accountContext}`
         : SUPPORT_SYSTEM_PROMPT
@@ -273,8 +286,16 @@ export default function SupportWidget() {
           .join('\n\n')
         escalate(category, excerpt)
       }
-    } catch {
-      setMessages(prev => [...prev, { role: 'assistant', content: "That didn't go through on my end, mind trying again?" }])
+    } catch (err) {
+      // 2026-08-27: reuses the exact same classification Ask Annie uses
+      // (describeChatFailure) instead of this widget's own separate,
+      // simpler apology — one request that failed at the network layer
+      // (the retry-once in callChat.js already absorbed a single blip; this
+      // is what's left over) deserves the same one-click reload here as
+      // everywhere else, not a dead-end "try again" that fails the same
+      // way if the tab really is stale.
+      const { text: friendly, reloadSuggested } = describeChatFailure(err)
+      setMessages(prev => [...prev, { role: 'assistant', content: friendly, reloadSuggested }])
     } finally {
       setLoading(false)
     }
@@ -321,6 +342,16 @@ export default function SupportWidget() {
                 <div className={`max-w-[85%] px-3.5 py-2.5 rounded-2xl text-xs leading-relaxed whitespace-pre-wrap
                   ${m.role === 'user' ? 'bg-navy text-white rounded-br-sm' : 'bg-white border border-gray-100 text-gray-700 rounded-bl-sm'}`}>
                   {m.content}
+                  {m.reloadSuggested && (
+                    <div className="mt-1.5 pt-1.5 border-t border-gray-100">
+                      <button
+                        onClick={() => window.location.reload()}
+                        className="text-[11px] font-medium text-navy hover:text-gold underline underline-offset-2"
+                      >
+                        Reload page
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
