@@ -31,7 +31,21 @@ export const TIERS = [
     blurb: 'For a biller who wants more from Annie.',
     monthly: 129,
     yearly: 109,
-    features: ['Everything in Starter', 'Unlimited Ask Annie messages', 'Deeper onboarding research pass', 'LinkedIn re-import on demand', 'Priority support'],
+    // 2026-08-26 pricing/copy alignment: dropped 'LinkedIn re-import on
+    // demand' and 'Priority support' — both were sold here as Growth-
+    // exclusive but neither is real. Re-import has no tier check anywhere
+    // in the code and SupportWidget.jsx's own fact base already tells
+    // customers directly it works "for anyone, regardless of plan" — this
+    // bullet contradicted the app's own support answer. Priority support
+    // has no differentiated mechanism to sell: support-escalate.js's own
+    // header is explicit that every escalation, from every tier, goes to
+    // the same one inbox ("he's the entire support team today," Michael's
+    // own call, 2026-08-26). Reworded the research bullet from "onboarding
+    // research pass" to "research scans" — SCAN_TIER_CONFIG's own comment
+    // confirms Growth's deeper scan budget applies to the ongoing cron
+    // permanently, not just a one-time signup bonus, which the old wording
+    // undersold.
+    features: ['Everything in Starter', 'Unlimited Ask Annie messages', 'Deeper, ongoing research scans'],
     featured: true,
   },
   {
@@ -41,7 +55,18 @@ export const TIERS = [
     monthly: 99,
     yearly: 84,
     perSeat: true,
-    features: ['Everything in Growth, per seat', 'Shared target-company list', 'Team admin & insights view', 'Volume pricing on extra seats'],
+    // 2026-08-26 pricing/copy alignment: 'Shared target-company list'
+    // replaced with 'Shared CRM across your team' — there's no
+    // target-company-list concept anywhere in the product any more (see
+    // LinkedInImport.jsx's own comment, and SupportWidget.jsx's system
+    // prompt, rewritten after a real incident specifically to stop
+    // claiming this exists). The real, built, RLS-verified Team perk this
+    // was presumably meant to gesture at — every teammate seeing the same
+    // contacts/companies/deals/jobs/candidates — already exists and is
+    // genuinely Team-exclusive (a solo Starter/Growth account has no
+    // teammates to share with), so it replaces the fabricated bullet
+    // rather than just deleting it.
+    features: ['Everything in Growth, per seat', 'Shared CRM across your team', 'Team admin & insights view', 'Volume pricing on extra seats'],
   },
 ]
 

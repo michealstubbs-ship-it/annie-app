@@ -157,7 +157,15 @@ Be specific, actionable and concise. No waffle.`
   const QUICK = ['Draft an outreach email to a new prospect', 'Help me prepare for a BD call', 'What should I say to re-engage a cold contact?', 'Write a LinkedIn message for a warm lead']
 
   return (
-    <div className="flex flex-col h-screen max-h-screen p-8 pb-0">
+    // Fixed viewport height, not min-height, so this must account for the
+    // same mobile top bar Dashboard.jsx's <main> already clears with its own
+    // `pt-14 md:pt-0` (see that file's comment) — without the matching
+    // `-3.5rem` here on mobile, this container renders 56px taller than the
+    // space actually visible below that bar, pushing the message input row
+    // (including the Send button) 56px below the fold on any viewport under
+    // the md breakpoint, so it's only reachable by scrolling `<main>` itself.
+    // 2026-08-27 UX audit fix.
+    <div className="flex flex-col h-[calc(100vh-3.5rem)] md:h-screen max-h-screen p-8 pb-0">
       <div className="mb-4">
         <h1 className="text-3xl font-bold text-navy">Ask Annie</h1>
         <p className="text-gray-500 mt-1">Your personal BD intelligence assistant</p>
