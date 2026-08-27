@@ -8,14 +8,14 @@
 // — these tests stop at "did the guard actually stop the expensive work",
 // asserted via the scan-status blob (setStatus) each guard writes on its way
 // out, since that's the one externally-observable side effect available.
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const { mockGetAuthedUser } = vi.hoisted(() => ({ mockGetAuthedUser: vi.fn() }))
 const { mockSetJSON, mockGetStore } = vi.hoisted(() => {
   const mockSetJSON = vi.fn().mockResolvedValue(undefined)
   return { mockSetJSON, mockGetStore: vi.fn(() => ({ setJSON: mockSetJSON })) }
 })
-const { mockReportServerError } = vi.hoisted(() => ({ mockReportServerError: vi.fn() }))
+const { mockReportServerError } = vi.hoisted(() => ({ mockReportServerError: vi.fn().mockResolvedValue(undefined) }))
 const { mockCreateClient } = vi.hoisted(() => ({ mockCreateClient: vi.fn() }))
 
 vi.mock('../lib/auth.js', () => ({ getAuthedUser: mockGetAuthedUser }))
@@ -117,6 +117,80 @@ describe('authentication', () => {
     mockCreateClient.mockReturnValue(makeSupabase({}))
     await handler(makeRequest())
     expect(mockReportServerError).not.toHaveBeenCalled()
+  })
+})
+
+// 2026-08-27 audit fix: found via a 19-scenario staged first-scan audit —
+// several Growth-tier scans fired close together all froze at round 1
+// forever with zero signals and nothing in error_logs, because this
+// call only ever guarded against the fetch() promise rejecting, never
+// against a resolved-but-non-OK response (exactly what a concurrency-
+// limited gateway rejection looks like). Tested directly against a mocked
+// global.fetch — reaching this via the full handler would mean also
+// mocking the entire research pipeline, which is scanShared.js's own
+// tested territory.
+describe('fireNextRound (chain-continuation retry)', () => {
+  let fireNextRound
+  const realFetch = global.fetch
+
+  beforeEach(async () => {
+    process.env.INTERNAL_SCAN_SECRET = 'test-internal-secret'
+    process.env.URL = 'https://annie.example'
+    vi.resetModules()
+    ;({ fireNextRound } = await import('../scan-now-background.js'))
+  })
+
+  afterEach(() => {
+    global.fetch = realFetch
+    delete process.env.INTERNAL_SCAN_SECRET
+    delete process.env.URL
+  })
+
+  it('does not retry or report when the continuation call succeeds', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 202 })
+    fireNextRound('user_123', 2, Date.now())
+    await new Promise(r => setTimeout(r, 0))
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect(mockReportServerError).not.toHaveBeenCalled()
+  })
+
+  it('retries once and succeeds silently when the retry is OK', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 429 })
+      .mockResolvedValueOnce({ ok: true, status: 202 })
+    fireNextRound('user_123', 2, Date.now())
+    await new Promise(r => setTimeout(r, 0))
+    await new Promise(r => setTimeout(r, 0))
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(mockReportServerError).not.toHaveBeenCalled()
+  })
+
+  it('reports a server error only after both the original call and the retry come back non-OK', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+    fireNextRound('user_123', 3, Date.now())
+    await new Promise(r => setTimeout(r, 0))
+    await new Promise(r => setTimeout(r, 0))
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(mockReportServerError).toHaveBeenCalledTimes(1)
+    expect(mockReportServerError).toHaveBeenCalledWith(
+      'scan-now-background',
+      expect.any(Error),
+      expect.objectContaining({ stage: 'chain-fire', round: 3 })
+    )
+  })
+
+  it('reports a server error when the fetch itself throws (network failure)', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error('network down'))
+    fireNextRound('user_123', 4, Date.now())
+    await new Promise(r => setTimeout(r, 0))
+    expect(mockReportServerError).toHaveBeenCalledTimes(1)
+    expect(mockReportServerError).toHaveBeenCalledWith(
+      'scan-now-background',
+      expect.any(Error),
+      expect.objectContaining({ stage: 'chain-fire', round: 4 })
+    )
   })
 })
 
