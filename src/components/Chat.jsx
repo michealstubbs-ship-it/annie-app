@@ -6,6 +6,7 @@ import { callChatStream } from '../lib/callChat'
 import { trackEvent } from '../lib/analytics'
 import { getWatchlistCompanyNames, buildWatchlistChatHint } from '../lib/watchlist'
 import { shouldSearchWeb } from '../lib/chatWebSearch'
+import { describeChatFailure } from '../lib/chatErrorMessage'
 
 // Security fix, 2026-08-27 audit: citation URLs come from Anthropic's own
 // web_search tool, so a malicious value getting into this field would be an
@@ -132,10 +133,22 @@ Be specific, actionable and concise. No waffle.`
       // err.message genuinely isn't something a user should see: no
       // message, the generic 'Request failed' used when the server didn't
       // send a JSON body, or a raw browser network-error string.
-      const serverMessage = err?.message
-      const friendly = serverMessage && serverMessage !== 'Request failed' && !/fetch|network/i.test(serverMessage)
-        ? serverMessage
-        : 'Sorry, something went wrong. Please try again.'
+      //
+      // 2026-08-27 fix: that generic fallback case is exactly the class of
+      // failure a stale tab produces — the tab is still running a previous
+      // deploy's JS when a new one goes live, and the very next send() fails
+      // at the network layer. Other pages already auto-recover from this
+      // (see ErrorBoundary.jsx's chunk-load handling), but that boundary only
+      // catches React render errors, never a fetch() failure inside this
+      // try/catch, so Ask Annie was the one place still telling the
+      // recruiter to just "try again" — which fails the same way again if
+      // the tab really is stale, since resending doesn't reload anything.
+      // describeChatFailure centralises the same message-classification
+      // logic and adds the one thing that actually fixes it: a one-click
+      // reload, offered rather than forced (an unprompted auto-reload here
+      // would risk looping on a genuine, unrelated network problem — see
+      // describeChatFailure's own header).
+      const { text: friendly, reloadSuggested } = describeChatFailure(err)
       setMessages(prev => {
         const next = [...prev]
         // Replace the streaming placeholder in place (it may already have
@@ -143,9 +156,9 @@ Be specific, actionable and concise. No waffle.`
         // failed request should leave exactly one assistant message, not a
         // half-written one plus a separate apology underneath it.
         if (assistantIndex != null && next[assistantIndex]?.streaming) {
-          next[assistantIndex] = { role: 'assistant', content: friendly }
+          next[assistantIndex] = { role: 'assistant', content: friendly, reloadSuggested }
         } else {
-          next.push({ role: 'assistant', content: friendly })
+          next.push({ role: 'assistant', content: friendly, reloadSuggested })
         }
         return next
       })
@@ -202,6 +215,16 @@ Be specific, actionable and concise. No waffle.`
                           {c.title || c.url}
                         </a>
                       ))}
+                    </div>
+                  )}
+                  {m.reloadSuggested && (
+                    <div className="mt-2 pt-2 border-t border-gray-100">
+                      <button
+                        onClick={() => window.location.reload()}
+                        className="text-xs font-medium text-navy hover:text-gold underline underline-offset-2"
+                      >
+                        Reload page
+                      </button>
                     </div>
                   )}
                 </>
