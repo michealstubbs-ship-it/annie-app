@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { describeChatFailure } from './chatErrorMessage.js'
+import { describeChatFailure, describeStaleTab } from './chatErrorMessage.js'
 
 describe('describeChatFailure', () => {
   it('passes a real server-sent error message through unchanged, with no reload suggestion', () => {
@@ -34,5 +34,14 @@ describe('describeChatFailure', () => {
   it('falls back to the generic apology, with a reload suggestion, when err itself is missing', () => {
     const result = describeChatFailure(undefined)
     expect(result.reloadSuggested).toBe(true)
+  })
+})
+
+describe('describeStaleTab', () => {
+  it('states plainly that this tab is stale, with a reload suggestion — the confirmed case, not a guess', () => {
+    const result = describeStaleTab()
+    expect(result.reloadSuggested).toBe(true)
+    expect(result.text).toMatch(/previous version/i)
+    expect(result.text).toMatch(/reload/i)
   })
 })

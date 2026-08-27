@@ -40,3 +40,16 @@ export function describeChatFailure(err) {
     reloadSuggested: true,
   }
 }
+
+// 2026-08-27: the confirmed case, not the suspected one. Chat.jsx's
+// pre-flight staleBuild.isTabStale() check already knows, before ever
+// attempting a request, that this tab's own JS is gone from the server —
+// so this message says so plainly instead of hedging with "if this just
+// started happening" the way describeChatFailure's generic fallback has
+// to when it's only guessing from an ambiguous network error.
+export function describeStaleTab() {
+  return {
+    text: "This tab is running a previous version of Annie — we've shipped an update since you opened it. Reload to get the latest and keep chatting.",
+    reloadSuggested: true,
+  }
+}

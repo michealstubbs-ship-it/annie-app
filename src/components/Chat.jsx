@@ -6,7 +6,8 @@ import { callChatStream } from '../lib/callChat'
 import { trackEvent } from '../lib/analytics'
 import { getWatchlistCompanyNames, buildWatchlistChatHint } from '../lib/watchlist'
 import { shouldSearchWeb } from '../lib/chatWebSearch'
-import { describeChatFailure } from '../lib/chatErrorMessage'
+import { describeChatFailure, describeStaleTab } from '../lib/chatErrorMessage'
+import { isTabStale } from '../lib/staleBuild'
 
 // Security fix, 2026-08-27 audit: citation URLs come from Anthropic's own
 // web_search tool, so a malicious value getting into this field would be an
@@ -81,7 +82,31 @@ export default function Chat() {
     })
 
     try {
-      await supabase.from('chat_messages').insert({ user_id: user.id, role: 'user', content: userMsg.content })
+      // Pre-flight check, 2026-08-27: run alongside the DB insert (no need
+      // to wait for one before starting the other) rather than ever
+      // attempting a request this tab's own JS can no longer possibly
+      // complete — see staleBuild.js's own header for why a stale tab is
+      // detectable before it fails, not just after. The recruiter's message
+      // is still saved to chat_messages either way; only the doomed
+      // request to Annie herself is skipped, replaced with a message that
+      // says plainly what's actually true (staleBuild.js already confirmed
+      // it) rather than the generic fallback's "if this just started
+      // happening" hedge — that hedge is for when a request failed and we
+      // can only guess why, not for when we already know.
+      const [, stale] = await Promise.all([
+        supabase.from('chat_messages').insert({ user_id: user.id, role: 'user', content: userMsg.content }),
+        isTabStale(),
+      ])
+
+      if (stale) {
+        const { text: staleText, reloadSuggested } = describeStaleTab()
+        setMessages(prev => {
+          const next = [...prev]
+          next[assistantIndex] = { role: 'assistant', content: staleText, reloadSuggested }
+          return next
+        })
+        return
+      }
 
       const systemPrompt = `You are Annie, an expert BD intelligence assistant for ${profile?.full_name || 'a recruiter'} at ${profile?.firm_name || 'their recruitment firm'}.
 Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.

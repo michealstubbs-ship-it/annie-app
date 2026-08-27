@@ -1,5 +1,31 @@
 import { supabase } from './supabase'
 
+// 2026-08-27: one real report from Michael traced to a request landing in
+// the split-second Netlify swaps one deploy's serverless functions for the
+// next — a genuine, narrow, self-resolving blip, not a stale tab
+// (staleBuild.js's isTabStale() is the fix for that separate cause; this is
+// for the moment even a perfectly current tab can still hit). fetch()
+// itself throwing (a network-level failure, never even reaching a server
+// that could send back a real error body) is exactly the class of thing one
+// short retry absorbs — same reasoning, and same shape, as chat.js's own
+// retry on Anthropic's transient 429/529, just one layer further out. Only
+// a THROWN fetch is retried here — a resolved-but-not-ok response (a real
+// 402 monthly cap, 401 auth, 429 rate limit) is a legitimate answer from a
+// server that's very much up, and retrying that blindly would just waste a
+// second attempt against a cap that isn't going anywhere.
+async function fetchWithNetworkRetry(url, options, attempts = 2, delayMs = 400) {
+  let lastErr
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fetch(url, options)
+    } catch (err) {
+      lastErr = err
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs))
+    }
+  }
+  throw lastErr
+}
+
 // Every call to the chat function must carry the caller's own Supabase
 // session token — chat.js verifies it server-side before spending any
 // Anthropic budget. Centralised here so every call site (Ask Annie, the
@@ -18,7 +44,7 @@ export async function callChat({ messages, systemOverride, maxTokens, model, web
   // widget, the writing-style analyser, and Today's Actions' candidate
   // pitch batch) was hitting a real Netlify 404 in production. Same class
   // of bug fixed in Billing.jsx and LinkedInImport.jsx alongside this.
-  const resp = await fetch('/api/chat', {
+  const resp = await fetchWithNetworkRetry('/api/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -50,7 +76,7 @@ export async function callChatStream({ messages, systemOverride, maxTokens, mode
   const token = session?.access_token
   if (!token) throw new Error('You need to be signed in for that.')
 
-  const resp = await fetch('/api/chat', {
+  const resp = await fetchWithNetworkRetry('/api/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
