@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
 import AdminOverview from './AdminOverview'
+import AdminLearnedSources from './AdminLearnedSources'
 
 export default function Insights() {
   const [topics, setTopics] = useState([])
@@ -47,9 +48,9 @@ export default function Insights() {
   return (
     <div className="p-8">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold text-navy">{tab === 'overview' ? 'Operator dashboard' : 'Customer insights'}</h1>
+        <h1 className="text-3xl font-bold text-navy">{tab === 'overview' ? 'Operator dashboard' : tab === 'learned' ? 'Learned sources' : 'Customer insights'}</h1>
         <p className="text-gray-500 mt-1">
-          {tab === 'overview' ? 'Annie, across every customer' : 'What customers are asking Annie support, across every account'}
+          {tab === 'overview' ? 'Annie, across every customer' : tab === 'learned' ? "What Annie has taught herself, and what customers' own CRM data has taught her" : 'What customers are asking Annie support, across every account'}
         </p>
       </div>
 
@@ -57,6 +58,7 @@ export default function Insights() {
 
       <div className="flex gap-2 mb-5">
         <button onClick={() => setTab('overview')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'overview' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>Overview</button>
+        <button onClick={() => setTab('learned')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'learned' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>Learned sources</button>
         <button onClick={() => setTab('topics')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'topics' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>Topics</button>
         <button onClick={() => setTab('conversations')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'conversations' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>Recent conversations</button>
         <button onClick={() => setTab('errors')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'errors' ? 'bg-navy text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>
@@ -66,6 +68,8 @@ export default function Insights() {
 
       {tab === 'overview' ? (
         <AdminOverview onOpenErrors={() => setTab('errors')} />
+      ) : tab === 'learned' ? (
+        <AdminLearnedSources />
       ) : loading ? (
         <div className="flex justify-center py-20"><Spinner /></div>
       ) : tab === 'topics' ? (
