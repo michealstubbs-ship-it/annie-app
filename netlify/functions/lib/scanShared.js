@@ -1961,6 +1961,43 @@ export const TARGET_FIRM_DIRECTORY = {
     anchors: ['Clifford Chance', 'Linklaters', 'Freshfields Bruckhaus Deringer', 'A&O Shearman', 'Slaughter and May', 'Kirkland & Ellis', 'Latham & Watkins', 'Skadden Arps'],
     discoveryHint: 'Beyond these global firms, use Legal 500 and Chambers and Partners\' own regional rankings as the authority on who else is active in this customer\'s selected markets — both rank firms across every tier, global elite down to national and boutique, not just the largest names — then check those firms\' own career pages the same way.',
   },
+  // Added 27 Aug 2026 following the pre-launch QA exercise, which found this
+  // sector scanning genuinely thin (0 of its own discoveries in
+  // annie_learned_sources, vs. real customer-CRM-sourced entries only) — the
+  // exact "harder to find information" gap Michael flagged going in. NOTE:
+  // an earlier draft of this entry anchored on public-affairs/lobbying
+  // consultancies and federal IT contractors (APCO, FTI, Booz Allen,
+  // Leidos, etc.) — Michael correctly caught that those are consulting
+  // firms with government CLIENTS, not the government/public-sector
+  // employers this sector is actually meant to represent, so the anchors
+  // below are genuine government, semi-government and multilateral bodies
+  // instead. This sector also doesn't map onto the "funding/expansion"
+  // signal types the other two directories lean on the same way — a
+  // government department doesn't raise a funding round — so the
+  // discoveryHint below leans on leadership-appointment and new-mandate
+  // coverage specifically, which is the BD-relevant event type that
+  // genuinely does happen here (a new agency head, a newly stood-up unit).
+  //
+  // discoveryHint deliberately does NOT introduce a second set of press
+  // sources: REGIONAL_SOURCE_DIRECTORY above already names a real, verified
+  // outlet for this exact sector in every region (WAM for UAE/GCC, Civil
+  // Service World for the UK, GovExec/Route Fifty for the US, Politico
+  // Europe/Euractiv for Europe, GovInsider for Asia Pacific) and every scan
+  // already receives that via buildRegionalSourceHint — this just points
+  // back at it, the same "equivalent named regional trade press already
+  // listed above" pattern Management Consulting's own hint already uses,
+  // rather than inventing a parallel list that could drift out of sync.
+  'Government & Public Sector': {
+    anchors: [
+      // UK — central departments and the regulators/NDPBs most likely to have BD-relevant leadership moves
+      'Cabinet Office', 'HM Treasury', 'Home Office', 'Ofcom', 'Competition and Markets Authority (CMA)',
+      // UAE — verified real government and semi-government bodies (not GREs like DEWA/ADNOC, which sit under their own sectors)
+      'Federal Authority for Government Human Resources (FAHR)', 'Dubai Future Foundation', 'Government Development and The Future Office (UAE)', 'Mohammed Bin Rashid School of Government (MBRSG)',
+      // US — federal bodies plus multilateral organisations that genuinely do use recruiters for policy roles
+      'General Services Administration (GSA)', 'World Bank', 'International Monetary Fund (IMF)',
+    ],
+    discoveryHint: "Beyond these bodies, use this customer's own regional trade press already named above (Civil Service World for the UK, WAM for UAE/GCC, GovExec and Route Fifty for the US, Politico Europe/Euractiv for Europe, GovInsider for Asia Pacific) as the authority on leadership moves and newly created bodies or units — this sector doesn't have a single global ranking site the way consulting or law do, so the region-specific coverage above is the real discovery mechanism here — then check each body's own careers/press pages the same way.",
+  },
 }
 
 // Composes the proactive firm-tier check-list for the prompt, mirroring

@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase'
 import { callChatStream } from '../lib/callChat'
 import { trackEvent } from '../lib/analytics'
 import { getWatchlistCompanyNames, buildWatchlistChatHint } from '../lib/watchlist'
+import { shouldSearchWeb } from '../lib/chatWebSearch'
 
 export default function Chat() {
   const { user, profile } = useAuth()
@@ -77,10 +78,14 @@ ${buildWatchlistChatHint(watchlist)}
 You help with: BD strategy, outreach messages, market intelligence, interview prep, candidate pitches, objection handling, and anything recruitment business development related.
 Be specific, actionable and concise. No waffle.`
 
-      const { text } = await callChatStream({
+      // 27 Aug 2026: only pay search's extra cost/latency when the question
+      // actually needs current information — see chatWebSearch.js's header.
+      const { text, citations } = await callChatStream({
         messages: [...messages, userMsg].map(m => ({ role: m.role, content: m.content })),
         systemOverride: systemPrompt,
         maxTokens: 1500,
+        webSearch: shouldSearchWeb(userMsg.content),
+        maxSearchUses: 3,
         onDelta: (_chunk, fullTextSoFar) => {
           setMessages(prev => {
             const next = [...prev]
@@ -91,7 +96,11 @@ Be specific, actionable and concise. No waffle.`
       })
       setMessages(prev => {
         const next = [...prev]
-        next[assistantIndex] = { role: 'assistant', content: text }
+        // citations only ever come back when this message actually triggered
+        // a live search (see shouldSearchWeb above) — surfaced so a
+        // recruiter can tell a search-grounded answer from Annie's own
+        // knowledge, not just take "as of today" on faith.
+        next[assistantIndex] = { role: 'assistant', content: text, citations: citations?.length ? citations : undefined }
         return next
       })
       await supabase.from('chat_messages').insert({ user_id: user.id, role: 'assistant', content: text })
@@ -163,6 +172,16 @@ Be specific, actionable and concise. No waffle.`
                 <>
                   {m.content}
                   {m.streaming && <span className="inline-block w-1.5 h-4 bg-gray-400 ml-0.5 align-middle animate-pulse" />}
+                  {m.citations?.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-400 space-y-0.5">
+                      <div className="font-medium text-gray-400">Checked live just now:</div>
+                      {m.citations.slice(0, 5).map((c, ci) => (
+                        <a key={ci} href={c.url} target="_blank" rel="noopener noreferrer" className="block truncate hover:text-gold hover:underline">
+                          {c.title || c.url}
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </>
               )}
             </div>
