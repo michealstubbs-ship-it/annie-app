@@ -11,7 +11,7 @@ import {
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs,
-  looksTruncatedByTokenLimit, getLearnedSources, recordLearnedDiscoveries,
+  looksTruncatedByTokenLimit, getLearnedSources, recordLearnedDiscoveries, isJunkLearnedSourceValue,
   writeToSignalPool, fetchSignalPoolMatches, personalizePoolHits,
   logMarketCoverage, getMarketCoverageReport,
   getCustomerWatchlistCompanies, buildCustomerWatchlistHint,
@@ -1674,6 +1674,53 @@ describe('recordLearnedDiscoveries — last_confirmed_at refresh (2026-08-27 fix
   })
 })
 
+describe('isJunkLearnedSourceValue / recordLearnedDiscoveries — junk-value guard (2026-08-27 asymmetry fix)', () => {
+  // The gap: learn_company_for_sectors (the SQL customer-CRM write path)
+  // got a junk-value/min-length guard the same day, but this JS write path
+  // — Annie's own AI-discovered companies/sources — didn't, even though it
+  // feeds the exact same shared table. Mirrors the SQL denylist exactly so
+  // a value is judged the same way regardless of which path wrote it.
+  it('rejects normalized keys shorter than 2 characters', () => {
+    expect(isJunkLearnedSourceValue('x')).toBe(true)
+    expect(isJunkLearnedSourceValue('')).toBe(true)
+    expect(isJunkLearnedSourceValue(null)).toBe(true)
+  })
+
+  it('rejects known placeholder/junk values, but still allows real short/initialism company names', () => {
+    expect(isJunkLearnedSourceValue('na')).toBe(true)
+    expect(isJunkLearnedSourceValue('test')).toBe(true)
+    expect(isJunkLearnedSourceValue('tbc')).toBe(true)
+    expect(isJunkLearnedSourceValue('company')).toBe(true)
+    // Real short/initialism names normalize to 2+ chars and aren't on the
+    // denylist, so they pass — same behaviour as the SQL guard.
+    expect(isJunkLearnedSourceValue('ey')).toBe(false)
+    expect(isJunkLearnedSourceValue('bp')).toBe(false)
+    expect(isJunkLearnedSourceValue('3m')).toBe(false)
+  })
+
+  it('recordLearnedDiscoveries silently drops junk-value entries instead of upserting them', async () => {
+    const upsertSpy = vi.fn().mockResolvedValue({ error: null })
+    const supabase = { from: () => ({ upsert: upsertSpy }) }
+    await recordLearnedDiscoveries(supabase, [
+      { kind: 'company', sector: 'Technology', value: 'Test', foundVia: 'scan' },
+      { kind: 'company', sector: 'Technology', value: 'N/A', foundVia: 'scan' },
+    ])
+    expect(upsertSpy).not.toHaveBeenCalled()
+  })
+
+  it('recordLearnedDiscoveries keeps legitimate entries in a mixed batch, dropping only the junk one', async () => {
+    const upsertSpy = vi.fn().mockResolvedValue({ error: null })
+    const supabase = { from: () => ({ upsert: upsertSpy }) }
+    await recordLearnedDiscoveries(supabase, [
+      { kind: 'company', sector: 'Technology', value: 'Acme Corp', foundVia: 'scan' },
+      { kind: 'company', sector: 'Technology', value: 'TBC', foundVia: 'scan' },
+    ])
+    const rows = upsertSpy.mock.calls[0][0]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].value).toBe('Acme Corp')
+  })
+})
+
 describe('writeToSignalPool (cross-customer signal pool write-through)', () => {
   it('upserts a pool row per entry, tagged with the discovering customer\'s own sector/location/function selections', async () => {
     const upsertSpy = vi.fn().mockResolvedValue({ error: null })
@@ -1954,8 +2001,21 @@ describe('logMarketCoverage (one row per scan attempt, found-something or not)',
 })
 
 describe('getMarketCoverageReport (aggregating scan history into a per sector+location coverage picture)', () => {
-  function makeCoverageSupabase(rows) {
-    return { from: () => ({ select: () => ({ gte: () => ({ limit: async () => ({ data: rows, error: null }) }) }) }) }
+  // Two tables are read now: market_coverage_log (scan attempts) and, new
+  // as of the 2026-08-27 "annie_under_informed vs genuinely_quiet" fix,
+  // annie_learned_sources (how much Annie already knows per sector). Routed
+  // by table name so each test can control both independently; learnedRows
+  // defaults to none, which the tests below rely on to check the
+  // "under-informed" default cleanly.
+  function makeCoverageSupabase(rows, learnedRows = []) {
+    return {
+      from: (table) => {
+        if (table === 'annie_learned_sources') {
+          return { select: () => ({ in: () => ({ limit: async () => ({ data: learnedRows, error: null }) }) }) }
+        }
+        return { select: () => ({ gte: () => ({ limit: async () => ({ data: rows, error: null }) }) }) }
+      },
+    }
   }
 
   it('flags a sector+location pair as thin only once it has enough distinct customers, enough scans, and zero signals found', async () => {
@@ -1967,7 +2027,10 @@ describe('getMarketCoverageReport (aggregating scan history into a per sector+lo
       { user_id: 'u3', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 },
     ]
     const result = await getMarketCoverageReport(makeCoverageSupabase(rows), { minScans: 5, minCustomers: 3 })
-    expect(result).toEqual([{ sector: 'Law', location: 'UAE / GCC', scans: 5, distinctCustomers: 3, totalFound: 0, thin: true }])
+    expect(result).toEqual([{
+      sector: 'Law', location: 'UAE / GCC', scans: 5, distinctCustomers: 3, totalFound: 0, thin: true,
+      knownCompanies: 0, knownSources: 0, likelyCause: 'annie_under_informed',
+    }])
   })
 
   it('does not flag a pair as thin if it has real signals, even with plenty of scan history', async () => {
@@ -1977,13 +2040,13 @@ describe('getMarketCoverageReport (aggregating scan history into a per sector+lo
       { user_id: 'u3', sectors: ['Technology'], locations: ['United Kingdom'], found_count: 1 },
     ]
     const result = await getMarketCoverageReport(makeCoverageSupabase(rows), { minScans: 3, minCustomers: 3 })
-    expect(result[0]).toMatchObject({ thin: false, totalFound: 3 })
+    expect(result[0]).toMatchObject({ thin: false, totalFound: 3, likelyCause: null })
   })
 
   it('does not flag a pair as thin without enough distinct customers, even with many scans from the same one', async () => {
     const rows = Array.from({ length: 10 }, () => ({ user_id: 'u1', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 }))
     const result = await getMarketCoverageReport(makeCoverageSupabase(rows), { minScans: 5, minCustomers: 3 })
-    expect(result[0]).toMatchObject({ thin: false, distinctCustomers: 1 })
+    expect(result[0]).toMatchObject({ thin: false, distinctCustomers: 1, likelyCause: null })
   })
 
   it('attributes one scan row to every sector x location pair it spans', async () => {
@@ -2001,6 +2064,36 @@ describe('getMarketCoverageReport (aggregating scan history into a per sector+lo
     expect(result).toEqual([])
     expect(consoleSpy).toHaveBeenCalledWith('[scanShared] market_coverage_log read failed:', 'db down')
     consoleSpy.mockRestore()
+  })
+
+  it('labels a thin pair "genuinely_quiet" once Annie already knows enough companies/sources for that sector', async () => {
+    const rows = [
+      { user_id: 'u1', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 },
+      { user_id: 'u2', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 },
+      { user_id: 'u3', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 },
+    ]
+    const learnedRows = Array.from({ length: 4 }, () => ({ sector: 'Law', kind: 'company' }))
+      .concat(Array.from({ length: 4 }, () => ({ sector: 'Law', kind: 'source' })))
+    const result = await getMarketCoverageReport(makeCoverageSupabase(rows, learnedRows), { minScans: 3, minCustomers: 3 })
+    expect(result[0]).toMatchObject({ thin: true, knownCompanies: 4, knownSources: 4, likelyCause: 'genuinely_quiet' })
+  })
+
+  it('labels a thin pair "annie_under_informed" when few or no companies/sources are known for that sector', async () => {
+    const rows = [
+      { user_id: 'u1', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 },
+      { user_id: 'u2', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 },
+      { user_id: 'u3', sectors: ['Law'], locations: ['UAE / GCC'], found_count: 0 },
+    ]
+    const learnedRows = [{ sector: 'Law', kind: 'company' }, { sector: 'Law', kind: 'company' }]
+    const result = await getMarketCoverageReport(makeCoverageSupabase(rows, learnedRows), { minScans: 3, minCustomers: 3 })
+    expect(result[0]).toMatchObject({ thin: true, knownCompanies: 2, knownSources: 0, likelyCause: 'annie_under_informed' })
+  })
+
+  it('does not query annie_learned_sources at all when there is no scan history', async () => {
+    const fromSpy = vi.fn((table) => ({ select: () => ({ gte: () => ({ limit: async () => ({ data: [], error: null }) }), in: () => ({ limit: async () => ({ data: [], error: null }) }) }) }))
+    const result = await getMarketCoverageReport({ from: fromSpy })
+    expect(result).toEqual([])
+    expect(fromSpy).not.toHaveBeenCalledWith('annie_learned_sources')
   })
 })
 

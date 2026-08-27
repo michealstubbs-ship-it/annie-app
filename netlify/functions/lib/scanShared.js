@@ -2083,6 +2083,26 @@ export function splitLearnedEntries(found) {
   return { learned, rest }
 }
 
+// Same junk-value denylist as learn_company_for_sectors's v_junk_values in
+// 2026-08-27-learned-sources-quality-guard.sql, kept in sync deliberately —
+// see the asymmetry note on recordLearnedDiscoveries below for why this
+// exists on the JS write path too, not just the SQL one.
+const LEARNED_SOURCE_JUNK_VALUES = new Set([
+  'na', 'n a', 'none', 'unknown', 'test', 'testing', 'tbc', 'tbd', 'tba',
+  'xxx', 'asdf', 'nil', 'temp', 'temporary', 'sample', 'example', 'dummy',
+  'placeholder', 'company', 'client', 'prospect', 'various', 'n', 'x',
+])
+
+// Same two guards as learn_company_for_sectors's SQL-side check: a minimum
+// length of 2 on the normalized key (catches a stray single character while
+// still letting real short/initialism names like "EY", "BP", "3M" through —
+// they normalize to 2+ characters), and the shared denylist above. Exported
+// so its tests can exercise it directly alongside recordLearnedDiscoveries.
+export function isJunkLearnedSourceValue(normalizedKey) {
+  if (!normalizedKey || normalizedKey.length < 2) return true
+  return LEARNED_SOURCE_JUNK_VALUES.has(normalizedKey)
+}
+
 // Writes new companies/sources Annie found this scan back to the shared
 // table above so her list keeps growing — this is the actual "evolve and
 // get better" half of the mechanism, not just a one-time seed.
@@ -2106,6 +2126,18 @@ export function splitLearnedEntries(found) {
 // trigger's own behavior exactly. first_seen_at is deliberately left out of
 // the upserted columns, so a repeat write still never overwrites the
 // original discovery date — only "still active" freshness updates.
+//
+// 2026-08-27 follow-up asymmetry fix: the SQL write path
+// (learn_company_for_sectors, customer CRM adds) got a junk-value/min-length
+// guard the same day this function's own bug above was fixed, but this path
+// — Annie's own AI-discovered companies/sources — didn't get the matching
+// guard at the time. Same table, same risk: a malformed or placeholder-ish
+// value from a scan (a mis-parsed fragment, a generic "Company" the model
+// echoed back) would otherwise permanently seed itself into every future
+// scan prompt for that sector, exactly like the customer-CRM gap did. Now
+// filtered through the same isJunkLearnedSourceValue check, keyed off the
+// same normalized value_key already computed for the dedup constraint, so a
+// value is judged consistently regardless of which path wrote it.
 export async function recordLearnedDiscoveries(supabase, entries) {
   if (!supabase || !entries?.length) return
   const nowIso = new Date().toISOString()
@@ -2120,6 +2152,7 @@ export async function recordLearnedDiscoveries(supabase, entries) {
       found_via: e.foundVia || 'discovered',
       last_confirmed_at: nowIso,
     }))
+    .filter(row => !isJunkLearnedSourceValue(row.value_key))
   if (!rows.length) return
   try {
     const { error } = await supabase
@@ -2386,6 +2419,23 @@ const MARKET_COVERAGE_SCAN_LIMIT = 5000
 // attempts) and zero signals found across all of it — the actual,
 // evolving answer to "is this combination worth offering on the signup
 // form", computed from Annie's own history rather than a one-off audit.
+// 2026-08-27, Michael: "anything else worth checking in terms of annie's
+// learning and application?" — a "thin" pair above (real, repeated scan
+// attempts, consistently nothing found) is ambiguous on its own: it reads
+// the same whether the market genuinely has nothing going on, or Annie
+// simply doesn't yet know which companies/sources to check there (a sector
+// she has few or no annie_learned_sources rows for). Below this many
+// combined companies+sources known for a sector, "thin" is more likely
+// "Annie's under-informed here" than "genuinely quiet" — worth a look at
+// what she's actually searching for before concluding the market itself is
+// the problem. This is a coarse, sector-level signal (annie_learned_sources
+// rows are overwhelmingly logged with location 'Global' — see
+// learn_company_for_sectors and recordLearnedDiscoveries's own defaults —
+// so a genuinely location-specific "known companies" count isn't something
+// the data actually supports yet; sector-level is the honest granularity
+// available today).
+const MARKET_COVERAGE_UNINFORMED_THRESHOLD = 5
+
 export async function getMarketCoverageReport(supabase, { sinceDays = 30, minScans = 5, minCustomers = 3 } = {}) {
   if (!supabase) return []
   const cutoff = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString()
@@ -2414,15 +2464,49 @@ export async function getMarketCoverageReport(supabase, { sinceDays = 30, minSca
         }
       }
     }
+
+    // How many companies/sources Annie already knows for each sector
+    // involved above — read once for every distinct sector in the report,
+    // not per-pair, since the table itself doesn't carry a meaningful
+    // location dimension (see the constant's comment above).
+    const knownBySector = {}
+    const sectorList = [...new Set([...pairs.values()].map(p => p.sector))]
+    if (sectorList.length) {
+      const { data: learnedRows, error: learnedError } = await supabase
+        .from('annie_learned_sources')
+        .select('sector, kind')
+        .in('sector', sectorList)
+        .limit(LEARNED_SOURCES_QUERY_LIMIT)
+      if (learnedError) {
+        console.error('[scanShared] annie_learned_sources read (for coverage report) failed:', learnedError.message)
+      } else {
+        for (const row of learnedRows || []) {
+          if (!knownBySector[row.sector]) knownBySector[row.sector] = { companies: 0, sources: 0 }
+          if (row.kind === 'source') knownBySector[row.sector].sources += 1
+          else knownBySector[row.sector].companies += 1
+        }
+      }
+    }
+
     return [...pairs.values()]
-      .map(p => ({
-        sector: p.sector,
-        location: p.location,
-        scans: p.scans,
-        distinctCustomers: p.customers.size,
-        totalFound: p.totalFound,
-        thin: p.customers.size >= minCustomers && p.scans >= minScans && p.totalFound === 0,
-      }))
+      .map(p => {
+        const known = knownBySector[p.sector] || { companies: 0, sources: 0 }
+        const knownTotal = known.companies + known.sources
+        const thin = p.customers.size >= minCustomers && p.scans >= minScans && p.totalFound === 0
+        return {
+          sector: p.sector,
+          location: p.location,
+          scans: p.scans,
+          distinctCustomers: p.customers.size,
+          totalFound: p.totalFound,
+          thin,
+          knownCompanies: known.companies,
+          knownSources: known.sources,
+          // Only meaningful once a pair is actually thin — an actively
+          // productive market has no "likely cause" to explain.
+          likelyCause: !thin ? null : (knownTotal < MARKET_COVERAGE_UNINFORMED_THRESHOLD ? 'annie_under_informed' : 'genuinely_quiet'),
+        }
+      })
       .sort((a, b) => (b.thin - a.thin) || (b.scans - a.scans))
   } catch (err) {
     console.error('[scanShared] market_coverage_log read failed:', err.message)

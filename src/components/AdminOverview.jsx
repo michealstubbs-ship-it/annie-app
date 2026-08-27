@@ -291,15 +291,31 @@ export default function AdminOverview({ onOpenErrors }) {
           }
           return (
             <div className="divide-y divide-gray-100">
-              {thin.map(p => (
-                <div key={`${p.sector}|${p.location}`} className="flex items-center gap-2.5 py-2.5">
-                  <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded flex-shrink-0 bg-status-warning text-navy">Thin</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-semibold text-navy truncate">{p.sector} · {p.location}</div>
-                    <div className="text-[11px] text-gray-400">{p.scans} scans across {p.distinctCustomers} customer{p.distinctCustomers === 1 ? '' : 's'}, 0 signals found</div>
+              {thin.map(p => {
+                // 2026-08-27: distinguishes a genuinely quiet market (Annie
+                // already knows plenty of companies/sources here and still
+                // found nothing) from one where she's simply under-informed
+                // (few or none known for that sector) — see
+                // MARKET_COVERAGE_UNINFORMED_THRESHOLD in scanShared.js.
+                const underInformed = p.likelyCause === 'annie_under_informed'
+                return (
+                  <div key={`${p.sector}|${p.location}`} className="flex items-center gap-2.5 py-2.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded flex-shrink-0 bg-status-warning text-navy">Thin</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] font-semibold text-navy truncate">{p.sector} · {p.location}</div>
+                      <div className="text-[11px] text-gray-400">{p.scans} scans across {p.distinctCustomers} customer{p.distinctCustomers === 1 ? '' : 's'}, 0 signals found</div>
+                    </div>
+                    <span
+                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${underInformed ? 'bg-yellow-50 text-navy' : 'bg-gray-100 text-gray-500'}`}
+                      title={underInformed
+                        ? `Annie only knows ${p.knownCompanies + p.knownSources} companies/sources for ${p.sector} — she may not know where to look yet`
+                        : `Annie knows ${p.knownCompanies + p.knownSources} companies/sources for ${p.sector} and still found nothing — likely a genuinely quiet market`}
+                    >
+                      {underInformed ? `Annie under-informed (${p.knownCompanies + p.knownSources} known)` : `Genuinely quiet (${p.knownCompanies + p.knownSources} known)`}
+                    </span>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )
         })()}
