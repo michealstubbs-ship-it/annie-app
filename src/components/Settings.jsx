@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { callChat } from '../lib/callChat'
-import { useScanStatusPoll } from '../lib/useScanStatusPoll'
+import { useScanStatusPoll, triggerScanNow } from '../lib/useScanStatusPoll'
 import { getInvoicingDetails, saveInvoicingDetails } from '../lib/data/invoicingDetails'
 import { CURRENCY_OPTIONS } from '../lib/invoiceCalc'
 import ConfirmDialog from './ConfirmDialog'
@@ -215,13 +215,17 @@ Only return the style profile text, nothing else.`
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) throw new Error('Your session has expired. Please log in again.')
 
-      // Fire-and-forget, same pattern as Onboarding.jsx: this is a
-      // background function with up to a 15-minute wall-clock budget, the
-      // response to this POST doesn't carry the result.
-      fetch('/.netlify/functions/scan-now-background', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      }).catch(() => {})
+      // 2026-08-27 audit fix: this used to fire-and-forget the raw POST
+      // (this is still a background function with up to a 15-minute
+      // wall-clock budget, so the response never carries the actual scan
+      // result) — but it never checked whether the trigger itself was even
+      // accepted. See triggerScanNow's own header for why that mattered:
+      // a rejected trigger used to look identical to a real scan starting.
+      const started = await triggerScanNow(session.access_token)
+      if (!started) {
+        setScanError("Couldn't start a new scan just now. Please try again.")
+        return
+      }
 
       // useScanStatusPoll.start() sets the same localStorage flag
       // Overview.jsx watches for the post-onboarding scan — so the "Annie

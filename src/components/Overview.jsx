@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
-import { useScanStatusPoll } from '../lib/useScanStatusPoll'
+import { useScanStatusPoll, triggerScanNow } from '../lib/useScanStatusPoll'
 import {
   IconZap, IconCalendar, IconRadio, IconBriefcase, IconSparkles, IconArrowRight, IconPlus, IconMessageCircle, IconBuilding, IconUsers,
 } from './icons'
@@ -212,10 +212,14 @@ export default function Overview() {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) throw new Error('Your session has expired. Please log in again.')
 
-      fetch('/.netlify/functions/scan-now-background', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      }).catch(() => {})
+      // 2026-08-27 audit fix: was a bare fire-and-forget fetch — see
+      // triggerScanNow's own header (useScanStatusPoll.js) for why that
+      // silently hid a rejected trigger as if the scan had actually started.
+      const started = await triggerScanNow(session.access_token)
+      if (!started) {
+        setRetryError("Couldn't start a new scan just now. Please try again.")
+        return
+      }
 
       startResearchPoll()
     } catch (err) {

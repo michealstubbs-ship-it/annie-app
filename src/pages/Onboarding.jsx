@@ -8,6 +8,7 @@ import { FUNCTION_TAXONOMY } from '../lib/functionTaxonomy'
 import SectorPicker from '../components/SectorPicker'
 import { withTimeout, TIMEOUT_MESSAGE } from '../lib/withTimeout'
 import { trackEvent } from '../lib/analytics'
+import { triggerScanNow } from '../lib/useScanStatusPoll'
 
 // 2026-08-25, Michael: Annie only actually serves markets with real,
 // verified data behind them — United Kingdom and United States have live
@@ -200,10 +201,17 @@ export default function Onboarding() {
       // function (runs up to 15 min server-side) and usually finishes well
       // within the time it takes to get through the next screen, so real
       // signals are already there by the time the dashboard loads.
-      fetch('/.netlify/functions/scan-now-background', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      }).catch(() => {})
+      //
+      // 2026-08-27 audit fix: this used to be a bare fetch().catch(() => {})
+      // that only ever noticed a network-level failure, never a request
+      // that reached the server and got rejected there (a gateway 429/503
+      // under load — the exact failure mode the 19-scenario staged audit
+      // caught happening for real). triggerScanNow retries once and
+      // reports a repeat failure, but is still deliberately NOT awaited
+      // here — this screen's whole point is to move the user on rather
+      // than leave them stuck on a slow/blocked call, and that design
+      // stays; we just no longer let a failure vanish with zero trail.
+      triggerScanNow(session.access_token)
       try { localStorage.setItem('annie_scan_started_' + user?.id, String(Date.now())) } catch {}
 
       // The save already succeeded at this point — that's the part that

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from './supabase'
+import { reportClientError } from './errorReporting'
 
 // Shared by Overview.jsx (auto-resumes watching a scan onboarding started)
 // and Settings.jsx (starts and watches a self-serve rescan) — both used to
@@ -8,6 +9,38 @@ import { supabase } from './supabase'
 // a literal string key, the other a named constant) before this pass.
 function scanFlagKey(userId) {
   return `annie_scan_started_${userId}`
+}
+
+// 2026-08-27 audit fix: found via the 19-scenario staged first-scan audit —
+// every caller of this (Onboarding.jsx, Settings.jsx, Overview.jsx all had
+// their own copy) fired this POST and only ever caught the fetch() PROMISE
+// rejecting, never checked whether the response it got back was actually
+// OK. That's exactly the same gap fixed server-side in fireNextRound (see
+// scan-now-background.js) — a rejected request (a network blip, or the
+// same kind of gateway rejection under load that broke this for real) came
+// back looking identical to a real scan quietly starting, right up until
+// this same file's own poll window ran out and told the customer "still
+// running" for a scan that in fact never started at all, since scan-
+// status.js never even got a status blob to report on. One immediate
+// retry, then a reported (still non-throwing) failure — callers decide
+// for themselves whether that needs to be surfaced in their own UI.
+export async function triggerScanNow(accessToken) {
+  const attempt = () => fetch('/.netlify/functions/scan-now-background', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  try {
+    let resp = await attempt()
+    if (!resp.ok) resp = await attempt()
+    if (!resp.ok) {
+      reportClientError(`scan trigger failed with HTTP ${resp.status}`, null, { stage: 'trigger-scan-now' })
+      return false
+    }
+    return true
+  } catch (err) {
+    reportClientError('scan trigger failed', err, { stage: 'trigger-scan-now' })
+    return false
+  }
 }
 
 async function fetchScanStatus() {
