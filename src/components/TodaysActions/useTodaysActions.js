@@ -12,8 +12,9 @@ import { reportClientError } from '../../lib/errorReporting'
 import { stripAiArtifacts } from '../../lib/textSanitize'
 import { buildOutreachMessage, firstNameOf } from '../../lib/outreachMessage'
 import { listCandidatesForMatching } from '../../lib/data/candidates'
-import { matchCandidatesToSignal } from '../../lib/candidateMatch'
+import { prepareCandidatesForMatching, matchPreparedCandidatesToSignal } from '../../lib/candidateMatch'
 import { createContact } from '../../lib/data/contacts'
+import { findOrCreateCompany } from '../../lib/data/companies'
 import { confirmContact } from '../../lib/confirmContact'
 
 // 2026-08-29 audit fix: both AI copy calls below used to send EVERY
@@ -203,7 +204,15 @@ export function useTodaysActions({ user, profile }) {
       // reassembly, rather than calling matchCandidatesToSignal twice for
       // the same signal.
       const sourcedItems = selected.filter(i => i.category === 'sourced')
-      const matchesBySignal = new Map(sourcedItems.map(item => [item.signal, matchCandidatesToSignal(item.signal, candidates)]))
+      // 2026-08-29 audit fix: matchCandidatesToSignal used to be called
+      // once per sourced item, re-tokenizing this exact same candidate pool
+      // from scratch every time — see candidateMatch.js's own header for
+      // why that's a real, confirmed cause of "Today's Actions still
+      // hanging" for well-populated CRMs (a synchronous main-thread freeze,
+      // not a network timeout — nothing to catch, nothing in the logs).
+      // Prepared once here, reused for every sourced item below.
+      const preparedCandidates = prepareCandidatesForMatching(candidates)
+      const matchesBySignal = new Map(sourcedItems.map(item => [item.signal, matchPreparedCandidatesToSignal(item.signal, preparedCandidates)]))
 
       // Step 2b: a short, real AI pitch for the single top pipeline match on
       // each sourced item that has one — grounded only in that candidate's
@@ -348,9 +357,22 @@ export function useTodaysActions({ user, profile }) {
   // independently on the same card (the multi-contact panel).
   async function addContactToCrm(action, contact, crmKey) {
     if (crmAdded[crmKey]) return
+    // 2026-08-29 audit fix, flagged directly: this used to only ever write
+    // the free-text `company` column — never found or created a real
+    // companies row, so a contact added here never got a company_id.
+    // Companies.jsx's own contact list only shows contacts that already
+    // HAVE a company_id (see listContactsWithCompany's own comment in
+    // contacts.js), so a contact added from Today's Actions was silently
+    // invisible under its own company's tab, even though it showed up fine
+    // in the plain Contacts list. Every other place a contact gets created
+    // (ContactFormModal's CompanySelect, LinkedInImport's bulk import)
+    // already finds-or-creates the real company first — this was the one
+    // path that didn't.
+    const companyId = await findOrCreateCompany(action.company, user.id)
     await createContact({
       name: contact.name,
       company: action.company,
+      company_id: companyId,
       title: contact.title || null,
       linkedin_url: contact.linkedin_url || null,
       email: contact.email || null,

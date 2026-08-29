@@ -47,6 +47,16 @@ export async function listCandidateJobLinks(userId) {
 // TodaysActions.jsx) has real, recruiter-written substance to ground a
 // specific-sounding sentence in, rather than only role/company/industry —
 // still nothing invented beyond what's actually on file for that candidate.
+//
+// Deliberately no .limit() here, unlike the contacts/deals queries in
+// useTodaysActions.js's refresh(): capping this would silently drop real
+// candidates from pipeline-matching, worst for exactly the agencies with
+// the biggest candidate pools — the customers this feature helps most.
+// 2026-08-29 audit fix: an uncapped query here was never the actual
+// problem — matching every candidate against every sourced signal, once
+// per signal, with the SAME candidates re-tokenized from scratch on every
+// single call, was. See candidateMatch.js's prepareCandidatesForMatching
+// for the real fix (tokenize once per refresh, not once per signal).
 export async function listCandidatesForMatching(userId) {
   const { data, error } = await supabase.from('candidates').select('id, name, role, industry, status, company, notes')
   if (error) throw error
