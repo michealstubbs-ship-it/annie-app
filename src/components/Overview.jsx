@@ -357,10 +357,12 @@ export default function Overview() {
     }
   }
 
-  // Same display convention Pipeline.jsx's own currency prefix uses: a
-  // single-character symbol (£, $, €) reads correctly with no space
-  // ("£12,345"), but AED has no single-character symbol in common use, so
-  // it needs the trailing space ("AED 12,345") to read as a prefix at all.
+  // A whole-number KPI tile (Pipeline Value), not an invoice line amount —
+  // deliberately not routed through formatMoney(), which forces two decimal
+  // places for invoice precision; this wants the same no-decimal convention
+  // Pipeline.jsx's own currency prefix already uses for the same kind of
+  // stat. currencySymbol() is still the single shared source for the symbol
+  // itself, so this can't drift from invoiceCalc.js's own currency list.
   const pipelineCurrencyPrefix = useMemo(() => {
     const symbol = currencySymbol(marketCurrency)
     return symbol.length > 1 ? `${symbol} ` : symbol
@@ -650,7 +652,18 @@ export default function Overview() {
               <IconBriefcase className="w-4 h-4 text-gold" />
               <p className="text-[15px] font-bold text-navy">Jobs by status</p>
             </div>
-            {jobs.length === 0 ? (
+            {/* 2026-08-29 audit fix: this used to check jobs.length === 0
+                with no `loading` gate — jobs starts as [] before the page's
+                own data load resolves, so every visit briefly (real,
+                measured: ~900ms-2s) showed "No jobs added yet" before
+                correcting itself once the real jobs arrived. The only
+                section on this page that did that — "Needs your attention"
+                right above already gates on `loading` correctly. A paying
+                customer's dashboard telling them their pipeline is empty,
+                even briefly, is the one thing worth never getting wrong. */}
+            {loading ? (
+              <p className="text-sm text-gray-400">Loading...</p>
+            ) : jobs.length === 0 ? (
               <p className="text-sm text-gray-400">No jobs added yet.</p>
             ) : (
               ['active', 'onhold', 'filled'].map(status => {

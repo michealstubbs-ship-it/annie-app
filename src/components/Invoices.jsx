@@ -139,7 +139,17 @@ export default function Invoices() {
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="font-bold text-navy text-sm">{inv.invoice_number || 'Draft'}</h3>
+              {/* 2026-08-29 audit fix: a draft has no invoice_number yet
+                  (numbers are only claimed on send, so an abandoned draft
+                  never burns a gap in the sequence — see the atomic
+                  invoice-numbering work elsewhere in this codebase) — but
+                  every draft just read as the bare word "Draft" with
+                  nothing to tell two drafts apart in a list. The issue date
+                  is already on the row and unique enough in practice to
+                  serve as an identifier until a real number exists. */}
+              <h3 className="font-bold text-navy text-sm">
+                {inv.invoice_number || (inv.issue_date ? `Draft · ${new Date(inv.issue_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : 'Draft')}
+              </h3>
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${STATUS_COLOR[inv.status]}`}>{STATUS_LABEL[inv.status]}</span>
             </div>
             <p className="text-xs text-gray-500 mt-0.5">{inv.companies?.name || inv.bill_to_name}</p>
@@ -150,23 +160,41 @@ export default function Invoices() {
             </div>
             {rowError[inv.id] && <p className="text-xs text-red-600 mt-1">{rowError[inv.id]}</p>}
           </div>
-          <div className="flex gap-2 flex-shrink-0 flex-wrap justify-end">
-            {inv.status === 'draft' && <button onClick={() => openEdit(inv)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>}
-            {inv.status !== 'draft' && <button onClick={() => openEdit(inv)} className="text-xs text-gray-500 font-semibold hover:underline">View</button>}
-            <button onClick={() => handleDownload(inv)} className="text-xs text-gold-ink font-semibold hover:underline">Download PDF</button>
-            {(inv.status === 'draft') && (
-              <button onClick={() => handleSend(inv)} disabled={sendingId === inv.id} className="text-xs text-navy font-semibold hover:underline disabled:opacity-50">
-                {sendingId === inv.id ? 'Sending...' : 'Send'}
-              </button>
+          {/* 2026-08-29 audit fix: Void/Delete used to sit in the same
+              plain-text row as every routine action, one word away from
+              "Mark paid"/"Send" with nothing but a faint colour telling
+              them apart (Void was even styled neutral gray, undersling how
+              irreversible it is) — a real mis-click risk on a document
+              already sent to a client. Routine and destructive actions are
+              now two visually separated groups (a border + extra gap), and
+              both destructive actions share the same red styling so
+              "irreversible" reads as one consistent signal. The confirm
+              dialogs below were already in place for Delete/Void before
+              this fix — this closes the visual-adjacency risk on top of
+              that, not instead of it. */}
+          <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
+            <div className="flex gap-2 flex-wrap justify-end">
+              {inv.status === 'draft' && <button onClick={() => openEdit(inv)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>}
+              {inv.status !== 'draft' && <button onClick={() => openEdit(inv)} className="text-xs text-gray-500 font-semibold hover:underline">View</button>}
+              <button onClick={() => handleDownload(inv)} className="text-xs text-gold-ink font-semibold hover:underline">Download PDF</button>
+              {(inv.status === 'draft') && (
+                <button onClick={() => handleSend(inv)} disabled={sendingId === inv.id} className="text-xs text-navy font-semibold hover:underline disabled:opacity-50">
+                  {sendingId === inv.id ? 'Sending...' : 'Send'}
+                </button>
+              )}
+              {inv.status === 'sent' && (
+                <button onClick={() => handleSend(inv)} disabled={sendingId === inv.id} className="text-xs text-navy font-semibold hover:underline disabled:opacity-50">
+                  {sendingId === inv.id ? 'Resending...' : 'Resend'}
+                </button>
+              )}
+              {inv.status === 'sent' && <button onClick={() => handleMarkPaid(inv)} className="text-xs text-green-600 font-semibold hover:underline">Mark paid</button>}
+            </div>
+            {(inv.status === 'draft' || inv.status === 'sent') && (
+              <div className="flex gap-2 flex-wrap justify-end pl-3 ml-1 border-l border-gray-200">
+                {inv.status === 'draft' && <button onClick={() => setConfirmDeleteId(inv.id)} className="text-xs text-red-500 font-semibold hover:underline">Delete</button>}
+                <button onClick={() => setConfirmVoidId(inv.id)} className="text-xs text-red-500 font-semibold hover:underline">Void</button>
+              </div>
             )}
-            {inv.status === 'sent' && (
-              <button onClick={() => handleSend(inv)} disabled={sendingId === inv.id} className="text-xs text-navy font-semibold hover:underline disabled:opacity-50">
-                {sendingId === inv.id ? 'Resending...' : 'Resend'}
-              </button>
-            )}
-            {inv.status === 'sent' && <button onClick={() => handleMarkPaid(inv)} className="text-xs text-green-600 font-semibold hover:underline">Mark paid</button>}
-            {inv.status === 'draft' && <button onClick={() => setConfirmDeleteId(inv.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>}
-            {(inv.status === 'sent' || inv.status === 'draft') && <button onClick={() => setConfirmVoidId(inv.id)} className="text-xs text-gray-400 font-semibold hover:underline">Void</button>}
           </div>
         </div>
       </div>

@@ -67,8 +67,18 @@ export function currencySymbol(code) {
   return CURRENCY_OPTIONS.find(c => c.code === code)?.symbol || code || ''
 }
 
+// 2026-08-29 audit fix: this always inserted a space between symbol and
+// amount ("AED 54,600.00", correct for a 3-letter code) — but every other
+// currency here (£, $, €) is a single-character symbol that reads correctly
+// with NO space ("£54,600.00", the normal convention), so every non-AED
+// invoice showed an oddly-spaced "£ 54,600.00". One formatter written for
+// AED and never adjusted when GBP/USD/EUR/SAR were added to CURRENCY_OPTIONS
+// — the space is conditional on symbol length now, same rule Pipeline.jsx's
+// own (separate, pre-existing) currency-prefix display already used, so the
+// two finally agree instead of drifting.
 export function formatMoney(amount, currencyCode) {
   const symbol = currencySymbol(currencyCode)
   const n = Number(amount) || 0
-  return `${symbol} ${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const formatted = n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return symbol.length > 1 ? `${symbol} ${formatted}` : `${symbol}${formatted}`
 }

@@ -61,7 +61,17 @@ describe('currencySymbol / formatMoney', () => {
   })
 
   it('formats an amount with its currency symbol and two decimal places', () => {
-    expect(formatMoney(1250, 'USD')).toBe('$ 1,250.00')
-    expect(formatMoney(1250.5, 'AED')).toBe('AED 1,250.50')
+    expect(formatMoney(1250, 'AED')).toBe('AED 1,250.00')
+    expect(formatMoney(1250.5, 'SAR')).toBe('SAR 1,250.50')
+  })
+
+  // 2026-08-29 audit fix: a single-character symbol (£, $, €) reads
+  // correctly with no space — "£ 1,250.00" was the bug an invoice screen
+  // actually showed in production. Only a multi-character code (AED, SAR)
+  // needs the space to read as a prefix at all.
+  it('does NOT put a space after a single-character symbol', () => {
+    expect(formatMoney(1250, 'USD')).toBe('$1,250.00')
+    expect(formatMoney(1250, 'GBP')).toBe('£1,250.00')
+    expect(formatMoney(1250, 'EUR')).toBe('€1,250.00')
   })
 })
