@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from './supabase'
 import { reportClientError } from './errorReporting'
+import { withTimeout } from './withTimeout'
 
 // Shared by Overview.jsx (auto-resumes watching a scan onboarding started)
 // and Settings.jsx (starts and watches a self-serve rescan) — both used to
@@ -45,7 +46,14 @@ export async function triggerScanNow(accessToken) {
 
 async function fetchScanStatus() {
   try {
-    const { data: { session } } = await supabase.auth.getSession()
+    // 2026-08-29 audit fix: same unwrapped getSession() hang fixed
+    // elsewhere this session — the caller here (Overview.jsx/Settings.jsx's
+    // polling loop) awaits this once per tick, so an unsettled promise
+    // wouldn't just skip a tick, it would permanently stall every future
+    // poll behind it, leaving "Annie is researching..." stuck forever with
+    // no error. Falls into the same existing { status: 'unknown' } shape
+    // every other failure here already returns, not a new error path.
+    const { data: { session } } = await withTimeout(supabase.auth.getSession(), 8000, 'scan-poll-session')
     if (!session?.access_token) return { status: 'unknown' }
     const resp = await fetch('/.netlify/functions/scan-status', {
       headers: { Authorization: `Bearer ${session.access_token}` },

@@ -155,9 +155,14 @@ export default function Tasks() {
           {t.notes && <p className="text-xs text-gray-500 mt-1">{t.notes}</p>}
           {t.due_date && <p className={`text-[11px] font-semibold mt-1 ${!isDone && t.due_date < new Date().toISOString().slice(0,10) ? 'text-red-500' : 'text-gray-400'}`}>Due {new Date(t.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</p>}
         </div>
-        <div className="flex gap-2 flex-shrink-0">
+        {/* 2026-08-29 audit fix: same Delete-styled-like-a-routine-action
+            issue fixed across the rest of the CRM this pass, applied here
+            for consistency. */}
+        <div className="flex items-center gap-2 flex-shrink-0">
           <button onClick={() => openEdit(t)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
-          <button onClick={() => setConfirmDeleteId(t.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
+          <div className="pl-2 ml-1 border-l border-gray-200">
+            <button onClick={() => setConfirmDeleteId(t.id)} className="text-xs text-red-500 font-semibold hover:underline">Delete</button>
+          </div>
         </div>
       </div>
     )

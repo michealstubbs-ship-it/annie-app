@@ -4,9 +4,15 @@
 // authenticated function call in this codebase (see confirmContact.js,
 // resolveSignalContact.js).
 import { supabase } from './supabase'
+import { withTimeout } from './withTimeout'
 
 async function getToken() {
-  const { data: { session } } = await supabase.auth.getSession()
+  // 2026-08-29 audit fix: same unwrapped getSession() hang fixed
+  // elsewhere this session — this is the shared auth path for both
+  // sendInvoice() and fetchInvoicePdfBlobUrl(), so an unsettled promise
+  // here used to leave "Sending..."/a PDF download stuck indefinitely
+  // with no error, on a real client-facing, money-adjacent action.
+  const { data: { session } } = await withTimeout(supabase.auth.getSession(), 8000, 'invoice-api-session')
   const token = session?.access_token
   if (!token) throw new Error('Your session has expired. Please log in again.')
   return token

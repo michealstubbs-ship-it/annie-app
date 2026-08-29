@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { useScanStatusPoll, triggerScanNow } from '../lib/useScanStatusPoll'
+import { withTimeout } from '../lib/withTimeout'
 import {
   IconZap, IconCalendar, IconRadio, IconBriefcase, IconSparkles, IconArrowRight, IconPlus, IconMessageCircle, IconBuilding, IconUsers,
 } from './icons'
@@ -216,7 +217,10 @@ export default function Overview() {
     setRetryError('')
     setScanOutcome(null)
     try {
-      const { data: { session } } = await supabase.auth.getSession()
+      // 2026-08-29 audit fix: same unwrapped getSession() hang fixed on
+      // this exact button's twin in Settings.jsx — an unsettled promise
+      // here left "Run a new scan" spinning forever with no error.
+      const { data: { session } } = await withTimeout(supabase.auth.getSession(), 8000, 'overview-rescan-session')
       if (!session?.access_token) throw new Error('Your session has expired. Please log in again.')
 
       // 2026-08-27 audit fix: was a bare fire-and-forget fetch — see

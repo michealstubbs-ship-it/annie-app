@@ -358,7 +358,12 @@ export default function LinkedInImport({ embedded = false }) {
       // This endpoint now requires the caller's own session token — it
       // spends real Apollo credit per call, so it checks who's actually
       // asking, same pattern as callChat.js.
-      const { data: { session } } = await supabase.auth.getSession()
+      //
+      // 2026-08-29 audit fix: same unwrapped getSession() hang fixed
+      // elsewhere this session — an unsettled promise here left the
+      // enrichment step (and the "Importing..." state around it) stuck
+      // with no error.
+      const { data: { session } } = await withTimeout(supabase.auth.getSession(), 8000, 'linkedin-enrich-session')
       // apollo-enrich-companies.js only resolves at its custom config.path
       // ('/api/apollo-enrich-companies') — see callChat.js's comment for
       // why the default '/.netlify/functions/...' alias 404s once a

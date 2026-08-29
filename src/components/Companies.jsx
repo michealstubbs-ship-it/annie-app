@@ -232,9 +232,14 @@ export default function Companies() {
                   {selected.website && <a href={selected.website.startsWith('http') ? selected.website : `https://${selected.website}`} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">{selected.website}</a>}
                   {selected.notes && <p className="text-sm text-gray-600 mt-2">{selected.notes}</p>}
                 </div>
-                <div className="flex gap-2 flex-shrink-0">
+                {/* 2026-08-29 audit fix: same Delete-styled-like-a-routine-
+                    action issue fixed across the rest of the CRM this pass,
+                    applied here for consistency. */}
+                <div className="flex items-center gap-2 flex-shrink-0">
                   <button onClick={() => openEditCo(selected)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
-                  <button onClick={() => setShowDeleteConfirm(true)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
+                  <div className="pl-2 ml-1 border-l border-gray-200">
+                    <button onClick={() => setShowDeleteConfirm(true)} className="text-xs text-red-500 font-semibold hover:underline">Delete</button>
+                  </div>
                 </div>
               </div>
               <div className="flex gap-1 mt-4">

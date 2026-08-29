@@ -569,6 +569,18 @@ export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, lo
             salary: j.salary_min ? `${Math.round(j.salary_min)}${j.salary_max && j.salary_max !== j.salary_min ? `-${Math.round(j.salary_max)}` : ''}` : null,
           })
         }
+      } else {
+        // 2026-08-29 audit fix: a non-ok response (a suspended app_id/
+        // app_key, a bad request, an Adzuna-side outage) fell through this
+        // branch with nothing logged at all — identical, in every log and
+        // in the product, to "genuinely zero jobs in this country right
+        // now." Every other discover*/lookup* function in this file at
+        // least logs its non-ok branch (see discoverTheirStackJobs,
+        // discoverHotCompanies, verifyContact above); this was the one
+        // real gap. Still fails open on purpose (one country's outage
+        // shouldn't drop the others this loop already found), just no
+        // longer invisibly.
+        console.error(`[scanShared] Adzuna non-ok response for ${country}: ${resp.status}`)
       }
     } catch (err) {
       console.error('[scanShared] adzuna discovery failed for', country, ':', err.message)
@@ -792,7 +804,15 @@ export async function discoverHotCompanies(apolloKey, { sectors, functions, loca
     // 4th-pass audit fix: a failed call still cost 1 reserved credit until
     // now — release it so a real Apollo outage doesn't burn the shared
     // platform-wide daily cap faster than normal operation would.
-    if (!resp.ok) { await releaseApolloCredits(supabase, userId, 1); return [] }
+    // 2026-08-29 audit fix: the credit was already being released
+    // correctly, but nothing was ever logged — a non-ok Apollo response
+    // here was completely silent, same class of gap as discoverAdzunaJobs
+    // above, just found a few lines further down this file.
+    if (!resp.ok) {
+      console.error(`[scanShared] discoverHotCompanies non-ok response: ${resp.status}`)
+      await releaseApolloCredits(supabase, userId, 1)
+      return []
+    }
     const data = await resp.json()
     const orgs = [...(data.organizations || []), ...(data.accounts || [])]
     return orgs
@@ -1438,7 +1458,17 @@ export async function verifyLeadershipChange(chApiKey, companyName) {
     const searchResp = await fetchWithRetry(`https://api.company-information.service.gov.uk/search/companies?q=${encodeURIComponent(companyName)}&items_per_page=5`, {
       headers: { Authorization: authHeader },
     })
-    if (!searchResp.ok) return null
+    // 2026-08-29 audit fix: still fails open on purpose (see this
+    // function's own header — verification only ever upgrades a signal,
+    // never blocks one), but a non-ok response used to be completely
+    // silent, indistinguishable in the logs from "no matching company" —
+    // same class of gap fixed above in discoverAdzunaJobs/
+    // discoverHotCompanies, just lower stakes here since nothing downstream
+    // depends solely on this succeeding.
+    if (!searchResp.ok) {
+      console.error(`[scanShared] Companies House search non-ok response for "${companyName}": ${searchResp.status}`)
+      return null
+    }
     const searchData = await searchResp.json()
     const items = searchData.items || []
     const best = items.find(c => c.company_status === 'active') || items[0]
@@ -1447,7 +1477,10 @@ export async function verifyLeadershipChange(chApiKey, companyName) {
     const officersResp = await fetchWithRetry(`https://api.company-information.service.gov.uk/company/${best.company_number}/officers?items_per_page=50`, {
       headers: { Authorization: authHeader },
     })
-    if (!officersResp.ok) return null
+    if (!officersResp.ok) {
+      console.error(`[scanShared] Companies House officers non-ok response for "${companyName}" (${best.company_number}): ${officersResp.status}`)
+      return null
+    }
     const officersData = await officersResp.json()
 
     const cutoff = Date.now() - LEADERSHIP_VERIFY_WINDOW_DAYS * 24 * 60 * 60 * 1000

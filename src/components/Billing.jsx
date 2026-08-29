@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { getTeamActivitySummary } from '../lib/data/teamActivity'
 import { TIERS } from '../lib/pricing'
+import { withTimeout } from '../lib/withTimeout'
 import ErrorBanner from './ErrorBanner'
 
 // TIERS moved to lib/pricing.js 2026-08-24 — the admin operator dashboard
@@ -139,7 +140,13 @@ export default function Billing() {
   }
 
   async function authedPost(path, body) {
-    const { data: { session } } = await supabase.auth.getSession()
+    // 2026-08-29 audit fix: same unwrapped getSession() hang fixed
+    // elsewhere this session — this is the shared auth path for both
+    // choosePlan() (checkout) and removeMember(), so an unsettled promise
+    // here used to mean a stuck "Upgrading..."/"Removing..." button with
+    // no error, on the one page where that's most likely to cost a real
+    // customer real money or time.
+    const { data: { session } } = await withTimeout(supabase.auth.getSession(), 8000, 'billing-authed-post-session')
     const token = session?.access_token
     if (!token) throw new Error('You need to be signed in for that.')
     const resp = await fetch(path, {

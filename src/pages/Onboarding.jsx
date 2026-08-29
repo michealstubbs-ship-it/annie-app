@@ -170,7 +170,15 @@ export default function Onboarding() {
       // site itself loads fine — that was the actual cause of onboarding
       // never completing. A same-origin POST to app.meetannie.ai isn't
       // filtered the same way.
-      const { data: { session } } = await supabase.auth.getSession()
+      //
+      // 2026-08-29 audit fix: the fetch below already got a withTimeout fix
+      // for exactly this "onboarding never completing" failure mode — but
+      // this getSession() call, one line earlier in the same function, was
+      // still unwrapped, so the same hang this whole comment describes
+      // could still happen here first, before the fetch it was fixed for
+      // was ever reached. The one place in the app this bug class costs
+      // the most: a brand-new signup's very first real action.
+      const { data: { session } } = await withTimeout(supabase.auth.getSession(), 8000, 'onboarding-finish-session')
       if (!session?.access_token) throw new Error('Your session has expired. Please log in again.')
 
       const resp = await withTimeout(

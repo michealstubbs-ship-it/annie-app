@@ -8,6 +8,7 @@ import { getInvoicingDetails, saveInvoicingDetails } from '../lib/data/invoicing
 import { getOnboardingLocations } from '../lib/data/onboarding'
 import { CURRENCY_OPTIONS } from '../lib/invoiceCalc'
 import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
+import { withTimeout } from '../lib/withTimeout'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBanner from './ErrorBanner'
 
@@ -229,7 +230,12 @@ Only return the style profile text, nothing else.`
     setStarting(true)
     setScanError('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
+      // 2026-08-29 audit fix: same unwrapped getSession() hang fixed
+      // elsewhere this session (callChat.js, ResetPassword.jsx,
+      // SupportWidget.jsx) — a "Run a new scan" click could sit spinning
+      // forever with no error if this promise simply never settled, rather
+      // than throwing something the catch below could show.
+      const { data: { session } } = await withTimeout(supabase.auth.getSession(), 8000, 'settings-scan-session')
       if (!session?.access_token) throw new Error('Your session has expired. Please log in again.')
 
       // 2026-08-27 audit fix: this used to fire-and-forget the raw POST

@@ -136,9 +136,14 @@ export default function Meetings() {
               {m.follow_up_date && <p className="text-[11px] text-gold font-semibold mt-1">Follow up {new Date(m.follow_up_date).toLocaleDateString('en-GB')}</p>}
             </div>
           </div>
-          <div className="flex gap-2 flex-shrink-0">
+          {/* 2026-08-29 audit fix: same Delete-styled-like-a-routine-action
+              issue fixed across the rest of the CRM this pass, applied here
+              for consistency. */}
+          <div className="flex items-center gap-2 flex-shrink-0">
             <button onClick={() => openEdit(m)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
-            <button onClick={() => setConfirmDeleteId(m.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
+            <div className="pl-2 ml-1 border-l border-gray-200">
+              <button onClick={() => setConfirmDeleteId(m.id)} className="text-xs text-red-500 font-semibold hover:underline">Delete</button>
+            </div>
           </div>
         </div>
       </div>
