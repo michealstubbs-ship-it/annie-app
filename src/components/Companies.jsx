@@ -5,6 +5,7 @@ import { normalizeCompanyName } from '../lib/companyMatch'
 import { listCompanies, createCompany, updateCompany, deleteCompany } from '../lib/data/companies'
 import { listContactsWithCompany } from '../lib/data/contacts'
 import { listJobsMinimal } from '../lib/data/jobs'
+import { listIndustries, searchCompanies, filterCompaniesByIndustry, sortCompanies } from '../lib/companiesView'
 import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
 import JobFormModal from './JobFormModal'
@@ -33,6 +34,8 @@ export default function Companies() {
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [industryFilter, setIndustryFilter] = useState('all')
+  const [sortBy, setSortBy] = useState('name')
   const [listError, setListError] = useState('')
 
   const [showCoModal, setShowCoModal] = useState(false)
@@ -76,13 +79,33 @@ export default function Companies() {
     }
   }
 
-  const filtered = useMemo(() =>
-    companies.filter(c => !search || c.name.toLowerCase().includes(search.toLowerCase())),
-    [companies, search]
-  )
-
   function contactsFor(id) { return contacts.filter(c => c.company_id === id) }
   function jobsFor(id) { return jobs.filter(j => j.company_id === id) }
+
+  // 2026-08-29 audit fix, flagged directly: this grid had no way to narrow
+  // or reorder a large company list — only alphabetical-ish order plus
+  // free-text search. Industry filter chips + a sort control are new; the
+  // filtering/sorting logic itself lives in lib/companiesView.js so it's
+  // unit-tested rather than only reachable through this render.
+  const searched = useMemo(() => searchCompanies(companies, search), [companies, search])
+  const industries = useMemo(() => listIndustries(companies), [companies])
+  const industryCounts = useMemo(() => {
+    const counts = {}
+    for (const ind of industries) counts[ind] = searched.filter(c => c.industry === ind).length
+    return counts
+  }, [industries, searched])
+  const industryFiltered = useMemo(() => filterCompaniesByIndustry(searched, industryFilter), [searched, industryFilter])
+  const counts = useMemo(() => {
+    const map = {}
+    for (const co of companies) {
+      map[co.id] = {
+        contacts: contactsFor(co.id).length,
+        openJobs: jobsFor(co.id).filter(j => j.status === 'active' || j.status === 'onhold').length,
+      }
+    }
+    return map
+  }, [companies, contacts, jobs])
+  const filtered = useMemo(() => sortCompanies(industryFiltered, sortBy, counts), [industryFiltered, sortBy, counts])
 
   function openAddCo() { setCoForm(EMPTY_CO); setEditCo(null); setCoError(''); setCoNote(''); setShowCoModal(true) }
   function openEditCo(co) { setCoForm({ name: co.name, industry: co.industry || '', location: co.location || '', website: co.website || '', notes: co.notes || '' }); setEditCo(co); setCoError(''); setCoNote(''); setShowCoModal(true) }
@@ -152,18 +175,46 @@ export default function Companies() {
 
       <ErrorBanner>{listError}</ErrorBanner>
 
-      <input className="input max-w-sm mb-6" placeholder="Search companies..." value={search} onChange={e => setSearch(e.target.value)} />
+      <div className="flex items-center justify-between gap-3 mb-6 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
+          <input className="input max-w-sm" placeholder="Search companies..." value={search} onChange={e => setSearch(e.target.value)} />
+          {industries.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                onClick={() => setIndustryFilter('all')}
+                className={`text-xs px-3 py-1.5 rounded-full font-semibold transition-colors ${industryFilter === 'all' ? 'bg-navy text-white' : 'bg-gray-50 text-gray-500 hover:bg-gray-100'}`}
+              >
+                All <span className="opacity-70">({searched.length})</span>
+              </button>
+              {industries.map(ind => (
+                <button
+                  key={ind}
+                  onClick={() => setIndustryFilter(ind)}
+                  className={`text-xs px-3 py-1.5 rounded-full font-semibold transition-colors ${industryFilter === ind ? 'bg-navy text-white' : 'bg-gray-50 text-gray-500 hover:bg-gray-100'}`}
+                >
+                  {ind} <span className="opacity-70">({industryCounts[ind] || 0})</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <select className="input max-w-[190px]" value={sortBy} onChange={e => setSortBy(e.target.value)} aria-label="Sort companies">
+          <option value="name">Sort: Name (A–Z)</option>
+          <option value="contacts">Sort: Most contacts</option>
+          <option value="jobs">Sort: Most open jobs</option>
+        </select>
+      </div>
 
       {loading ? (
         <div className="flex items-center justify-center py-20"><Spinner /></div>
-      ) : filtered.length === 0 && companies.length === 0 ? (
+      ) : companies.length === 0 ? (
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">🏢</div>
           <h3 className="font-bold text-navy mb-1">No companies yet</h3>
           <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Add a company, then attach contacts and jobs to it from a dropdown wherever you go.</p>
           <button onClick={openAddCo} className="btn-primary">Add a company</button>
         </div>
-      ) : filtered.length === 0 ? (
+      ) : searched.length === 0 ? (
         // 2026-08-26 audit fix: same bug as Contacts.jsx — a typo'd search
         // against a non-empty list used to render the identical "add your
         // first company" empty state as a genuinely empty table.
@@ -172,6 +223,16 @@ export default function Companies() {
           <h3 className="font-bold text-navy mb-1">No companies match "{search}"</h3>
           <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Try a different name — or clear the search to see all {companies.length} companies.</p>
           <button onClick={() => setSearch('')} className="btn-ghost">Clear search</button>
+        </div>
+      ) : industryFiltered.length === 0 ? (
+        // 2026-08-29 audit fix: an industry filter with zero matches used to
+        // be impossible (there was no industry filter) — needs its own
+        // empty state rather than falling through to an empty grid.
+        <div className="card p-12 text-center">
+          <div className="text-4xl mb-3">🗂️</div>
+          <h3 className="font-bold text-navy mb-1">No companies in "{industryFilter}"{search ? ` matching "${search}"` : ''}</h3>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Try a different industry, or clear this filter to see all {searched.length} compan{searched.length === 1 ? 'y' : 'ies'}{search ? ' matching your search' : ''}.</p>
+          <button onClick={() => setIndustryFilter('all')} className="btn-ghost">Show all industries</button>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
