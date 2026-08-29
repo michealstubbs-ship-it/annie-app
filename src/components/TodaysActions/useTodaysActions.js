@@ -6,6 +6,7 @@ import {
 } from '../../lib/todaysActions/index.js'
 import { buildEnrichmentPrompt, buildCandidatePitchPrompt } from '../../lib/actionsCopy'
 import { callChatStream } from '../../lib/callChat'
+import { withTimeout } from '../../lib/withTimeout'
 import { extractJson } from '../../lib/jsonExtract'
 import { reportClientError } from '../../lib/errorReporting'
 import { stripAiArtifacts } from '../../lib/textSanitize'
@@ -14,6 +15,52 @@ import { listCandidatesForMatching } from '../../lib/data/candidates'
 import { matchCandidatesToSignal } from '../../lib/candidateMatch'
 import { createContact } from '../../lib/data/contacts'
 import { confirmContact } from '../../lib/confirmContact'
+
+// 2026-08-29 audit fix: both AI copy calls below used to send EVERY
+// qualifying item in ONE callChatStream call. selectDailyItems has no cap
+// ("no ceiling on the total" — see its own header comment) so that prompt's
+// size scales directly with the customer's own CRM: more contacts/deals
+// clearing MIN_SCORE means a bigger prompt and more output the model has to
+// generate before the stream can finish. Netlify's streaming-function
+// execution cap (already root-caused for Ask Annie: 10s, see chat.js) makes
+// that a real, reproducible hang for exactly the best-populated CRMs — the
+// bug gets WORSE the more successfully someone uses the product, which is
+// the worst possible failure shape and is a real, confirmed cause of "Today's
+// Actions is still hanging" reports. Fixed by capping every individual call's
+// prompt to a fixed batch of items — bounded regardless of how large a CRM
+// grows — instead of capping how many cards are shown, so nothing is
+// silently hidden; a batch that still fails only degrades its own items to
+// fallback copy, not the whole page. BATCH_CONCURRENCY caps how many batches
+// run at once so a pathologically large CRM can't fire dozens of parallel
+// chat calls and blow through chat.js's own per-minute call cap
+// (chat_reserve_call, 20/min by default) — normal-sized batches (a handful)
+// all run in one group anyway.
+const AI_BATCH_SIZE = 8
+const BATCH_CONCURRENCY = 4
+// Netlify kills a streaming function's connection at 10s; this is a
+// defense-in-depth client-side ceiling above that so a batch that's merely
+// slow (but would have finished) isn't cut off, while a connection that
+// genuinely stalls with no more bytes and no close (exactly what "hanging"
+// looks like from the browser) still resolves into a normal, catchable
+// per-batch failure instead of waiting forever.
+const AI_BATCH_TIMEOUT_MS = 15000
+
+function chunk(items, size) {
+  const out = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
+}
+
+// Runs one async worker per batch, at most BATCH_CONCURRENCY at a time, and
+// never lets one batch's rejection stop the others — Promise.allSettled's
+// result array, one entry per batch, same order as `batches`.
+async function runBatchesWithConcurrencyCap(batches, worker) {
+  const settled = []
+  for (const group of chunk(batches, BATCH_CONCURRENCY)) {
+    settled.push(...(await Promise.allSettled(group.map(worker))))
+  }
+  return settled
+}
 
 // All of Today's Actions' data: what's currently visible, loading/error
 // state, and the two mutations (mark done, add a verified contact to the
@@ -102,49 +149,54 @@ export function useTodaysActions({ user, profile }) {
       // already have their headline/why-it-matters/candidate angle written
       // by the scan that found them, no second AI call needed for those.
       const crmItems = selected.filter(i => i.category !== 'sourced')
-      let enrichedList = []
+      const enrichedByItem = new Map()
       let enrichmentFailed = false
       if (crmItems.length) {
-        const prompt = buildEnrichmentPrompt(crmItems, ob, profile)
-        try {
-          // 2026-08-29 audit fix, two bugs at once: (1) this call used to sit
-          // outside any try/catch at all — only the extractJson() parse
-          // below it was wrapped — so a callChat() failure (auth, network,
-          // rate limit) threw straight out of refresh() and was caught by
-          // its OUTER catch, which shows a full-page error and skips
-          // setActions() entirely. That took down all of Today's Actions,
-          // including every sourced signal that never needed this call, over
-          // a failure in optional cosmetic copy for CRM follow-ups — matches
-          // the pitch call 30 lines below, which already got this right and
-          // says so in its own comment. (2) callChat() buffers the whole
-          // reply before returning anything — this prompt grows with the
-          // customer's own CRM (more contacts/deals = longer prompt = longer
-          // silence on the wire before the first byte), so any intermediary
-          // with an idle-connection timeout can kill a slow request outright
-          // with nothing to catch. callChatStream() already exists for
-          // exactly this (Chat.jsx uses it) — same NDJSON streaming, same
-          // final { text } shape, no idle window to time out on.
-          const { text } = await callChatStream({
-            messages: [{ role: 'user', content: 'Write the copy for these items.' }],
-            systemOverride: prompt,
-            maxTokens: 2500,
-            model: 'claude-haiku-4-5-20251001',
-          })
-          enrichedList = extractJson(text)
-        } catch (err) {
-          // 2026-08-29 audit fix: this used to swallow the failure into
-          // `null` for every item with nothing logged anywhere — the only
-          // visible symptom was a page full of cards reading "Follow up"
-          // with no way to tell that from a real, if sparse, result. Now
-          // logged to error_logs (same as every other tracked client
-          // failure) so a recurrence shows up somewhere other than someone
-          // noticing the page looks wrong.
-          reportClientError("Today's Actions: CRM item enrichment failed", err, { itemCount: crmItems.length })
-          enrichedList = crmItems.map(() => null)
-          enrichmentFailed = true
-        }
+        const batches = chunk(crmItems, AI_BATCH_SIZE)
+        const settled = await runBatchesWithConcurrencyCap(batches, async (batchItems) => {
+          const prompt = buildEnrichmentPrompt(batchItems, ob, profile)
+          // callChatStream (not callChat) so a large batch doesn't buffer the
+          // whole reply before returning anything — see chat.js's streaming
+          // fix. withTimeout is the hard ceiling described in this file's
+          // header comment: a batch that genuinely stalls fails cleanly
+          // instead of hanging refresh() forever.
+          const { text } = await withTimeout(
+            callChatStream({
+              messages: [{ role: 'user', content: 'Write the copy for these items.' }],
+              systemOverride: prompt,
+              maxTokens: 2500,
+              model: 'claude-haiku-4-5-20251001',
+            }),
+            AI_BATCH_TIMEOUT_MS,
+            'todays-actions-enrichment-batch',
+          )
+          return extractJson(text)
+        })
+        let anyBatchSucceeded = false
+        settled.forEach((result, i) => {
+          const batchItems = batches[i]
+          if (result.status === 'fulfilled') {
+            anyBatchSucceeded = true
+            batchItems.forEach((item, j) => enrichedByItem.set(item, result.value[j] || null))
+          } else {
+            // 2026-08-29 audit fix: this used to swallow the failure into
+            // `null` for every item with nothing logged anywhere — the only
+            // visible symptom was a page full of cards reading "Follow up"
+            // with no way to tell that from a real, if sparse, result. Now
+            // logged to error_logs (same as every other tracked client
+            // failure) so a recurrence shows up somewhere other than someone
+            // noticing the page looks wrong. Scoped to just this batch's
+            // items — a failure in one batch no longer costs every other
+            // batch its real, successfully-generated copy.
+            reportClientError("Today's Actions: CRM item enrichment batch failed", result.reason, { batchSize: batchItems.length })
+            batchItems.forEach(item => enrichedByItem.set(item, null))
+          }
+        })
+        // Only true when EVERY batch failed — a partial failure means most
+        // cards still got real copy, so the degraded "couldn't load details"
+        // fallback text below is reserved for the genuinely-all-down case.
+        enrichmentFailed = !anyBatchSucceeded
       }
-      const enrichedByItem = new Map(crmItems.map((item, i) => [item, enrichedList[i] || null]))
 
       // Pipeline matches computed once per sourced item here, up front —
       // reused by both the pitch-generation batch below and the final
@@ -161,29 +213,38 @@ export function useTodaysActions({ user, profile }) {
       const pitchTargets = sourcedItems
         .map(item => ({ item, topMatch: matchesBySignal.get(item.signal)?.[0] }))
         .filter(({ topMatch }) => topMatch)
-      let pitchByItem = new Map()
+      const pitchByItem = new Map()
       if (pitchTargets.length) {
-        try {
-          // Same buffering/idle-timeout exposure as the enrichment call
-          // above, just smaller (fewer tokens, one pairing at a time) — the
-          // fix is the same: stream instead of buffering the whole reply.
-          const { text } = await callChatStream({
-            messages: [{ role: 'user', content: 'Write the pitch for each pairing.' }],
-            systemOverride: buildCandidatePitchPrompt(pitchTargets.map(({ item, topMatch }) => ({ signal: { headline: item.signal.headline, industry: item.signal.company_industry }, candidate: topMatch }))),
-            maxTokens: 1200,
-            model: 'claude-haiku-4-5-20251001',
-          })
-          const pitches = extractJson(text, { shape: 'string' })
-          pitchByItem = new Map(pitchTargets.map(({ item }, i) => [item, stripAiArtifacts(pitches[i]) || '']))
-        } catch (err) {
-          // A failed/malformed pitch batch just means no pill this time —
-          // never worth failing the whole Today's Actions load over. Still
-          // logged (not just swallowed) so a real recurring problem here
-          // shows up somewhere rather than only as "the pills don't show up
-          // much" that nobody thinks to investigate.
-          reportClientError("Today's Actions: candidate pitch batch failed", err, { targetCount: pitchTargets.length })
-          pitchByItem = new Map()
-        }
+        // Same scaling exposure as the enrichment call above (grows with how
+        // many sourced signals have a top pipeline match), same fix: fixed-
+        // size batches instead of one call for every target.
+        const batches = chunk(pitchTargets, AI_BATCH_SIZE)
+        const settled = await runBatchesWithConcurrencyCap(batches, async (batchTargets) => {
+          const { text } = await withTimeout(
+            callChatStream({
+              messages: [{ role: 'user', content: 'Write the pitch for each pairing.' }],
+              systemOverride: buildCandidatePitchPrompt(batchTargets.map(({ item, topMatch }) => ({ signal: { headline: item.signal.headline, industry: item.signal.company_industry }, candidate: topMatch }))),
+              maxTokens: 1200,
+              model: 'claude-haiku-4-5-20251001',
+            }),
+            AI_BATCH_TIMEOUT_MS,
+            'todays-actions-pitch-batch',
+          )
+          return extractJson(text, { shape: 'string' })
+        })
+        settled.forEach((result, i) => {
+          const batchTargets = batches[i]
+          if (result.status === 'fulfilled') {
+            batchTargets.forEach(({ item }, j) => pitchByItem.set(item, stripAiArtifacts(result.value[j]) || ''))
+          } else {
+            // A failed/malformed pitch batch just means no pill this time for
+            // that batch's items — never worth failing the whole Today's
+            // Actions load over. Still logged (not just swallowed) so a real
+            // recurring problem here shows up somewhere rather than only as
+            // "the pills don't show up much" that nobody thinks to investigate.
+            reportClientError("Today's Actions: candidate pitch batch failed", result.reason, { batchSize: batchTargets.length })
+          }
+        })
       }
 
       // Step 3: reassemble in the ranked order decided in step 1, whether an
