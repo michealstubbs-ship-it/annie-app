@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate } from '../lib/data/candidates'
 import { listActiveJobsForPicker } from '../lib/data/jobs'
+import { STAGES, STAGE_LABEL, searchCandidates, filterCandidatesByStage, sortCandidates, groupCandidatesByStage } from '../lib/candidatesView'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import { logSignalOutcome } from '../lib/signalOutcomes'
@@ -12,8 +13,6 @@ import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
 
-const STAGES = ['sourced', 'screening', 'shortlisted', 'presented', 'interviewing', 'offer', 'placed', 'rejected', 'withdrawn']
-const STAGE_LABEL = { sourced: 'Sourced', screening: 'Screening', shortlisted: 'Shortlisted', presented: 'Presented', interviewing: 'Interviewing', offer: 'Offer', placed: 'Placed', rejected: 'Rejected', withdrawn: 'Withdrawn' }
 const STAGE_COLOR = {
   sourced: 'bg-slate-100 text-slate-600',
   screening: 'bg-blue-100 text-blue-700',
@@ -43,6 +42,8 @@ export default function Candidates() {
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
+  const [search, setSearch] = useState('')
+  const [sortBy, setSortBy] = useState('recent')
   const [showModal, setShowModal] = useState(false)
   const [form, setForm] = useState(EMPTY)
   const [editId, setEditId] = useState(null)
@@ -84,7 +85,22 @@ export default function Candidates() {
     return { total: candidates.length, active: active.length, interviewing: interviewing.length, placed: placed.length }
   }, [candidates])
 
-  const filtered = filter === 'all' ? candidates : candidates.filter(c => c.status === filter)
+  // 2026-08-29 audit fix, flagged directly alongside the same fix already
+  // shipped for Contacts.jsx/Companies.jsx: this page already had stage
+  // filter chips, but no search box at all, and "All" was one
+  // undifferentiated pile of cards in whatever order the database
+  // returned — no grouping, no sort. Filtering/sorting/grouping logic
+  // lives in lib/candidatesView.js so it's unit-tested rather than only
+  // reachable through this render.
+  const searched = useMemo(() => searchCandidates(candidates, search), [candidates, search])
+  const stageCounts = useMemo(() => {
+    const counts = {}
+    for (const s of STAGES) counts[s] = searched.filter(c => c.status === s).length
+    return counts
+  }, [searched])
+  const stageFiltered = useMemo(() => filterCandidatesByStage(searched, filter), [searched, filter])
+  const sorted = useMemo(() => sortCandidates(stageFiltered, sortBy), [stageFiltered, sortBy])
+  const groups = filter === 'all' ? groupCandidatesByStage(sorted) : null
 
   function openAdd() { setForm(EMPTY); setEditId(null); setCvFile(null); setExistingCvPath(null); setError(''); setShowModal(true) }
   function openEdit(c) {
@@ -186,6 +202,56 @@ export default function Candidates() {
     navigate('/dashboard/chat', { state: { prefill } })
   }
 
+  function renderCard(c) {
+    return (
+      <div key={c.id} className={`card p-4 border-l-4 ${STAGE_COLOR[c.status]?.split(' ')[0]?.replace('bg-', 'border-') || 'border-gray-200'}`}>
+        <div className="flex items-start gap-3">
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 ${STAGE_COLOR[c.status] || 'bg-gray-100 text-gray-500'}`}>
+            {initials(c.name)}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="font-bold text-navy text-sm">{c.name}</h3>
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${STAGE_COLOR[c.status] || 'bg-gray-100 text-gray-500'}`}>{STAGE_LABEL[c.status] || c.status}</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-0.5">{[c.role, c.company].filter(Boolean).join(' · ')}</p>
+              </div>
+              <div className="text-right flex-shrink-0">
+                {c.want_sal && <div className="text-xs font-bold text-navy">AED {Number(c.want_sal).toLocaleString()}</div>}
+                {c.notice_period && <div className="text-[11px] text-gray-400">{c.notice_period} notice</div>}
+              </div>
+            </div>
+
+            {c.notes && <p className="text-xs text-gray-600 mt-1.5 line-clamp-2">{c.notes}</p>}
+            {c.jobs?.title && <p className="text-[11px] text-gold font-semibold mt-1">💼 {c.jobs.title}{c.jobs.companies?.name ? ` @ ${c.jobs.companies.name}` : ''}</p>}
+
+            <div className="flex items-center gap-2 flex-wrap mt-2.5">
+              {c.location && <span className="text-[10px] bg-page-bg text-gray-500 px-2 py-1 rounded-md">📍 {c.location}</span>}
+              {c.industry && <span className="text-[10px] bg-page-bg text-gray-500 px-2 py-1 rounded-md">🏢 {c.industry}</span>}
+              {c.linkedin_url && (
+                <a href={c.linkedin_url.startsWith('http') ? c.linkedin_url : `https://${c.linkedin_url}`} target="_blank" rel="noreferrer" className="text-[10px] font-semibold px-2 py-1 rounded-md bg-[#0077b5] text-white">LinkedIn</a>
+              )}
+              {c.email && <a href={`mailto:${c.email}`} className="text-[10px] font-semibold px-2 py-1 rounded-md border border-gray-200 text-gray-600">Email</a>}
+              {c.cv_path && <button onClick={() => viewCv(c.cv_path)} className="text-[10px] font-semibold px-2 py-1 rounded-md border border-green-300 text-green-700">📄 CV</button>}
+              <button onClick={() => openEdit(c)} className="text-[10px] font-semibold px-2 py-1 rounded-md border border-gray-200 text-gray-600">Edit</button>
+              <button onClick={() => askAnnie(c)} className="text-[10px] font-semibold px-2 py-1 rounded-md bg-navy text-gold">Ask Annie</button>
+              {/* 2026-08-29 audit fix: ml-auto already pushed Delete
+                  away from the other actions spatially, but it was
+                  still styled the same faint red-400 as everything
+                  else in this row — no signal that it's the one
+                  irreversible action here. A left border + the
+                  stronger red-500 used everywhere else this pass
+                  makes that read at a glance, same as Invoices.jsx. */}
+              <button onClick={() => setConfirmDeleteId(c.id)} className="text-[10px] font-semibold px-2 py-1 rounded-md text-red-500 ml-auto pl-3 border-l border-gray-200">Delete</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
@@ -217,13 +283,25 @@ export default function Candidates() {
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-1.5 mb-6">
-        <button onClick={() => setFilter('all')} className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 ${filter === 'all' ? 'bg-navy border-navy text-white' : 'border-gray-200 text-gray-600'}`}>All</button>
-        {STAGES.map(s => (
-          <button key={s} onClick={() => setFilter(s)} className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 ${filter === s ? 'bg-navy border-navy text-white' : 'border-gray-200 text-gray-600'}`}>
-            {STAGE_LABEL[s]}
-          </button>
-        ))}
+      <div className="flex items-center justify-between gap-3 mb-6 flex-wrap">
+        <div className="flex flex-wrap items-center gap-3">
+          <input className="input max-w-sm" placeholder="Search candidates..." value={search} onChange={e => setSearch(e.target.value)} />
+          <div className="flex flex-wrap gap-1.5">
+            <button onClick={() => setFilter('all')} className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 ${filter === 'all' ? 'bg-navy border-navy text-white' : 'border-gray-200 text-gray-600'}`}>
+              All <span className="opacity-70">({searched.length})</span>
+            </button>
+            {STAGES.map(s => (
+              <button key={s} onClick={() => setFilter(s)} className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 ${filter === s ? 'bg-navy border-navy text-white' : 'border-gray-200 text-gray-600'}`}>
+                {STAGE_LABEL[s]} <span className="opacity-70">({stageCounts[s] || 0})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <select className="input max-w-[190px]" value={sortBy} onChange={e => setSortBy(e.target.value)} aria-label="Sort candidates">
+          <option value="recent">Sort: Recently added</option>
+          <option value="name">Sort: Name (A–Z)</option>
+          <option value="salary">Sort: Highest desired salary</option>
+        </select>
       </div>
 
       <ErrorBanner>{listError}</ErrorBanner>
@@ -232,62 +310,42 @@ export default function Candidates() {
         <div className="flex items-center justify-center py-20">
           <Spinner />
         </div>
-      ) : filtered.length === 0 ? (
+      ) : candidates.length === 0 ? (
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">🧑‍💼</div>
-          <h3 className="font-bold text-navy mb-1">{filter === 'all' ? 'No candidates yet' : `No candidates in ${STAGE_LABEL[filter]}`}</h3>
+          <h3 className="font-bold text-navy mb-1">No candidates yet</h3>
           <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Add candidates as you source them, track them through to placement, and keep their CV attached.</p>
-          {filter === 'all' && <button onClick={openAdd} className="btn-primary">Add a candidate</button>}
+          <button onClick={openAdd} className="btn-primary">Add a candidate</button>
+        </div>
+      ) : searched.length === 0 ? (
+        // 2026-08-29 audit fix: same bug already fixed on Contacts.jsx/
+        // Companies.jsx — a typo'd search against a non-empty list used to
+        // render the identical "add your first candidate" empty state as a
+        // genuinely empty list.
+        <div className="card p-12 text-center">
+          <div className="text-4xl mb-3">🔍</div>
+          <h3 className="font-bold text-navy mb-1">No candidates match "{search}"</h3>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Try a different name, role, company, location, industry, or email — or clear the search to see all {candidates.length} candidates.</p>
+          <button onClick={() => setSearch('')} className="btn-ghost">Clear search</button>
+        </div>
+      ) : stageFiltered.length === 0 ? (
+        <div className="card p-12 text-center">
+          <div className="text-4xl mb-3">🗂️</div>
+          <h3 className="font-bold text-navy mb-1">No candidates in {STAGE_LABEL[filter]}{search ? ` matching "${search}"` : ''}</h3>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Try a different stage, or clear this filter to see all {searched.length} candidate{searched.length === 1 ? '' : 's'}{search ? ' matching your search' : ''}.</p>
+          <button onClick={() => setFilter('all')} className="btn-ghost">Show all stages</button>
         </div>
       ) : (
         <div className="space-y-3">
-          {filtered.map(c => (
-            <div key={c.id} className={`card p-4 border-l-4 ${STAGE_COLOR[c.status]?.split(' ')[0]?.replace('bg-', 'border-') || 'border-gray-200'}`}>
-              <div className="flex items-start gap-3">
-                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 ${STAGE_COLOR[c.status] || 'bg-gray-100 text-gray-500'}`}>
-                  {initials(c.name)}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-start justify-between gap-3 flex-wrap">
-                    <div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-bold text-navy text-sm">{c.name}</h3>
-                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${STAGE_COLOR[c.status] || 'bg-gray-100 text-gray-500'}`}>{STAGE_LABEL[c.status] || c.status}</span>
-                      </div>
-                      <p className="text-xs text-gray-500 mt-0.5">{[c.role, c.company].filter(Boolean).join(' · ')}</p>
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      {c.want_sal && <div className="text-xs font-bold text-navy">AED {Number(c.want_sal).toLocaleString()}</div>}
-                      {c.notice_period && <div className="text-[11px] text-gray-400">{c.notice_period} notice</div>}
-                    </div>
-                  </div>
-
-                  {c.notes && <p className="text-xs text-gray-600 mt-1.5 line-clamp-2">{c.notes}</p>}
-                  {c.jobs?.title && <p className="text-[11px] text-gold font-semibold mt-1">💼 {c.jobs.title}{c.jobs.companies?.name ? ` @ ${c.jobs.companies.name}` : ''}</p>}
-
-                  <div className="flex items-center gap-2 flex-wrap mt-2.5">
-                    {c.location && <span className="text-[10px] bg-page-bg text-gray-500 px-2 py-1 rounded-md">📍 {c.location}</span>}
-                    {c.industry && <span className="text-[10px] bg-page-bg text-gray-500 px-2 py-1 rounded-md">🏢 {c.industry}</span>}
-                    {c.linkedin_url && (
-                      <a href={c.linkedin_url.startsWith('http') ? c.linkedin_url : `https://${c.linkedin_url}`} target="_blank" rel="noreferrer" className="text-[10px] font-semibold px-2 py-1 rounded-md bg-[#0077b5] text-white">LinkedIn</a>
-                    )}
-                    {c.email && <a href={`mailto:${c.email}`} className="text-[10px] font-semibold px-2 py-1 rounded-md border border-gray-200 text-gray-600">Email</a>}
-                    {c.cv_path && <button onClick={() => viewCv(c.cv_path)} className="text-[10px] font-semibold px-2 py-1 rounded-md border border-green-300 text-green-700">📄 CV</button>}
-                    <button onClick={() => openEdit(c)} className="text-[10px] font-semibold px-2 py-1 rounded-md border border-gray-200 text-gray-600">Edit</button>
-                    <button onClick={() => askAnnie(c)} className="text-[10px] font-semibold px-2 py-1 rounded-md bg-navy text-gold">Ask Annie</button>
-                    {/* 2026-08-29 audit fix: ml-auto already pushed Delete
-                        away from the other actions spatially, but it was
-                        still styled the same faint red-400 as everything
-                        else in this row — no signal that it's the one
-                        irreversible action here. A left border + the
-                        stronger red-500 used everywhere else this pass
-                        makes that read at a glance, same as Invoices.jsx. */}
-                    <button onClick={() => setConfirmDeleteId(c.id)} className="text-[10px] font-semibold px-2 py-1 rounded-md text-red-500 ml-auto pl-3 border-l border-gray-200">Delete</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
+          {groups
+            ? groups.flatMap(g => [
+                <div key={`group-${g.stage}`} className="flex items-center gap-2 pt-2 first:pt-0">
+                  <span className={`text-xs font-bold px-2 py-1 rounded-full uppercase tracking-wider ${STAGE_COLOR[g.stage] || 'bg-gray-100 text-gray-500'}`}>{g.label}</span>
+                  <span className="text-xs text-gray-400">{g.candidates.length} candidate{g.candidates.length === 1 ? '' : 's'}</span>
+                </div>,
+                ...g.candidates.map(renderCard),
+              ])
+            : sorted.map(renderCard)}
         </div>
       )}
 

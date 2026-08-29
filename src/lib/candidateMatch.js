@@ -54,17 +54,17 @@ export function prepareCandidatesForMatching(candidates) {
     .map(c => ({ candidate: c, roleTokens: tokenize(c.role), industryTokens: tokenize(c.industry) }))
 }
 
-function scoreAgainstPrepared(signal, prepared) {
-  if (!signal || !prepared.length) return []
-
-  const titleTokens = (signal.title_keywords || []).flatMap(tokenize)
-  const headlineTokens = tokenize(signal.headline)
-  const industryTokens = tokenize(signal.company_industry)
+// Shared scorer: takes already-tokenized query fields rather than a
+// signal/job shape directly, so both the signal-matching functions and the
+// job-matching functions below funnel through exactly one scoring
+// implementation instead of two near-identical copies.
+function scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens }, prepared) {
+  if (!prepared.length) return []
 
   const scored = prepared.map(({ candidate, roleTokens, industryTokens: candidateIndustryTokens }) => {
     // Role match matters far more than industry match, a CFO candidate is a
     // CFO candidate whether or not the industry label lines up exactly.
-    const roleScore = overlapScore(titleTokens, roleTokens) * 2 + overlapScore(headlineTokens, roleTokens)
+    const roleScore = overlapScore(titleTokens, roleTokens) * 2 + overlapScore(freeTextTokens, roleTokens)
     const industryScore = overlapScore(industryTokens, candidateIndustryTokens)
     return { candidate, score: roleScore + industryScore }
   })
@@ -74,6 +74,28 @@ function scoreAgainstPrepared(signal, prepared) {
     .sort((a, b) => b.score - a.score)
     .slice(0, 5)
     .map(s => s.candidate)
+}
+
+function scoreAgainstPrepared(signal, prepared) {
+  if (!signal) return []
+  const titleTokens = (signal.title_keywords || []).flatMap(tokenize)
+  const freeTextTokens = tokenize(signal.headline)
+  const industryTokens = tokenize(signal.company_industry)
+  return scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens }, prepared)
+}
+
+// 2026-08-29: same matching, pointed at a real job posting instead of a BD
+// signal — title + brief/notes (requirements, must-haves, skills) +
+// industry, in place of a signal's title_keywords/headline/company_industry.
+// Added so Jobs & Mandates can surface "who in my CRM might fit this job"
+// using the exact machinery already built and proven for Today's Actions,
+// rather than a second, parallel matching implementation.
+function scoreJobAgainstPrepared(job, prepared) {
+  if (!job) return []
+  const titleTokens = tokenize(job.title)
+  const freeTextTokens = tokenize(job.notes)
+  const industryTokens = tokenize(job.industry)
+  return scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens }, prepared)
 }
 
 // Returns the candidates (best matches first) worth surfacing for this
@@ -95,4 +117,18 @@ export function matchCandidatesToSignal(signal, candidates) {
 // cost paid exactly once regardless of how many signals get matched.
 export function matchPreparedCandidatesToSignal(signal, prepared) {
   return scoreAgainstPrepared(signal, prepared || [])
+}
+
+// Same idea as matchCandidatesToSignal, pointed at a real job instead of a
+// signal — one-off convenience wrapper, fine for matching a single job.
+export function matchCandidatesToJob(job, candidates) {
+  if (!job || !candidates?.length) return []
+  return scoreJobAgainstPrepared(job, prepareCandidatesForMatching(candidates))
+}
+
+// The fast path for matching many jobs against one fixed candidate pool in
+// the same pass (Jobs & Mandates) — same reasoning as
+// matchPreparedCandidatesToSignal.
+export function matchPreparedCandidatesToJob(job, prepared) {
+  return scoreJobAgainstPrepared(job, prepared || [])
 }
