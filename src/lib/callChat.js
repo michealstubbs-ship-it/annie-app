@@ -1,4 +1,17 @@
 import { supabase } from './supabase'
+import { withTimeout } from './withTimeout'
+
+// 2026-08-29: getSession() has no timeout of its own — it's a promise that
+// can simply never settle (auth still starting up, a browser
+// extension/corporate proxy interfering) rather than reject cleanly. With
+// no timeout racing it, nothing catches that and every caller of callChat()/
+// callChatStream() (Ask Annie, the support widget, Today's Actions, the
+// writing-style analyser) just hangs forever with no error surfaced — this
+// was the root cause of Today's Actions' reported hang. Same withTimeout()
+// helper AuthContext.jsx already uses for its own initial getSession() call,
+// same reasoning: turn "never settles" into a real, catchable error instead
+// of leaving the caller waiting with nothing to show.
+const SESSION_TIMEOUT_MS = 8000
 
 // 2026-08-27: one real report from Michael traced to a request landing in
 // the split-second Netlify swaps one deploy's serverless functions for the
@@ -32,7 +45,7 @@ async function fetchWithNetworkRetry(url, options, attempts = 2, delayMs = 400) 
 // support widget, Today's Actions, the writing-style analyser) gets this
 // automatically instead of each one needing to remember it.
 export async function callChat({ messages, systemOverride, maxTokens, model, webSearch, maxSearchUses } = {}) {
-  const { data: { session } } = await supabase.auth.getSession()
+  const { data: { session } } = await withTimeout(supabase.auth.getSession(), SESSION_TIMEOUT_MS, 'callChat-session')
   const token = session?.access_token
   if (!token) throw new Error('You need to be signed in for that.')
 
@@ -72,7 +85,7 @@ export async function callChat({ messages, systemOverride, maxTokens, model, web
 // Actions' candidate pitch batch) wants the simple all-at-once { text,
 // citations } shape and has no UI built to consume partial chunks.
 export async function callChatStream({ messages, systemOverride, maxTokens, model, webSearch, maxSearchUses, onDelta } = {}) {
-  const { data: { session } } = await supabase.auth.getSession()
+  const { data: { session } } = await withTimeout(supabase.auth.getSession(), SESSION_TIMEOUT_MS, 'callChatStream-session')
   const token = session?.access_token
   if (!token) throw new Error('You need to be signed in for that.')
 

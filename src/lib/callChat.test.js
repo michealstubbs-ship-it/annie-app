@@ -101,4 +101,23 @@ describe('callChat', () => {
     await expect(callChat({ messages: [] })).rejects.toThrow('rate limited')
     expect(fetchSpy).toHaveBeenCalledTimes(1)
   })
+
+  // 2026-08-29: getSession() has no timeout of its own and can simply never
+  // settle (auth still starting up, a browser extension/corporate proxy
+  // interfering) rather than reject — this was the root cause of Today's
+  // Actions' reported hang. Every caller now races it against a real
+  // timeout instead of waiting forever with nothing to show.
+  it('rejects with a clear timeout error instead of hanging forever when getSession() never settles', async () => {
+    vi.useFakeTimers()
+    getSessionMock.mockReturnValue(new Promise(() => {})) // never resolves
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const promise = callChat({ messages: [{ role: 'user', content: 'hi' }] })
+    const assertion = expect(promise).rejects.toThrow('TIMEOUT:callChat-session')
+    await vi.advanceTimersByTimeAsync(8000)
+    await assertion
+    expect(fetchSpy).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
 })

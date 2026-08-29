@@ -3,6 +3,8 @@ import { useAuth } from '../contexts/AuthContext'
 import { listInvoices, deleteInvoice, markInvoicePaid, voidInvoice } from '../lib/data/invoices'
 import { sendInvoice, fetchInvoicePdfBlobUrl } from '../lib/invoiceApi'
 import { formatMoney } from '../lib/invoiceCalc'
+import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
+import { supabase } from '../lib/supabase'
 import InvoiceFormModal from './InvoiceFormModal'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBanner from './ErrorBanner'
@@ -28,8 +30,25 @@ export default function Invoices() {
   const [confirmVoidId, setConfirmVoidId] = useState(null)
   const [sendingId, setSendingId] = useState(null)
   const [rowError, setRowError] = useState({})
+  // 2026-08-29 audit fix: this summary bar hardcoded 'AED' — Annie's own
+  // home market, not necessarily this account's. Resolved from the
+  // account's own onboarding market instead, same source Overview.jsx and
+  // Pipeline.jsx already use. Known limitation, not fixed here: unpaidTotal/
+  // paidTotal below sum every invoice's raw `total` regardless of that
+  // invoice's own currency — correct for the common case of one market per
+  // account, but a genuinely mixed-currency account would need real
+  // per-currency subtotals, not just the right label on a combined sum.
+  const [displayCurrency, setDisplayCurrency] = useState(DEFAULT_CURRENCY_CODE)
 
   useEffect(() => { load() }, [user])
+
+  useEffect(() => {
+    if (!user) return
+    // Best-effort — a failure here just leaves the sensible GBP default in
+    // place, never worth surfacing as a page error over a summary label.
+    supabase.from('onboarding').select('locations').eq('user_id', user.id).single()
+      .then(({ data }) => setDisplayCurrency(resolveMarketCurrencyCode(data?.locations)), () => {})
+  }, [user])
 
   async function load() {
     setLoading(true)
@@ -163,7 +182,7 @@ export default function Invoices() {
             <InfoTip text="Generate a professional placement-fee invoice naming the role and candidate placed, with your own bank details on it. Annie never collects payment itself — your client pays you directly by bank transfer, and you mark it paid yourself once it lands." />
           </h1>
           <p className="text-gray-500 mt-1">
-            {formatMoney(unpaidTotal, 'AED')} outstanding · {formatMoney(paidTotal, 'AED')} paid
+            {formatMoney(unpaidTotal, displayCurrency)} outstanding · {formatMoney(paidTotal, displayCurrency)} paid
           </p>
         </div>
         <button onClick={openAdd} className="btn-primary">+ New invoice</button>

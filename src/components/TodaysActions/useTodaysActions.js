@@ -5,8 +5,9 @@ import {
   selectDailyItems, resolveTodaysActions, markActionDone,
 } from '../../lib/todaysActions/index.js'
 import { buildEnrichmentPrompt, buildCandidatePitchPrompt } from '../../lib/actionsCopy'
-import { callChat } from '../../lib/callChat'
+import { callChatStream } from '../../lib/callChat'
 import { extractJson } from '../../lib/jsonExtract'
+import { reportClientError } from '../../lib/errorReporting'
 import { stripAiArtifacts } from '../../lib/textSanitize'
 import { buildOutreachMessage, firstNameOf } from '../../lib/outreachMessage'
 import { listCandidatesForMatching } from '../../lib/data/candidates'
@@ -102,18 +103,45 @@ export function useTodaysActions({ user, profile }) {
       // by the scan that found them, no second AI call needed for those.
       const crmItems = selected.filter(i => i.category !== 'sourced')
       let enrichedList = []
+      let enrichmentFailed = false
       if (crmItems.length) {
         const prompt = buildEnrichmentPrompt(crmItems, ob, profile)
-        const { text } = await callChat({
-          messages: [{ role: 'user', content: 'Write the copy for these items.' }],
-          systemOverride: prompt,
-          maxTokens: 2500,
-          model: 'claude-haiku-4-5-20251001',
-        })
         try {
+          // 2026-08-29 audit fix, two bugs at once: (1) this call used to sit
+          // outside any try/catch at all — only the extractJson() parse
+          // below it was wrapped — so a callChat() failure (auth, network,
+          // rate limit) threw straight out of refresh() and was caught by
+          // its OUTER catch, which shows a full-page error and skips
+          // setActions() entirely. That took down all of Today's Actions,
+          // including every sourced signal that never needed this call, over
+          // a failure in optional cosmetic copy for CRM follow-ups — matches
+          // the pitch call 30 lines below, which already got this right and
+          // says so in its own comment. (2) callChat() buffers the whole
+          // reply before returning anything — this prompt grows with the
+          // customer's own CRM (more contacts/deals = longer prompt = longer
+          // silence on the wire before the first byte), so any intermediary
+          // with an idle-connection timeout can kill a slow request outright
+          // with nothing to catch. callChatStream() already exists for
+          // exactly this (Chat.jsx uses it) — same NDJSON streaming, same
+          // final { text } shape, no idle window to time out on.
+          const { text } = await callChatStream({
+            messages: [{ role: 'user', content: 'Write the copy for these items.' }],
+            systemOverride: prompt,
+            maxTokens: 2500,
+            model: 'claude-haiku-4-5-20251001',
+          })
           enrichedList = extractJson(text)
-        } catch {
+        } catch (err) {
+          // 2026-08-29 audit fix: this used to swallow the failure into
+          // `null` for every item with nothing logged anywhere — the only
+          // visible symptom was a page full of cards reading "Follow up"
+          // with no way to tell that from a real, if sparse, result. Now
+          // logged to error_logs (same as every other tracked client
+          // failure) so a recurrence shows up somewhere other than someone
+          // noticing the page looks wrong.
+          reportClientError("Today's Actions: CRM item enrichment failed", err, { itemCount: crmItems.length })
           enrichedList = crmItems.map(() => null)
+          enrichmentFailed = true
         }
       }
       const enrichedByItem = new Map(crmItems.map((item, i) => [item, enrichedList[i] || null]))
@@ -136,7 +164,10 @@ export function useTodaysActions({ user, profile }) {
       let pitchByItem = new Map()
       if (pitchTargets.length) {
         try {
-          const { text } = await callChat({
+          // Same buffering/idle-timeout exposure as the enrichment call
+          // above, just smaller (fewer tokens, one pairing at a time) — the
+          // fix is the same: stream instead of buffering the whole reply.
+          const { text } = await callChatStream({
             messages: [{ role: 'user', content: 'Write the pitch for each pairing.' }],
             systemOverride: buildCandidatePitchPrompt(pitchTargets.map(({ item, topMatch }) => ({ signal: { headline: item.signal.headline, industry: item.signal.company_industry }, candidate: topMatch }))),
             maxTokens: 1200,
@@ -144,9 +175,13 @@ export function useTodaysActions({ user, profile }) {
           })
           const pitches = extractJson(text, { shape: 'string' })
           pitchByItem = new Map(pitchTargets.map(({ item }, i) => [item, stripAiArtifacts(pitches[i]) || '']))
-        } catch {
+        } catch (err) {
           // A failed/malformed pitch batch just means no pill this time —
-          // never worth failing the whole Today's Actions load over.
+          // never worth failing the whole Today's Actions load over. Still
+          // logged (not just swallowed) so a real recurring problem here
+          // shows up somewhere rather than only as "the pills don't show up
+          // much" that nobody thinks to investigate.
+          reportClientError("Today's Actions: candidate pitch batch failed", err, { targetCount: pitchTargets.length })
           pitchByItem = new Map()
         }
       }
@@ -192,7 +227,12 @@ export function useTodaysActions({ user, profile }) {
           category: item.category,
           urgency: item.urgency,
           score: item.score,
-          headline: enriched?.headline || 'Follow up',
+          // enrichmentFailed distinguishes "the AI call genuinely failed" —
+          // now logged above — from any other reason a specific item might
+          // lack copy, so a real failure reads as a visibly degraded state
+          // instead of a plain category label indistinguishable from a
+          // normal, if terse, card.
+          headline: enriched?.headline || (enrichmentFailed ? "Follow up — couldn't load details" : 'Follow up'),
           detail: enriched?.detail || '',
           moveForward: enriched?.moveForward || [],
           signals: item.signals,

@@ -23,6 +23,8 @@ import {
   buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool, buildSourcedPool,
   selectDailyItems, resolveTodaysActions,
 } from '../lib/todaysActions/index.js'
+import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
+import { currencySymbol } from '../lib/invoiceCalc'
 
 const JOB_STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled', lost: 'Lost' }
 const JOB_STATUS_COLOR = { active: '#2f9e5b', onhold: '#d99a2b', filled: '#c9a84c', lost: '#9ca0ac' }
@@ -146,6 +148,11 @@ export default function Overview() {
   const [meetings, setMeetings] = useState([])
   const [tasks, setTasks] = useState([])
   const [contactsCount, setContactsCount] = useState(null) // null = not checked yet, avoids a flash of the reminder
+  // 2026-08-29 audit fix: the pipeline-value stat used to hardcode "AED" —
+  // Annie's own home market, not necessarily this account's. Resolved from
+  // the account's own onboarding market instead, same source Pipeline.jsx's
+  // currency display already uses.
+  const [marketCurrency, setMarketCurrency] = useState(DEFAULT_CURRENCY_CODE)
   const [scanOutcome, setScanOutcome] = useState(null) // set once scan-status.js reports the scan is actually done, tells us WHY there's nothing (or something) to show
   const [chainProgress, setChainProgress] = useState(null) // live counts while a chained scan is still running — updated on every poll tick via useScanStatusPoll's onTick
   const [retrying, setRetrying] = useState(false)
@@ -260,6 +267,7 @@ export default function Overview() {
       { data: meetingRows },
       { data: taskRows },
       { count: contactsCountResult },
+      { data: onboardingRow },
     ] = await Promise.all([
       // jobs/candidates/meetings/bd_tasks/contacts are the shared CRM —
       // team-scoped by RLS, dropping the user_id filter is what makes the
@@ -288,7 +296,9 @@ export default function Overview() {
       // profiles.linkedin_import_completed which gets set true on skip too. This banner
       // self-clears the moment a real import lands, no extra state to keep in sync.
       supabase.from('contacts').select('id', { count: 'exact', head: true }),
+      supabase.from('onboarding').select('locations').eq('user_id', user.id).single(),
     ])
+    setMarketCurrency(resolveMarketCurrencyCode(onboardingRow?.locations))
 
     // Same pools -> selectDailyItems -> resolveTodaysActions pipeline
     // useTodaysActions.js runs, minus the AI-copy-writing step (Overview
@@ -346,6 +356,15 @@ export default function Overview() {
       if (loadTokenRef.current === token) setLoading(false)
     }
   }
+
+  // Same display convention Pipeline.jsx's own currency prefix uses: a
+  // single-character symbol (£, $, €) reads correctly with no space
+  // ("£12,345"), but AED has no single-character symbol in common use, so
+  // it needs the trailing space ("AED 12,345") to read as a prefix at all.
+  const pipelineCurrencyPrefix = useMemo(() => {
+    const symbol = currencySymbol(marketCurrency)
+    return symbol.length > 1 ? `${symbol} ` : symbol
+  }, [marketCurrency])
 
   const jobStats = useMemo(() => {
     const active = jobs.filter(j => j.status === 'active')
@@ -472,7 +491,7 @@ export default function Overview() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
         <div className="bg-white rounded-xl border border-gray-100 p-4">
           <div className="text-xs text-gray-400 font-medium mb-1.5">Active pipeline</div>
-          <div className="text-[22px] font-bold text-navy tracking-tight">AED {jobStats.pipelineValue.toLocaleString()}</div>
+          <div className="text-[22px] font-bold text-navy tracking-tight">{pipelineCurrencyPrefix}{jobStats.pipelineValue.toLocaleString()}</div>
           <div className="text-[11px] text-gray-400 mt-1">{jobStats.active.length} active mandate{jobStats.active.length === 1 ? '' : 's'}</div>
         </div>
         <div className="bg-white rounded-xl border border-gray-100 p-4">

@@ -5,7 +5,9 @@ import { supabase } from '../lib/supabase'
 import { callChat } from '../lib/callChat'
 import { useScanStatusPoll, triggerScanNow } from '../lib/useScanStatusPoll'
 import { getInvoicingDetails, saveInvoicingDetails } from '../lib/data/invoicingDetails'
+import { getOnboardingLocations } from '../lib/data/onboarding'
 import { CURRENCY_OPTIONS } from '../lib/invoiceCalc'
+import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBanner from './ErrorBanner'
 
@@ -75,7 +77,12 @@ export default function Settings() {
   const EMPTY_INVOICING = {
     business_name: '', business_address: '', business_email: '', business_phone: '', tax_number: '',
     bank_account_name: '', bank_name: '', bank_account_number: '', bank_sort_code: '', bank_iban: '', bank_swift_bic: '',
-    default_currency: 'AED', default_payment_terms_days: 14, invoice_footer_note: '',
+    // 2026-08-29 audit fix: was hardcoded 'AED' — Annie's own home market,
+    // not necessarily this account's. GBP is a neutral, UK-first fallback;
+    // loadInvoicingDetails() below upgrades this to the account's real
+    // onboarding market as soon as it loads, for any account that's never
+    // explicitly set a default currency here.
+    default_currency: DEFAULT_CURRENCY_CODE, default_payment_terms_days: 14, invoice_footer_note: '',
   }
   const [invoicingForm, setInvoicingForm] = useState(EMPTY_INVOICING)
   const [invoicingLoaded, setInvoicingLoaded] = useState(false)
@@ -93,8 +100,18 @@ export default function Settings() {
   async function loadInvoicingDetails() {
     if (!user) return
     try {
-      const data = await getInvoicingDetails()
+      // Fetched independently rather than reading the `onboarding` state
+      // set by loadOnboarding() elsewhere in this same mount effect — the
+      // two calls aren't sequenced against each other, so relying on that
+      // state here could read it before it's populated. 2026-08-29 audit
+      // fix: if this account has never explicitly saved an invoicing
+      // default, the currency shown used to just be EMPTY_INVOICING's
+      // hardcoded 'AED' regardless of the account's own market — now
+      // resolved from onboarding instead, same source Overview.jsx/
+      // Pipeline.jsx/InvoiceFormModal.jsx all use.
+      const [data, locations] = await Promise.all([getInvoicingDetails(), getOnboardingLocations(user.id)])
       if (data) setInvoicingForm({ ...EMPTY_INVOICING, ...data })
+      else setInvoicingForm(prev => ({ ...prev, default_currency: resolveMarketCurrencyCode(locations) }))
     } catch {
       // Best-effort load — an empty form (falling back to EMPTY_INVOICING
       // defaults) is a safe, harmless failure state here; saving still

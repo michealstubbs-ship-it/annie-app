@@ -5,6 +5,8 @@ import { callChat } from '../lib/callChat'
 import { parseEscalation } from '../lib/supportEscalation'
 import { describeChatFailure, describeStaleTab } from '../lib/chatErrorMessage'
 import { isTabStale } from '../lib/staleBuild'
+import { withTimeout } from '../lib/withTimeout'
+import { reportClientError } from '../lib/errorReporting'
 
 // Rewritten 2026-08-26 after a real production incident: the previous
 // version of this prompt described features that don't exist (a "target
@@ -224,12 +226,20 @@ export default function SupportWidget() {
     }
   }
 
-  // Fire-and-forget — never blocks or changes what the customer sees. A
-  // failed escalation email is a problem for us to notice separately
-  // (support-escalate.js reports it), never a reason to interrupt the chat.
+  // Fire-and-forget — never blocks or changes what the customer sees. The
+  // comment this used to carry ("a failed escalation is a problem for us to
+  // notice separately — support-escalate.js reports it") is only true once
+  // the request actually reaches the server. 2026-08-29 audit fix: it
+  // wasn't — a hung or unguarded getSession() (no timeout, same root bug as
+  // callChat.js) or a fetch that never leaves the browser means the request
+  // never arrives, support-escalate.js's own reporting never fires, and
+  // nobody ever finds out a customer asked for a human and got silence.
+  // Still fire-and-forget (still must never interrupt the chat), but now
+  // bounded by a timeout and logged client-side on any failure so a
+  // silently-dropped escalation at least leaves a trace someone can find.
   async function escalate(category, latestExchange) {
     try {
-      const { data: { session } } = await supabase.auth.getSession()
+      const { data: { session } } = await withTimeout(supabase.auth.getSession(), 8000, 'support-escalate-session')
       const token = session?.access_token
       if (!token) return
       await fetch('/api/support-escalate', {
@@ -237,8 +247,8 @@ export default function SupportWidget() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ category, excerpt: latestExchange }),
       })
-    } catch {
-      // deliberately swallowed — see comment above
+    } catch (err) {
+      reportClientError('Support escalation failed to send', err, { category })
     }
   }
 

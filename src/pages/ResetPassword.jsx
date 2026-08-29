@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { withTimeout } from '../lib/withTimeout'
 import ErrorBanner from '../components/ErrorBanner'
 
 export default function ResetPassword() {
@@ -15,11 +16,24 @@ export default function ResetPassword() {
   const [done, setDone] = useState(false)
 
   useEffect(() => {
-    // Supabase puts the recovery session in place automatically when arriving via the emailed link
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setReady(!!session)
-      if (!session) setError('This reset link is invalid or has expired. Request a new one from the login page.')
-    })
+    // Supabase puts the recovery session in place automatically when
+    // arriving via the emailed link. 2026-08-29 audit fix: this had no
+    // .catch() at all and no timeout — a rejected or (worse) never-settling
+    // getSession() left `ready` false forever with no error shown, so
+    // someone landing here on a bad connection or a hung auth client was
+    // just stuck on a page that looked like it was permanently loading,
+    // with no way to tell what was wrong or that a fresh reset link would
+    // fix it. withTimeout() turns a hang into a real, catchable error the
+    // same way callChat.js's own getSession() call now does.
+    withTimeout(supabase.auth.getSession(), 8000, 'reset-password-session')
+      .then(({ data: { session } }) => {
+        setReady(!!session)
+        if (!session) setError('This reset link is invalid or has expired. Request a new one from the login page.')
+      })
+      .catch(() => {
+        setReady(false)
+        setError('This reset link is invalid or has expired. Request a new one from the login page.')
+      })
   }, [])
 
   async function handleSubmit(e) {

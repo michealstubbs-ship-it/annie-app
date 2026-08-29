@@ -4,7 +4,10 @@ import { createInvoice, updateInvoice, replaceLineItems } from '../lib/data/invo
 import { listJobsForCompany } from '../lib/data/jobs'
 import { listCandidatesForInvoicePicker } from '../lib/data/candidates'
 import { getInvoicingDetails } from '../lib/data/invoicingDetails'
+import { getOnboardingLocations } from '../lib/data/onboarding'
 import { lineItemAmount, computeInvoiceTotals, formatMoney, CURRENCY_OPTIONS } from '../lib/invoiceCalc'
+import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
+import { reportClientError } from '../lib/errorReporting'
 import CompanySelect from './CompanySelect'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
@@ -26,7 +29,11 @@ const EMPTY = {
   company_id: '', company_name: '',
   job_id: '', candidate_id: '',
   bill_to_name: '', bill_to_email: '', bill_to_address: '',
-  currency: 'AED', issue_date: today(), due_date: '',
+  // 2026-08-29 audit fix: was hardcoded 'AED' — Annie's own home market,
+  // not necessarily the customer's. GBP is a neutral, UK-first default;
+  // prefillFromTeamDefaults() below upgrades this to the account's real
+  // market currency (or an explicit saved default) right after mount.
+  currency: DEFAULT_CURRENCY_CODE, issue_date: today(), due_date: '',
   tax_rate: '0', notes: '',
 }
 
@@ -58,7 +65,7 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved }) {
         bill_to_name: invoice.bill_to_name || '',
         bill_to_email: invoice.bill_to_email || '',
         bill_to_address: invoice.bill_to_address || '',
-        currency: invoice.currency || 'AED',
+        currency: invoice.currency || DEFAULT_CURRENCY_CODE,
         issue_date: invoice.issue_date || today(),
         due_date: invoice.due_date || '',
         tax_rate: String(invoice.tax_rate ?? 0),
@@ -82,18 +89,27 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved }) {
   }, [open, invoice])
 
   // Best-effort — a failed load just leaves the built-in EMPTY defaults
-  // (AED, no due date) rather than blocking the form.
+  // (GBP, no due date) rather than blocking the form. 2026-08-29 audit fix:
+  // this used to only ever look at an explicitly-saved invoicing default
+  // (`details.default_currency`) and fall back to whatever `p.currency`
+  // already was (the hardcoded 'AED' from EMPTY) — so a brand-new account
+  // that had never touched Settings > Invoicing got AED regardless of its
+  // own onboarding market. Now resolves the account's real market currency
+  // as the fallback instead, same source Pipeline.jsx's own currency
+  // display already uses.
   async function prefillFromTeamDefaults() {
     try {
-      const details = await getInvoicingDetails()
-      if (!details) return
+      const [details, locations] = await Promise.all([
+        getInvoicingDetails(),
+        user ? getOnboardingLocations(user.id) : null,
+      ])
       setForm(p => ({
         ...p,
-        currency: details.default_currency || p.currency,
-        due_date: details.default_payment_terms_days ? addDays(today(), details.default_payment_terms_days) : p.due_date,
+        currency: details?.default_currency || resolveMarketCurrencyCode(locations),
+        due_date: details?.default_payment_terms_days ? addDays(today(), details.default_payment_terms_days) : p.due_date,
       }))
-    } catch {
-      // ignore
+    } catch (err) {
+      reportClientError('Invoice form: failed to load team/currency defaults', err)
     }
   }
 
@@ -101,7 +117,12 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved }) {
     try {
       const j = await listJobsForCompany(companyId)
       setJobs(j)
-    } catch {
+    } catch (err) {
+      // 2026-08-29 audit fix: was silently falling back to an empty list —
+      // indistinguishable in the UI from "this company genuinely has no
+      // jobs." Logged so a real load failure doesn't just look like an
+      // empty picker.
+      reportClientError('Invoice form: failed to load jobs for company', err, { companyId })
       setJobs([])
     }
   }
@@ -110,7 +131,8 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved }) {
     try {
       const c = await listCandidatesForInvoicePicker()
       setAllCandidates(c)
-    } catch {
+    } catch (err) {
+      reportClientError('Invoice form: failed to load candidates for picker', err)
       setAllCandidates([])
     }
   }
