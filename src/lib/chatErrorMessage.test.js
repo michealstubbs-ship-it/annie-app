@@ -35,6 +35,19 @@ describe('describeChatFailure', () => {
     const result = describeChatFailure(undefined)
     expect(result.reloadSuggested).toBe(true)
   })
+
+  // 2026-08-29 audit fix: this message used to confidently tell the user
+  // "we've shipped an update while this tab was open" for EVERY generic
+  // network-shaped failure — including the actual, repeatable root cause
+  // (a streamed reply killed by Netlify's 10s streaming execution limit,
+  // nothing to do with a deploy). It has no way to know that's the reason,
+  // so it must not claim it — that claim belongs only to describeStaleTab(),
+  // which is reached from a real, confirmed isTabStale() check, not a guess.
+  it('never claims a deploy/update as the reason — that is describeStaleTab\'s job, not this fallback\'s guess', () => {
+    const result = describeChatFailure(new Error('Request failed'))
+    expect(result.text).not.toMatch(/shipped an update/i)
+    expect(result.text).not.toMatch(/previous version/i)
+  })
 })
 
 describe('describeStaleTab', () => {

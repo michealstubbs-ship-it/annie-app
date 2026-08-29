@@ -2,11 +2,11 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
-import { callChatStream } from '../lib/callChat'
+import { callChat, callChatStream } from '../lib/callChat'
 import { trackEvent } from '../lib/analytics'
 import { getWatchlistCompanyNames, buildWatchlistChatHint } from '../lib/watchlist'
 import { shouldSearchWeb } from '../lib/chatWebSearch'
-import { describeChatFailure, describeStaleTab } from '../lib/chatErrorMessage'
+import { describeChatFailure, describeStaleTab, isGenericNetworkFailure } from '../lib/chatErrorMessage'
 import { isTabStale } from '../lib/staleBuild'
 
 // Security fix, 2026-08-27 audit: citation URLs come from Anthropic's own
@@ -120,20 +120,59 @@ Be specific, actionable and concise. No waffle.`
 
       // 27 Aug 2026: only pay search's extra cost/latency when the question
       // actually needs current information — see chatWebSearch.js's header.
-      const { text, citations } = await callChatStream({
+      const chatPayload = {
         messages: [...messages, userMsg].map(m => ({ role: m.role, content: m.content })),
         systemOverride: systemPrompt,
         maxTokens: 1500,
         webSearch: shouldSearchWeb(userMsg.content),
         maxSearchUses: 3,
-        onDelta: (_chunk, fullTextSoFar) => {
-          setMessages(prev => {
-            const next = [...prev]
-            next[assistantIndex] = { role: 'assistant', content: fullTextSoFar, streaming: true }
-            return next
-          })
-        },
-      })
+      }
+
+      let text, citations
+      try {
+        ;({ text, citations } = await callChatStream({
+          ...chatPayload,
+          onDelta: (_chunk, fullTextSoFar) => {
+            setMessages(prev => {
+              const next = [...prev]
+              next[assistantIndex] = { role: 'assistant', content: fullTextSoFar, streaming: true }
+              return next
+            })
+          },
+        }))
+      } catch (streamErr) {
+        // 2026-08-29 audit fix, root cause of Michael's "worst one" report:
+        // Netlify hard-caps a STREAMING function response at 10 seconds of
+        // execution (their own docs: "If the limit is reached, the response
+        // stops streaming" — their staff points to Edge Functions as the
+        // real fix, since only CPU time counts there, not time waiting on
+        // Anthropic). A question that triggers a real web search (Annie can
+        // run up to 3, each with genuine multi-second latency — see
+        // shouldSearchWeb above) can easily clear 10s of actual generation
+        // time while still comfortably finishing inside a REGULAR function's
+        // much more generous ~30s limit — chat.js's own non-streaming path,
+        // used by every caller except this one. So rather than surface that
+        // platform ceiling as a failure at all, retry once, non-streaming,
+        // through the exact same endpoint with the exact same payload —
+        // the recruiter loses the word-by-word animation on this one reply,
+        // not the reply itself. Only for a generic, contentless failure
+        // (what a killed stream produces): a real server-sent answer (the
+        // monthly Ask Annie cap, a rate limit) means the request was never
+        // in doubt, so retrying non-streaming would just hit the identical
+        // wall a second time for no reason — let the outer catch show that
+        // verbatim instead, same as before this fix.
+        if (!isGenericNetworkFailure(streamErr)) throw streamErr
+        setMessages(prev => {
+          const next = [...prev]
+          // Clear whatever partial text the killed stream left in the
+          // placeholder before the retry starts — the fallback's own answer
+          // replaces it below once it lands, not appends to a fragment.
+          next[assistantIndex] = { role: 'assistant', content: '', streaming: true }
+          return next
+        })
+        ;({ text, citations } = await callChat(chatPayload))
+      }
+
       setMessages(prev => {
         const next = [...prev]
         // citations only ever come back when this message actually triggered
@@ -197,13 +236,14 @@ Be specific, actionable and concise. No waffle.`
   return (
     // Fixed viewport height, not min-height, so this must account for the
     // same mobile top bar Dashboard.jsx's <main> already clears with its own
-    // `pt-14 md:pt-0` (see that file's comment) — without the matching
+    // `pt-14 lg:pt-0` (see that file's comment) — without the matching
     // `-3.5rem` here on mobile, this container renders 56px taller than the
     // space actually visible below that bar, pushing the message input row
     // (including the Send button) 56px below the fold on any viewport under
-    // the md breakpoint, so it's only reachable by scrolling `<main>` itself.
-    // 2026-08-27 UX audit fix.
-    <div className="flex flex-col h-[calc(100vh-3.5rem)] md:h-screen max-h-screen p-8 pb-0">
+    // the lg breakpoint, so it's only reachable by scrolling `<main>` itself.
+    // 2026-08-27 UX audit fix; boundary moved from md: to lg: on 2026-08-29
+    // alongside Sidebar.jsx's own fix — see that file's header for why.
+    <div className="flex flex-col h-[calc(100vh-3.5rem)] lg:h-screen max-h-screen p-8 pb-0">
       <div className="mb-4">
         <h1 className="text-3xl font-bold text-navy">Ask Annie</h1>
         <p className="text-gray-500 mt-1">Your personal BD intelligence assistant</p>

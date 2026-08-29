@@ -6,6 +6,24 @@
   body {
     @apply bg-page-bg text-gray-800 font-sans;
   }
+
+  /* 2026-08-29 audit fix: nothing in this file ever DEFINED a visible focus
+     style for anything except .input (which swaps the browser's own
+     outline for a gold ring on purpose, one line below). Every button,
+     link, and sidebar nav item was left to whatever the browser's own
+     default focus ring happened to render — which reads as invisible in
+     this app (buttons in particular commonly render no default ring at
+     all), so tabbing through gave a keyboard user no indication of where
+     they were, anywhere. One rule, app-wide, on :focus-visible specifically
+     (not plain :focus) so a mouse click never shows a ring, only real
+     keyboard/switch-device navigation does — same distinction Tailwind's
+     own focus-visible variant and IntelligenceFeed.jsx's existing signal
+     row already draw, just made the default everywhere instead of one
+     component having to opt in. */
+  :focus-visible {
+    outline: 2px solid theme('colors.gold');
+    outline-offset: 2px;
+  }
 }
 
 @layer components {

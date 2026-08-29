@@ -49,15 +49,19 @@ export default function Dashboard() {
   return (
     <div className="flex min-h-screen bg-page-bg">
       <Sidebar />
-      {/* pt-14 clears the fixed mobile top bar Sidebar renders below md;
-          md:pt-0 restores today's desktop layout exactly. pb-24 (2026-08-29
-          audit fix) clears SupportWidget.jsx's floating launcher button
-          (fixed bottom-6 right-6, 56px tall, z-50) — every one of the
-          routes below shares this single scroll container, so without this
-          the button visually overlapped real content on every page (the
-          last card in a list, in particular) with nothing reserving space
-          for it. Fixed once here rather than in each of the 13 pages. */}
-      <main className="flex-1 overflow-auto pt-14 md:pt-0 pb-24">
+      {/* pt-14 clears the fixed mobile top bar Sidebar renders below lg;
+          lg:pt-0 restores today's desktop layout exactly — moved from md:
+          to lg: alongside Sidebar.jsx's own breakpoint fix (2026-08-29,
+          see that file's header) so this stays in sync with where the
+          sidebar itself actually switches from off-canvas to static.
+          pb-24 (2026-08-29 audit fix) clears SupportWidget.jsx's floating
+          launcher button (fixed bottom-6 right-6, 56px tall, z-50) —
+          every one of the routes below shares this single scroll
+          container, so without this the button visually overlapped real
+          content on every page (the last card in a list, in particular)
+          with nothing reserving space for it. Fixed once here rather than
+          in each of the 13 pages. */}
+      <main className="flex-1 overflow-auto pt-14 lg:pt-0 pb-24">
         {/* Scoped here, not at the app root (see main.jsx for that one) —
             a scale-readiness audit (2026-08-22) found a single crashing
             dashboard page used to take the whole app down, Sidebar

@@ -31,10 +31,25 @@ const SETTINGS_NAV = [
 export default function Sidebar() {
   const { profile, signOut } = useAuth()
   const navigate = useNavigate()
-  // Below md, the sidebar is off-canvas by default and slides in over the
-  // page as an overlay. At md+ this state is never read (the aside is
-  // forced visible via md:translate-x-0 / md:static), so desktop behaviour
+  // Below lg, the sidebar is off-canvas by default and slides in over the
+  // page as an overlay. At lg+ this state is never read (the aside is
+  // forced visible via lg:translate-x-0 / lg:static), so desktop behaviour
   // is unchanged.
+  //
+  // 2026-08-29 audit fix: this was md: (768px) — which is iPad portrait's
+  // OWN width, and Tailwind's md: breakpoint applies at min-width:768px,
+  // inclusive. So at exactly that width the "desktop" rules won this
+  // boundary, not the mobile ones: the sidebar rendered fixed and static,
+  // taking its full 240px out of the viewport with no way to collapse it,
+  // on the one device this was supposed to already handle. Content itself
+  // (tables, grids, fixed-width elements throughout the CRM) has no
+  // responsive treatment of its own below roughly 1024px regardless of
+  // this fix — that's a separate, much larger piece of work, flagged
+  // separately rather than silently taken on here — but moving this
+  // specific boundary to lg: (1024px) at least gives that content its full
+  // viewport width on a tablet instead of losing 240px of it to a sidebar
+  // that was never meant to be static there, and matches the one width
+  // band confirmed to render correctly today: 1024px and up.
   const [open, setOpen] = useState(false)
 
   async function handleSignOut() {
@@ -50,7 +65,7 @@ export default function Sidebar() {
     <>
       {/* Mobile top bar: only rendered below md, gives brand presence and a
           way to open the sidebar once it's off-canvas by default. */}
-      <div className="md:hidden fixed top-0 inset-x-0 z-30 h-14 bg-navy border-b border-white/10 flex items-center gap-3 px-4">
+      <div className="lg:hidden fixed top-0 inset-x-0 z-30 h-14 bg-navy border-b border-white/10 flex items-center gap-3 px-4">
         <button
           onClick={() => setOpen(true)}
           aria-label="Open menu"
@@ -74,14 +89,14 @@ export default function Sidebar() {
           (same overlay-click-to-close pattern as Modal.jsx). */}
       {open && (
         <div
-          className="md:hidden fixed inset-0 bg-black/40 z-40"
+          className="lg:hidden fixed inset-0 bg-black/40 z-40"
           onClick={() => setOpen(false)}
         />
       )}
 
       <aside
-        className={`fixed md:static inset-y-0 left-0 z-50 w-60 bg-navy min-h-screen flex flex-col flex-shrink-0
-        transform transition-transform duration-300 ease-in-out md:translate-x-0
+        className={`fixed lg:static inset-y-0 left-0 z-50 w-60 bg-navy min-h-screen flex flex-col flex-shrink-0
+        transform transition-transform duration-300 ease-in-out lg:translate-x-0
         ${open ? 'translate-x-0' : '-translate-x-full'}`}
       >
         {/* Logo */}
@@ -100,7 +115,7 @@ export default function Sidebar() {
           <button
             onClick={() => setOpen(false)}
             aria-label="Close menu"
-            className="md:hidden text-white/60 hover:text-white p-1"
+            className="lg:hidden text-white/60 hover:text-white p-1"
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M6 6l12 12M18 6L6 18" />

@@ -19,24 +19,49 @@
 const NETWORK_ERROR_RE = /fetch|network/i
 const GENERIC_APOLOGY = 'Sorry, something went wrong.'
 
+// Shared with Chat.jsx's non-streaming fallback (see its own comment) so
+// the two places that need this exact same distinction — "is this message
+// something the server deliberately wrote for a human to read, or a raw
+// network-shaped failure" — read it from one definition instead of two
+// copies quietly drifting apart.
+export function isGenericNetworkFailure(err) {
+  const serverMessage = err?.message
+  return !(Boolean(serverMessage) && serverMessage !== 'Request failed' && !NETWORK_ERROR_RE.test(serverMessage))
+}
+
 // A server-sent error message (chat.js's own { error } bodies — the monthly
 // cap notice, the rate-limit notice, "Not authenticated", etc.) is written
 // to be shown to the user verbatim, so it's passed through unchanged and
 // never paired with a reload suggestion, which wouldn't fix any of those.
 // Everything else — no message at all, the generic 'Request failed' used
 // when the server didn't send a JSON body, or a raw browser fetch/network
-// error string — is the class of failure a stale tab (or a genuine blip)
-// produces, and reloading is the one thing actually worth suggesting for it.
+// error string — used to be treated as one single class ("a stale tab, or a
+// genuine blip") and told to reload.
+//
+// 2026-08-29 audit fix: that was often just confidently wrong, not merely
+// vague — the specific, repeatable failure Michael found (a web-search-
+// triggering question, streamed, dying with no content after ~30s) isn't a
+// stale tab at all. Root cause: Netlify hard-caps a STREAMING function
+// response at 10 seconds of execution ("10 second execution limit. If the
+// limit is reached, the response stops streaming." — Netlify's own docs;
+// their staff gives the same figure recommending Edge Functions instead,
+// since only CPU time counts there, not time spent waiting on a network
+// response). callChat()'s non-streaming path instead hits the much more
+// generous ~30s limit for a regular synchronous function, so the exact same
+// question reliably finishes there. Ask Annie's streaming path retries
+// through callChat() first now (see Chat.jsx) specifically to route around
+// this — so by the time this function is even reached, that safety net
+// already failed too, and a message hedging "if this JUST started
+// happening" or flatly blaming a deploy is guessing at a cause it has no
+// actual evidence for. Says only what's true either way: it didn't work,
+// and reloading is worth trying, without inventing a reason.
 export function describeChatFailure(err) {
-  const serverMessage = err?.message
-  const hasSpecificMessage = Boolean(serverMessage) && serverMessage !== 'Request failed' && !NETWORK_ERROR_RE.test(serverMessage)
-
-  if (hasSpecificMessage) {
-    return { text: serverMessage, reloadSuggested: false }
+  if (!isGenericNetworkFailure(err)) {
+    return { text: err.message, reloadSuggested: false }
   }
 
   return {
-    text: `${GENERIC_APOLOGY} If this just started happening, it's usually because we've shipped an update while this tab was open — reloading the page should fix it.`,
+    text: `${GENERIC_APOLOGY} That's usually a slow connection or a busy moment for Annie — try again, or reload the page if it keeps happening.`,
     reloadSuggested: true,
   }
 }

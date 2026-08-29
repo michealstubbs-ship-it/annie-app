@@ -110,7 +110,19 @@ export default function Contacts() {
           <button onClick={() => setSearch('')} className="btn-ghost">Clear search</button>
         </div>
       ) : (
+        // 2026-08-29 audit fix, found alongside the sidebar breakpoint bug:
+        // this card's overflow-hidden exists to clip the table's flat edges
+        // into the card's own rounded corners — but with nothing else
+        // providing horizontal scroll, that same overflow-hidden also just
+        // silently CLIPPED whichever columns didn't fit at a narrow width,
+        // Actions (Edit/Delete) included, with no way to reach them at all
+        // rather than an awkward-but-usable scroll. This is the only
+        // <table> in the app — every other CRM list already uses reflowing
+        // cards instead — so it's the one place that needed this. The inner
+        // div now owns the scrolling; the outer card keeps the rounded-
+        // corner clip it was there for.
         <div className="card overflow-hidden">
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-100">
               <tr>
@@ -150,6 +162,7 @@ export default function Contacts() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 

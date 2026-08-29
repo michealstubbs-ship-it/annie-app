@@ -23,11 +23,22 @@ export default function InfoTip({ text }) {
 
   return (
     <span ref={ref} className="relative inline-flex items-center ml-1.5">
+      {/* 2026-08-29 audit fix: with a real mouse, onMouseEnter always fires
+          before the click that follows it (you have to be hovering the
+          button to click it) — so setShow(true) from the hover, then the
+          very same click's setShow(s => !s) immediately flipped it back to
+          false. The tooltip opened and closed in the same instant, which
+          reads as "clicking does nothing" even though something did fire.
+          Click now only ever sets it open (never toggles closed) — a no-op
+          on top of hover for a mouse, and the one thing that opens it at
+          all for touch/keyboard activation, which never fires
+          onMouseEnter. Closing is still handled by mouseleave, Escape, and
+          click-outside above, unchanged. */}
       <button
         type="button"
         onMouseEnter={() => setShow(true)}
         onMouseLeave={() => setShow(false)}
-        onClick={() => setShow(s => !s)}
+        onClick={() => setShow(true)}
         className="w-4 h-4 rounded-full bg-gray-200 text-gray-500 text-[10px] font-bold flex items-center justify-center hover:bg-gold hover:text-navy transition-colors"
         aria-label="More info"
       >
