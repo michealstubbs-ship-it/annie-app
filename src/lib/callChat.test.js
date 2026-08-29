@@ -93,6 +93,29 @@ describe('callChat', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
+  // 2026-08-29 audit fix, flagged directly: a thrown fetch used to be
+  // retried unconditionally, with no regard for how long the failed attempt
+  // actually ran. A request that took most of chat.js's own execution
+  // ceiling before finally throwing was never going to succeed a second
+  // time either — retrying it just makes the caller wait through the same
+  // doomed delay twice. Only a FAST throw (the deploy-swap blip this retry
+  // was built for) is retried; a slow one is surfaced immediately.
+  it('does NOT retry a throw that took a while to happen — a slow, doomed request is not a fast blip', async () => {
+    vi.useFakeTimers()
+    getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok_abc' } } })
+    const fetchSpy = vi.fn().mockImplementation(() => new Promise((_, reject) => {
+      setTimeout(() => reject(new TypeError('Failed to fetch')), 5000) // well past FAST_FAILURE_MS
+    }))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const promise = callChat({ messages: [] })
+    const assertion = expect(promise).rejects.toThrow('Failed to fetch')
+    await vi.advanceTimersByTimeAsync(5000)
+    await assertion
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+  })
+
   it('does NOT retry a resolved-but-not-ok response — a real cap/auth/rate-limit answer is not a network blip', async () => {
     getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok_abc' } } })
     const fetchSpy = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'rate limited' }) })

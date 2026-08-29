@@ -26,13 +26,27 @@ const SESSION_TIMEOUT_MS = 8000
 // 402 monthly cap, 401 auth, 429 rate limit) is a legitimate answer from a
 // server that's very much up, and retrying that blindly would just waste a
 // second attempt against a cap that isn't going anywhere.
+//
+// 2026-08-29 audit fix, flagged directly: a THROWN fetch isn't automatically
+// the fast, narrow blip described above. If the underlying call ran for most
+// of chat.js's own execution ceiling before the connection was finally torn
+// down (an idle-connection intermediary killing a slow-but-still-processing
+// request, rather than a deploy-swap failing instantly), that's a request
+// that was never going to finish in time — retrying it doesn't improve the
+// odds, it just makes the caller sit through the same doomed wait a second
+// time. Only a throw that happened FAST is retried now; a throw that took a
+// while first is treated as a real result and surfaced immediately.
+const FAST_FAILURE_MS = 3000
+
 async function fetchWithNetworkRetry(url, options, attempts = 2, delayMs = 400) {
   let lastErr
   for (let i = 0; i < attempts; i++) {
+    const startedAt = Date.now()
     try {
       return await fetch(url, options)
     } catch (err) {
       lastErr = err
+      if (Date.now() - startedAt > FAST_FAILURE_MS) throw err
       if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs))
     }
   }
