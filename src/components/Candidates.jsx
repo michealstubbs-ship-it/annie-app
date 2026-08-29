@@ -275,7 +275,14 @@ export default function Candidates() {
                     {c.cv_path && <button onClick={() => viewCv(c.cv_path)} className="text-[10px] font-semibold px-2 py-1 rounded-md border border-green-300 text-green-700">📄 CV</button>}
                     <button onClick={() => openEdit(c)} className="text-[10px] font-semibold px-2 py-1 rounded-md border border-gray-200 text-gray-600">Edit</button>
                     <button onClick={() => askAnnie(c)} className="text-[10px] font-semibold px-2 py-1 rounded-md bg-navy text-gold">Ask Annie</button>
-                    <button onClick={() => setConfirmDeleteId(c.id)} className="text-[10px] font-semibold px-2 py-1 rounded-md text-red-400 ml-auto">Delete</button>
+                    {/* 2026-08-29 audit fix: ml-auto already pushed Delete
+                        away from the other actions spatially, but it was
+                        still styled the same faint red-400 as everything
+                        else in this row — no signal that it's the one
+                        irreversible action here. A left border + the
+                        stronger red-500 used everywhere else this pass
+                        makes that read at a glance, same as Invoices.jsx. */}
+                    <button onClick={() => setConfirmDeleteId(c.id)} className="text-[10px] font-semibold px-2 py-1 rounded-md text-red-500 ml-auto pl-3 border-l border-gray-200">Delete</button>
                   </div>
                 </div>
               </div>

@@ -12,6 +12,7 @@
 // boolean back to the frontend, never Cloudflare's response body.
 import { jsonError } from './lib/httpError.js'
 import { reportServerError } from './lib/reportError.js'
+import { fetchWithTimeout } from './lib/scanShared.js'
 
 const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify'
 
@@ -44,11 +45,21 @@ export default async (req, context) => {
     const params = new URLSearchParams({ secret: secretKey, response: token })
     if (context?.ip) params.set('remoteip', context.ip)
 
-    const cfResponse = await fetch(VERIFY_URL, {
+    // Server-side sweep, 2026-08-29: this was the one remaining raw fetch()
+    // in netlify/functions/ with no AbortController-backed timeout (every
+    // other external call — Adzuna/TheirStack/Apollo/Clearbit in
+    // scanShared.js, chat.js's own Anthropic call — already goes through
+    // fetchWithTimeout for exactly this reason, see its header comment
+    // there). A thrown error here was already caught below and turned into
+    // a proper 500, but a true hang — Cloudflare's siteverify endpoint
+    // never responding, never erroring — had nothing forcing it closed,
+    // and this sits on the signup critical path: every new signup would
+    // hang indefinitely with no error ever surfaced, not just this call.
+    const cfResponse = await fetchWithTimeout(VERIFY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params,
-    })
+    }, 10000)
     const result = await cfResponse.json()
 
     if (!result.success) {

@@ -253,9 +253,14 @@ export default function Pipeline() {
                 <div className="text-right flex-shrink-0">
                   {d.value > 0 && <div className="font-bold text-navy">{currency}{Number(d.value).toLocaleString()}</div>}
                   <div className="text-xs text-gray-400 mt-0.5">{d.probability}% probability</div>
-                  <div className="flex gap-2 justify-end mt-2">
+                  {/* 2026-08-29 audit fix: same Delete-styled-like-a-routine-
+                      action issue fixed on Invoices.jsx, applied here for
+                      consistency. */}
+                  <div className="flex items-center gap-2 justify-end mt-2">
                     <button onClick={() => openEdit(d)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
-                    <button onClick={() => setConfirmDeleteId(d.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
+                    <div className="pl-2 ml-1 border-l border-gray-200">
+                      <button onClick={() => setConfirmDeleteId(d.id)} className="text-xs text-red-500 font-semibold hover:underline">Delete</button>
+                    </div>
                   </div>
                 </div>
               </div>

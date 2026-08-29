@@ -134,9 +134,16 @@ export default function Contacts() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex gap-2">
+                    {/* 2026-08-29 audit fix: Delete sat one word from Edit in
+                        the same plain-text row, styled a faint neutral-ish
+                        red that undersold how irreversible it is — same
+                        mis-click-adjacency issue just fixed on Invoices.jsx,
+                        applied here for consistency across the CRM. */}
+                    <div className="flex items-center gap-2">
                       <button onClick={() => openEdit(c)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
-                      <button onClick={() => setConfirmDeleteId(c.id)} className="text-xs text-red-400 font-semibold hover:underline">Delete</button>
+                      <div className="pl-2 ml-1 border-l border-gray-200">
+                        <button onClick={() => setConfirmDeleteId(c.id)} className="text-xs text-red-500 font-semibold hover:underline">Delete</button>
+                      </div>
                     </div>
                   </td>
                 </tr>
