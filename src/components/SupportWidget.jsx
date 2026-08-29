@@ -7,6 +7,7 @@ import { describeChatFailure, describeStaleTab } from '../lib/chatErrorMessage'
 import { isTabStale } from '../lib/staleBuild'
 import { withTimeout } from '../lib/withTimeout'
 import { reportClientError } from '../lib/errorReporting'
+import { recentHistory } from '../lib/chatHistory'
 
 // Rewritten 2026-08-26 after a real production incident: the previous
 // version of this prompt described features that don't exist (a "target
@@ -279,8 +280,13 @@ export default function SupportWidget() {
         ? `${SUPPORT_SYSTEM_PROMPT}\n\n=== THIS CUSTOMER'S REAL ACCOUNT (verified — trust this, don't guess) ===\n${accountContext}`
         : SUPPORT_SYSTEM_PROMPT
 
+      // 2026-08-29 audit fix: same uncapped-history bug as Ask Annie's
+      // Chat.jsx, same fix — see chatHistory.js's header. Worth noting this
+      // file already knew to cap history SOMEWHERE: the escalation excerpt
+      // a few lines below slices to the last 10 messages, it just never
+      // reached the actual model call above it.
       const { text: rawText } = await callChat({
-        messages: [...messages, userMsg].map(m => ({ role: m.role, content: m.content })),
+        messages: recentHistory([...messages, userMsg]).map(m => ({ role: m.role, content: m.content })),
         systemOverride: systemPrompt,
         maxTokens: 600,
       })

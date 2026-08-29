@@ -8,6 +8,7 @@ import { getWatchlistCompanyNames, buildWatchlistChatHint } from '../lib/watchli
 import { shouldSearchWeb } from '../lib/chatWebSearch'
 import { describeChatFailure, describeStaleTab, isGenericNetworkFailure } from '../lib/chatErrorMessage'
 import { isTabStale } from '../lib/staleBuild'
+import { recentHistory } from '../lib/chatHistory'
 
 // Security fix, 2026-08-27 audit: citation URLs come from Anthropic's own
 // web_search tool, so a malicious value getting into this field would be an
@@ -120,8 +121,18 @@ Be specific, actionable and concise. No waffle.`
 
       // 27 Aug 2026: only pay search's extra cost/latency when the question
       // actually needs current information — see chatWebSearch.js's header.
+      //
+      // 2026-08-29 audit fix: this used to send the WHOLE conversation —
+      // every message since the tab was opened — on every turn, with no cap
+      // anywhere in the pipeline. See chatHistory.js's own header for why
+      // that's the same failure shape as Today's Actions' batching bug: an
+      // uncapped conversation grows this prompt indefinitely, hitting the
+      // streaming timeout hardest for exactly the customers actually
+      // engaging most with Ask Annie. Full history still renders on screen
+      // and still saves to chat_messages in full — only what's SENT to the
+      // model is capped.
       const chatPayload = {
-        messages: [...messages, userMsg].map(m => ({ role: m.role, content: m.content })),
+        messages: recentHistory([...messages, userMsg]).map(m => ({ role: m.role, content: m.content })),
         systemOverride: systemPrompt,
         maxTokens: 1500,
         webSearch: shouldSearchWeb(userMsg.content),
