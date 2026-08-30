@@ -5,7 +5,7 @@ import { listJobsForCompany } from '../lib/data/jobs'
 import { listCandidatesForInvoicePicker } from '../lib/data/candidates'
 import { getInvoicingDetails } from '../lib/data/invoicingDetails'
 import { getOnboardingLocations } from '../lib/data/onboarding'
-import { lineItemAmount, computeInvoiceTotals, formatMoney, CURRENCY_OPTIONS } from '../lib/invoiceCalc'
+import { lineItemAmount, computeInvoiceTotals, formatMoney, currencySymbol, CURRENCY_OPTIONS } from '../lib/invoiceCalc'
 import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
 import { reportClientError } from '../lib/errorReporting'
 import CompanySelect from './CompanySelect'
@@ -237,7 +237,7 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved }) {
               <label className="label" htmlFor="inv-job">Role / mandate</label>
               <select id="inv-job" className="input" value={form.job_id} onChange={e => handleJobChange(e.target.value)} disabled={!form.company_id}>
                 <option value="">{form.company_id ? 'No linked job' : 'Select a company first'}</option>
-                {jobs.map(j => <option key={j.id} value={j.id}>{j.title}{j.fee_value ? ` — Fee AED ${Number(j.fee_value).toLocaleString()}` : ''}</option>)}
+                {jobs.map(j => <option key={j.id} value={j.id}>{j.title}{j.fee_value ? ` — Fee ${currencySymbol(form.currency)} ${Number(j.fee_value).toLocaleString()}` : ''}</option>)}
               </select>
             </div>
             <div>

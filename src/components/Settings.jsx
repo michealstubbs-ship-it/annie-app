@@ -325,7 +325,7 @@ Only return the style profile text, nothing else.`
           <div className="border-t border-gray-100 pt-4 grid grid-cols-2 gap-4">
             <div>
               <label className="label" htmlFor="inv-default-currency">Default currency</label>
-              <select id="inv-default-currency" className="input" value={invoicingForm.default_currency || 'AED'} onChange={e => setInvoicingForm(p => ({ ...p, default_currency: e.target.value }))}>
+              <select id="inv-default-currency" className="input" value={invoicingForm.default_currency || DEFAULT_CURRENCY_CODE} onChange={e => setInvoicingForm(p => ({ ...p, default_currency: e.target.value }))}>
                 {CURRENCY_OPTIONS.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
               </select>
             </div>

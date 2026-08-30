@@ -9,6 +9,7 @@ import JobFormModal from './JobFormModal'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
+import { useMarketCurrency } from '../lib/useMarketCurrency'
 
 const STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled', lost: 'Lost' }
 const STATUS_COLOR = {
@@ -33,7 +34,7 @@ function stars(n) { return '★'.repeat(n) + '☆'.repeat(5 - n) }
 // Matches are computed lazily, only for an expanded card — cheap either way
 // once candidates are prepared once (see Jobs()'s own load()), but there's
 // no reason to compute or render suggestions for a card nobody asked to see.
-function JobCard({ j, count, expanded, onToggleExpand, matches }) {
+function JobCard({ j, count, expanded, onToggleExpand, matches, currencyPrefix }) {
   return (
     <div className="card p-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -47,8 +48,8 @@ function JobCard({ j, count, expanded, onToggleExpand, matches }) {
           </p>
           <p className="text-xs text-amber-500 mt-1">{stars(j.likelihood || 3)}</p>
           <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-gray-500">
-            {j.salary_num ? <span>AED {Number(j.salary_num).toLocaleString()}</span> : null}
-            {j.fee_value ? <span className="font-semibold text-navy">Fee: AED {Number(j.fee_value).toLocaleString()}</span> : null}
+            {j.salary_num ? <span>{currencyPrefix}{Number(j.salary_num).toLocaleString()}</span> : null}
+            {j.fee_value ? <span className="font-semibold text-navy">Fee: {currencyPrefix}{Number(j.fee_value).toLocaleString()}</span> : null}
             {j.deadline ? <span>Due {new Date(j.deadline).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span> : null}
             <span>{count} candidate{count === 1 ? '' : 's'} shortlisted</span>
           </div>
@@ -91,6 +92,8 @@ function JobCard({ j, count, expanded, onToggleExpand, matches }) {
 
 export default function Jobs() {
   const { user } = useAuth()
+  // 2026-08-30: JobCard is module-level, so the resolved prefix is passed down.
+  const { currencyPrefix } = useMarketCurrency()
   const location = useLocation()
   const [jobs, setJobs] = useState([])
   const [candCounts, setCandCounts] = useState({})
@@ -179,6 +182,7 @@ export default function Jobs() {
         expanded={expanded}
         onToggleExpand={cardActions}
         matches={expanded ? matchPreparedCandidatesToJob(j, preparedCandidates) : []}
+        currencyPrefix={currencyPrefix}
       />
     )
   }

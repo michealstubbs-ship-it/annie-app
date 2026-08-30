@@ -4,6 +4,7 @@ import { createJob, updateJob } from '../lib/data/jobs'
 import CompanySelect from './CompanySelect'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
+import { useMarketCurrency } from '../lib/useMarketCurrency'
 
 const LIKELIHOOD_OPTIONS = [
   { value: '5', label: '★★★★★ Very likely (90%+)' },
@@ -32,6 +33,8 @@ function calcFee(salary, pct) {
 // is passed (added from inside a company's own page), the company is fixed.
 export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCompanyName, onClose, onSaved }) {
   const { user } = useAuth()
+  // 2026-08-30: salary label and calculated fee both hardcoded 'AED'.
+  const { currencyPrefix, currencyLabel } = useMarketCurrency()
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -125,9 +128,9 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
 
           <div className="grid grid-cols-2 gap-3">
             <div><label className="label" htmlFor="job-industry">Industry</label><input id="job-industry" className="input" value={form.industry} onChange={e => setForm(p => ({ ...p, industry: e.target.value }))} placeholder="e.g. SaaS" /></div>
-            <div><label className="label" htmlFor="job-salary-num">Annual salary (AED)</label><input id="job-salary-num" type="number" className="input" value={form.salary_num} onChange={e => setForm(p => ({ ...p, salary_num: e.target.value }))} placeholder="e.g. 300000" /></div>
+            <div><label className="label" htmlFor="job-salary-num">Annual salary ({currencyLabel})</label><input id="job-salary-num" type="number" className="input" value={form.salary_num} onChange={e => setForm(p => ({ ...p, salary_num: e.target.value }))} placeholder="e.g. 300000" /></div>
             <div><label className="label" htmlFor="job-fee-pct">Fee % (your %)</label><input id="job-fee-pct" type="number" min="1" max="50" className="input" value={form.fee_pct} onChange={e => setForm(p => ({ ...p, fee_pct: e.target.value }))} placeholder="e.g. 20" /></div>
-            <div><label className="label">Calculated fee</label><div className="input bg-gray-50 font-bold text-navy flex items-center">{feeValue ? `AED ${feeValue.toLocaleString()}` : '-'}</div></div>
+            <div><label className="label">Calculated fee</label><div className="input bg-gray-50 font-bold text-navy flex items-center">{feeValue ? `${currencyPrefix}${feeValue.toLocaleString()}` : '-'}</div></div>
             <div>
               <label className="label" htmlFor="job-likelihood">Likelihood to fill</label>
               <select id="job-likelihood" className="input" value={form.likelihood} onChange={e => setForm(p => ({ ...p, likelihood: e.target.value }))}>

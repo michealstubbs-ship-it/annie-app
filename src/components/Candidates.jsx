@@ -12,6 +12,7 @@ import { companiesMatch } from '../lib/companyMatch'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
+import { useMarketCurrency } from '../lib/useMarketCurrency'
 
 const STAGE_COLOR = {
   sourced: 'bg-slate-100 text-slate-600',
@@ -36,6 +37,8 @@ function initials(name) {
 }
 
 export default function Candidates() {
+  // 2026-08-30: was a hardcoded 'AED' on the card and both salary labels.
+  const { currencyPrefix, currencyLabel } = useMarketCurrency()
   const { user } = useAuth()
   const navigate = useNavigate()
   const [candidates, setCandidates] = useState([])
@@ -219,7 +222,7 @@ export default function Candidates() {
                 <p className="text-xs text-gray-500 mt-0.5">{[c.role, c.company].filter(Boolean).join(' · ')}</p>
               </div>
               <div className="text-right flex-shrink-0">
-                {c.want_sal && <div className="text-xs font-bold text-navy">AED {Number(c.want_sal).toLocaleString()}</div>}
+                {c.want_sal && <div className="text-xs font-bold text-navy">{currencyPrefix}{Number(c.want_sal).toLocaleString()}</div>}
                 {c.notice_period && <div className="text-[11px] text-gray-400">{c.notice_period} notice</div>}
               </div>
             </div>
@@ -382,11 +385,11 @@ export default function Candidates() {
                 <input id="candidate-phone" className="input" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} />
               </div>
               <div>
-                <label className="label" htmlFor="candidate-curr-sal">Current salary (AED)</label>
+                <label className="label" htmlFor="candidate-curr-sal">Current salary ({currencyLabel})</label>
                 <input id="candidate-curr-sal" className="input" type="number" value={form.curr_sal} onChange={e => setForm(p => ({ ...p, curr_sal: e.target.value }))} />
               </div>
               <div>
-                <label className="label" htmlFor="candidate-want-sal">Desired salary (AED)</label>
+                <label className="label" htmlFor="candidate-want-sal">Desired salary ({currencyLabel})</label>
                 <input id="candidate-want-sal" className="input" type="number" value={form.want_sal} onChange={e => setForm(p => ({ ...p, want_sal: e.target.value }))} />
               </div>
               <div>
