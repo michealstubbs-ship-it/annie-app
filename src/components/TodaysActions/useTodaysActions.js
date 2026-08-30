@@ -11,6 +11,7 @@ import { extractJson } from '../../lib/jsonExtract'
 import { reportClientError } from '../../lib/errorReporting'
 import { stripAiArtifacts } from '../../lib/textSanitize'
 import { buildOutreachMessage, firstNameOf } from '../../lib/outreachMessage'
+import { fallbackIntroMessage } from '../../lib/fallbackIntroMessage'
 import { listCandidatesForMatching } from '../../lib/data/candidates'
 import { prepareCandidatesForMatching, matchPreparedCandidatesToSignal } from '../../lib/candidateMatch'
 import { createContact } from '../../lib/data/contacts'
@@ -436,27 +437,16 @@ export function useTodaysActions({ user, profile }) {
     })
   }
 
-  // Safety net for signals written before introMessage existed — still
-  // usable, so the copy button always has something worth copying, and
-  // built to the same 3-part structure as the real AI-written field: a
-  // warm opener, one paragraph naming the firm, the specific niche THIS
-  // signal calls for, the real insight in plain language, relevant
-  // regional experience, and the value-add close, then a short
-  // call-to-action close.
-  function fallbackIntroMessage(action) {
-    const firmClause = profile?.firm_name ? `I work for a recruitment firm called ${profile.firm_name}` : 'I work for a recruitment firm'
-    const functions = onboarding?.functions?.length ? onboarding.functions.join(', ') : 'this space'
-    const locations = onboarding?.locations?.length ? onboarding.locations.join(', ') : 'the region'
-    const insight = action.detail || 'it looks like a real opportunity worth exploring together'
-    return `I hope you are doing well.\n\n${firmClause}, where I specialise in recruiting across ${functions}. ${insight} I'd expect this means genuine hiring needs on the horizon, and given our experience across ${locations}, I'm confident we can add value as a recruitment partner here through our relevant candidate network.\n\nWould you be open to a call to discuss in more detail?`
-  }
-
   // The one message actually shown/copied: a real greeting addressed to the
   // contact by name, Annie's own body text for this signal, and a sign-off
   // that introduces the sender by name and firm — see outreachMessage.js
   // for why this is composed here rather than left to the AI prompt.
+  // fallbackIntroMessage (lib/fallbackIntroMessage.js) is the safety net for
+  // signals written before introMessage existed, or any batch that failed
+  // to produce one — see that file's own header for why it's built the way
+  // it is (a real production bug, not just defensive code).
   function fullIntroMessage(action, contact) {
-    const body = action.introMessage || fallbackIntroMessage(action)
+    const body = action.introMessage || fallbackIntroMessage(action, { firmName: profile?.firm_name, functions: onboarding?.functions, locations: onboarding?.locations })
     return buildOutreachMessage({
       body,
       contactFirstName: contact ? firstNameOf(contact.name) : '',
