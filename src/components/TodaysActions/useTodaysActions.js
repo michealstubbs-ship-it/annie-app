@@ -4,8 +4,8 @@ import {
   buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool, buildSourcedPool,
   selectDailyItems, resolveTodaysActions, markActionDone,
 } from '../../lib/todaysActions/index.js'
-import { buildEnrichmentPrompt, buildCandidatePitchPrompt } from '../../lib/actionsCopy'
-import { callChatStream } from '../../lib/callChat'
+import { buildEnrichmentPrompt, buildCandidatePitchPrompt, fallbackHeadline, fallbackDetail } from '../../lib/actionsCopy'
+import { callChat } from '../../lib/callChat'
 import { withTimeout } from '../../lib/withTimeout'
 import { extractJson } from '../../lib/jsonExtract'
 import { reportClientError } from '../../lib/errorReporting'
@@ -156,13 +156,20 @@ export function useTodaysActions({ user, profile }) {
         const batches = chunk(crmItems, AI_BATCH_SIZE)
         const settled = await runBatchesWithConcurrencyCap(batches, async (batchItems) => {
           const prompt = buildEnrichmentPrompt(batchItems, ob, profile)
-          // callChatStream (not callChat) so a large batch doesn't buffer the
-          // whole reply before returning anything — see chat.js's streaming
-          // fix. withTimeout is the hard ceiling described in this file's
-          // header comment: a batch that genuinely stalls fails cleanly
-          // instead of hanging refresh() forever.
+          // 2026-08-30: callChat (NOT callChatStream). Measured against the
+          // deployed chat function with an identical prompt and maxTokens,
+          // the only difference being the stream flag: stream:false -> HTTP
+          // 200 in 4.4-6.3s; stream:true -> HTTP 504 at ~31s, zero bytes ever
+          // sent. The streaming path never emits its first byte, so the edge
+          // kills it and the 15s withTimeout below fires first — which is
+          // what put "Follow up — couldn't load details" on every CRM card.
+          // Nothing here consumes onDelta (only the final text is used), so
+          // streaming bought this call site nothing and cost it the whole
+          // batch. withTimeout is still the hard ceiling: a batch that
+          // genuinely stalls fails cleanly instead of hanging refresh()
+          // forever.
           const { text } = await withTimeout(
-            callChatStream({
+            callChat({
               messages: [{ role: 'user', content: 'Write the copy for these items.' }],
               systemOverride: prompt,
               maxTokens: 2500,
@@ -178,7 +185,30 @@ export function useTodaysActions({ user, profile }) {
           const batchItems = batches[i]
           if (result.status === 'fulfilled') {
             anyBatchSucceeded = true
-            batchItems.forEach((item, j) => enrichedByItem.set(item, result.value[j] || null))
+            // 2026-08-30 audit fix: this used to trust that the model's
+            // returned array had the exact same length and order as
+            // batchItems, matching purely by array position
+            // (result.value[j]). An LLM batch reply that omits, reorders, or
+            // drops an entry (a known compliance failure mode — confirmed in
+            // practice on "relationship" items, which carry the least
+            // structured input) silently misaligned every item after the
+            // gap, or just left specific items with nothing, with zero way
+            // to tell that apart from a normal terse result. Every item now
+            // carries its own `id` (its index within this batch) into the
+            // prompt, and the model is required to echo it back on each
+            // output object — so entries are matched by id, in whatever
+            // order the model returns them, and a genuinely missing id is
+            // now detectable instead of silently misattributed.
+            const byId = new Map()
+            for (const entry of result.value) {
+              if (entry && typeof entry.id === 'number') byId.set(entry.id, entry)
+            }
+            if (byId.size < batchItems.length) {
+              reportClientError("Today's Actions: CRM item enrichment batch returned partial coverage", null, {
+                batchSize: batchItems.length, entriesReturned: result.value.length, matchedById: byId.size,
+              })
+            }
+            batchItems.forEach((item, j) => enrichedByItem.set(item, byId.get(j) || null))
           } else {
             // 2026-08-29 audit fix: this used to swallow the failure into
             // `null` for every item with nothing logged anywhere — the only
@@ -230,7 +260,7 @@ export function useTodaysActions({ user, profile }) {
         const batches = chunk(pitchTargets, AI_BATCH_SIZE)
         const settled = await runBatchesWithConcurrencyCap(batches, async (batchTargets) => {
           const { text } = await withTimeout(
-            callChatStream({
+            callChat({
               messages: [{ role: 'user', content: 'Write the pitch for each pairing.' }],
               systemOverride: buildCandidatePitchPrompt(batchTargets.map(({ item, topMatch }) => ({ signal: { headline: item.signal.headline, industry: item.signal.company_industry }, candidate: topMatch }))),
               maxTokens: 1200,
@@ -301,9 +331,16 @@ export function useTodaysActions({ user, profile }) {
           // now logged above — from any other reason a specific item might
           // lack copy, so a real failure reads as a visibly degraded state
           // instead of a plain category label indistinguishable from a
-          // normal, if terse, card.
-          headline: enriched?.headline || (enrichmentFailed ? "Follow up — couldn't load details" : 'Follow up'),
-          detail: enriched?.detail || '',
+          // normal, if terse, card. When the batch as a whole succeeded but
+          // this one item's entry didn't come back (see the id-matching
+          // audit fix above), a bare "Follow up" with nothing else was
+          // indistinguishable from a working card and gave the user no real
+          // information — fallbackHeadline/fallbackDetail (actionsCopy.js)
+          // build honest copy straight from this item's own real signal
+          // data, no AI, so a card never renders as content-free just
+          // because its one entry got dropped from an otherwise-fine batch.
+          headline: enriched?.headline || (enrichmentFailed ? "Follow up — couldn't load details" : fallbackHeadline(item)),
+          detail: enriched?.detail || (enrichmentFailed ? '' : fallbackDetail(item)),
           moveForward: enriched?.moveForward || [],
           signals: item.signals,
           company: item.contact?.company || item.deal?.company || item.signal?.company_name,

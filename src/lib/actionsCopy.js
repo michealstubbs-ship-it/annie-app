@@ -40,10 +40,12 @@ For every item, write:
 - detail: 1-2 sentences, what to do and why, grounded in the given signals
 - moveForward: an array of 2-3 distinct, genuinely tactical options for what to actually try next. Never restate the signals data back, that's already visible. For "dormant" and "new_client" items, give real drafted opening angles (one referencing something specific if possible, one leading with value, one solid fallback). For "meeting" items, give distinct re-engagement tactics (switching channel, adding a fresh hook, opening a second contact at the same company). For "relationship" items, suggest a genuine light-touch way to engage tied to the signal, not a hard ask.
 
-Items:
-${JSON.stringify(items.map(describeItem))}
+Every item needs real, specific headline/detail/moveForward, whatever its category — "relationship" items should be written with a lighter, less pushy TONE than a cold approach, never with LESS substance or effort than any other item. Do not skip or thin out an item because it's a soft touch rather than a hard ask.
 
-Return a JSON array, same order as given, each object: { "headline": "...", "detail": "...", "moveForward": ["...", "...", "..."] }
+Items (each has an "id" — echo that same id back on its matching output object, unchanged; you do not need to preserve item order, every id just needs to appear exactly once):
+${JSON.stringify(items.map((item, i) => ({ id: i, ...describeItem(item) })))}
+
+Return a JSON array, one object per item, in any order: { "id": <the item's id>, "headline": "...", "detail": "...", "moveForward": ["...", "...", "..."] }
 Only return the JSON array, nothing else.`
   return context
 }
@@ -67,6 +69,32 @@ Pairings:
 ${JSON.stringify(targets.map(({ signal, candidate }) => ({ signalHeadline: signal.headline, signalIndustry: signal.industry, candidate: { role: candidate.role, company: candidate.company, industry: candidate.industry, status: candidate.status, notes: candidate.notes || '' } })))}
 
 Return a JSON array, same order and length as given, each entry just the pitch string (not an object). Only return the JSON array, nothing else.`
+}
+
+// Deterministic, no-AI copy for a CRM item whose entry didn't come back from
+// its enrichment batch even though the batch as a whole succeeded (see the
+// id-matching audit fix in useTodaysActions.js — a batch reply that omits
+// one item's id is exactly the case this covers). Built straight from the
+// item's own real data, same fields describeItem above already extracts, so
+// a card never renders as bare "Follow up" with nothing else just because
+// one entry got dropped from an otherwise-fine batch. Never used when the
+// whole batch failed — that case keeps the explicit "couldn't load details"
+// wording instead, since that failure is worth surfacing as degraded rather
+// than smoothed over.
+export function fallbackHeadline(item) {
+  if (item.category === 'dormant') return `Re-engage ${item.contact?.name || 'this contact'}`
+  if (item.category === 'meeting') return `Follow up on ${item.deal?.company || 'this meeting'}`
+  if (item.category === 'relationship') return item.signal?.headline || 'A signal worth a light-touch follow-up'
+  if (item.category === 'new_client') return `Reach out to ${item.contact?.name || 'this new contact'}`
+  return 'Follow up'
+}
+
+export function fallbackDetail(item) {
+  if (item.category === 'relationship') {
+    return item.signal?.why_it_matters || `${item.signal?.company_name || 'This company'} had a recent update worth a light-touch check-in.`
+  }
+  const firstSignal = item.signals ? Object.values(item.signals)[0] : ''
+  return firstSignal || "Annie's copywriter didn't come back in time for this one — the underlying signal is still real, worth a look."
 }
 
 // Sourcing/discovery no longer happens here, or anywhere in the client. The

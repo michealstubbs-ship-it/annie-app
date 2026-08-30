@@ -1,0 +1,27 @@
+-- Applied live to the annie app project via direct database connection —
+-- kept here for the record, same as every other migration in this folder.
+--
+-- 2026-08-30 audit fix: error_logs.user_id has never had a default, and
+-- reportClientError() (src/lib/errorReporting.js) has never set it on
+-- insert — confirmed against the live table that every client-logged row
+-- to date has user_id = null, including the batch-failure rows from the
+-- Today's Actions streaming bug this same pass fixed. That made the table
+-- impossible to filter or investigate per customer; the only way to
+-- correlate an error to an account was to ask the customer what they saw
+-- and match on timestamp.
+--
+-- DEFAULT auth.uid() rather than a client-side code fix: this table's own
+-- INSERT policy is `WITH CHECK (true)` (see 2026-08-21-error-logs.sql's own
+-- comment on why — anon must be able to log a failed signup/login before
+-- there's a user to attach), so a client-supplied user_id would be
+-- self-reported and unverified. auth.uid() is read server-side from the
+-- request's own JWT, so it's populated automatically and correctly for every
+-- authenticated insert, and stays exactly null for a genuinely pre-login
+-- anon insert — the same distinction the table was always meant to carry,
+-- now actually populated. No application code needs to change: nothing in
+-- reportClientError() sends user_id today, so this default is the only
+-- thing that starts filling it in, for every call site (Today's Actions,
+-- Ask Annie, the support widget, the global window.onerror/
+-- unhandledrejection handlers) at once.
+ALTER TABLE public.error_logs
+  ALTER COLUMN user_id SET DEFAULT auth.uid();
