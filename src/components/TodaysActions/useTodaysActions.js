@@ -269,12 +269,21 @@ export function useTodaysActions({ user, profile }) {
             AI_BATCH_TIMEOUT_MS,
             'todays-actions-pitch-batch',
           )
-          return extractJson(text, { shape: 'string' })
+          return extractJson(text)
         })
         settled.forEach((result, i) => {
           const batchTargets = batches[i]
           if (result.status === 'fulfilled') {
-            batchTargets.forEach(({ item }, j) => pitchByItem.set(item, stripAiArtifacts(result.value[j]) || ''))
+            // 2026-08-30 audit fix: matched purely by array position before —
+            // same class of bug fixed above for CRM enrichment (see that
+            // comment). A dropped/reordered pitch here degraded quietly (no
+            // pill, rather than a visibly broken card) which is why it went
+            // unnoticed, but it's the identical root cause. Matched by id now.
+            const byId = new Map()
+            for (const entry of result.value) {
+              if (entry && typeof entry.id === 'number') byId.set(entry.id, entry)
+            }
+            batchTargets.forEach(({ item }, j) => pitchByItem.set(item, stripAiArtifacts(byId.get(j)?.pitch) || ''))
           } else {
             // A failed/malformed pitch batch just means no pill this time for
             // that batch's items — never worth failing the whole Today's

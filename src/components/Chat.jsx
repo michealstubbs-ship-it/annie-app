@@ -9,6 +9,7 @@ import { shouldSearchWeb } from '../lib/chatWebSearch'
 import { describeChatFailure, describeStaleTab, isGenericNetworkFailure } from '../lib/chatErrorMessage'
 import { isTabStale } from '../lib/staleBuild'
 import { recentHistory } from '../lib/chatHistory'
+import { reportClientError } from '../lib/errorReporting'
 
 // Security fix, 2026-08-27 audit: citation URLs come from Anthropic's own
 // web_search tool, so a malicious value getting into this field would be an
@@ -140,6 +141,7 @@ Be specific, actionable and concise. No waffle.`
       }
 
       let text, citations
+      const streamStartedAt = Date.now()
       try {
         ;({ text, citations } = await callChatStream({
           ...chatPayload,
@@ -173,6 +175,20 @@ Be specific, actionable and concise. No waffle.`
         // wall a second time for no reason — let the outer catch show that
         // verbatim instead, same as before this fix.
         if (!isGenericNetworkFailure(streamErr)) throw streamErr
+        // 2026-08-30: observability only, no behavior change. Today's
+        // Actions' identical callChatStream call sites were traced to a
+        // real, measured transport failure (stream:true -> HTTP 504 at
+        // ~31s, zero bytes ever sent — see useTodaysActions.js's own fix
+        // comment) and switched to callChat entirely. This call site
+        // consumes onDelta for a real word-by-word effect, so it wasn't
+        // switched — this fallback already exists and should mask the same
+        // failure from the user — but there was no way to tell how often it
+        // actually fires. Logged here (not before) so a genuinely generic,
+        // narrow network blip doesn't get conflated with a systematic
+        // transport failure — elapsedMs is what actually distinguishes them.
+        reportClientError('Ask Annie: streaming reply failed, falling back to non-streaming', streamErr, {
+          elapsedMs: Date.now() - streamStartedAt,
+        })
         setMessages(prev => {
           const next = [...prev]
           // Clear whatever partial text the killed stream left in the

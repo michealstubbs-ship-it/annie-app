@@ -61,14 +61,21 @@ Only return the JSON array, nothing else.`
 // TodaysActions.jsx with a visible "Annie's read" label rather than as a
 // stored fact, since even a grounded pitch is still an inference, not a
 // verified claim about the person.
+// 2026-08-30 audit fix: this used to return a bare array of pitch strings,
+// matched back to targets purely by array position — the exact same class
+// of bug fixed in buildEnrichmentPrompt above (see its own comment), just
+// unnoticed here because a dropped/misaligned pitch degrades quietly to "no
+// pill" instead of a visibly broken card. Every pairing now carries an id
+// the model must echo back, so useTodaysActions.js can match by id instead
+// of position.
 export function buildCandidatePitchPrompt(targets) {
   return `You are Annie, a BD intelligence engine for recruitment firms.
 For each pairing below, write ONE short, specific-sounding sentence on why this real candidate could be a fit for this signal — grounded ONLY in the fields given (their role, current company, industry, pipeline status, and any notes on file). Do not invent an employer, a deal value, a specific achievement, or any other fact not present in the notes field. If notes is empty, write a plain, generic fit sentence based only on role and industry overlap with the signal — never pad it out with an invented specific.
 
-Pairings:
-${JSON.stringify(targets.map(({ signal, candidate }) => ({ signalHeadline: signal.headline, signalIndustry: signal.industry, candidate: { role: candidate.role, company: candidate.company, industry: candidate.industry, status: candidate.status, notes: candidate.notes || '' } })))}
+Pairings (each has an "id" — echo that same id back on its matching output object, unchanged; you do not need to preserve order, every id just needs to appear exactly once):
+${JSON.stringify(targets.map(({ signal, candidate }, i) => ({ id: i, signalHeadline: signal.headline, signalIndustry: signal.industry, candidate: { role: candidate.role, company: candidate.company, industry: candidate.industry, status: candidate.status, notes: candidate.notes || '' } })))}
 
-Return a JSON array, same order and length as given, each entry just the pitch string (not an object). Only return the JSON array, nothing else.`
+Return a JSON array, one object per pairing: { "id": <the pairing's id>, "pitch": "..." }. Only return the JSON array, nothing else.`
 }
 
 // Deterministic, no-AI copy for a CRM item whose entry didn't come back from

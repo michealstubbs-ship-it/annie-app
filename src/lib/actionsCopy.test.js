@@ -62,13 +62,15 @@ describe('buildCandidatePitchPrompt', () => {
     expect(prompt).toMatch(/do not invent/i)
   })
 
-  it('asks for a plain JSON array of strings, same length as the input', () => {
+  it('gives every pairing a positional id and tells the model to echo it back on each pitch object', () => {
     const prompt = buildCandidatePitchPrompt([
       { signal: { headline: 'a', industry: 'b' }, candidate: { role: 'r1', company: 'c1', industry: 'i1', status: 's1', notes: '' } },
       { signal: { headline: 'c', industry: 'd' }, candidate: { role: 'r2', company: 'c2', industry: 'i2', status: 's2', notes: '' } },
     ])
+    expect(prompt).toContain('"id":0')
+    expect(prompt).toContain('"id":1')
+    expect(prompt).toMatch(/echo that same id back/i)
     expect(prompt).toMatch(/JSON array/i)
-    expect(prompt).toMatch(/same order and length/i)
   })
 
   it('falls back to an empty string for a candidate with no notes on file, rather than throwing', () => {
