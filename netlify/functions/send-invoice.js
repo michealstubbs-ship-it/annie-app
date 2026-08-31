@@ -91,7 +91,7 @@ export default async (req) => {
     const pdfBase64 = Buffer.from(pdfBytes).toString('base64')
     const pdfFilename = `${invoiceNumber}.pdf`
 
-    const sent = await sendInvoiceEmail(invoice.bill_to_email, {
+    const { sent, resendEmailId } = await sendInvoiceEmail(invoice.bill_to_email, {
       firmName: details?.business_name,
       senderName: createdByName,
       invoiceNumber,
@@ -112,6 +112,15 @@ export default async (req) => {
       return jsonResponse(502, { error: 'Could not send the email — please try again in a moment' })
     }
 
+    // 2026-08-31: resend_email_id/email_delivery_status added — see
+    // resend-webhook.js's own header. "sent" here has only ever meant
+    // "Resend's API accepted the request", not "the client actually got
+    // it" — storing the id is what lets an incoming delivery/bounce/spam-
+    // complaint webhook get matched back to this exact invoice afterward,
+    // instead of the status just staying 'sent' forever regardless of what
+    // really happened to the email. 'pending' here means "accepted, no
+    // delivery confirmation yet" — the same honest, non-overclaiming state
+    // as this endpoint's response to the customer has always implied.
     const { data: updated, error: updateErr } = await supabase
       .from('invoices')
       .update({
@@ -119,6 +128,8 @@ export default async (req) => {
         created_by_name: createdByName,
         status: 'sent',
         sent_at: new Date().toISOString(),
+        resend_email_id: resendEmailId,
+        email_delivery_status: resendEmailId ? 'pending' : null,
       })
       .eq('id', invoiceId)
       .select()

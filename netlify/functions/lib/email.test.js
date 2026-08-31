@@ -162,12 +162,12 @@ describe('sendInvoiceEmail', () => {
     delete process.env.RESEND_API_KEY
   })
 
-  it('is a no-op-safe call when unconfigured', async () => {
+  it('is a no-op-safe call when unconfigured, returning { sent: false, resendEmailId: null }', async () => {
     const { sendInvoiceEmail } = await import('./email.js')
     await expect(sendInvoiceEmail('client@acme.com', {
       firmName: 'Acme Recruiting', senderName: 'Jo', invoiceNumber: 'INV-2026-0001', total: '15000.00', currency: 'AED',
       dueDate: '2026-09-10', pdfBase64: 'YmFzZTY0', pdfFilename: 'INV-2026-0001.pdf',
-    })).resolves.toBe(false)
+    })).resolves.toEqual({ sent: false, resendEmailId: null })
   })
 
   it('attaches the PDF and names the invoice number/total/firm in the subject and body, from the sending recruiter (not Annie)', async () => {
@@ -177,7 +177,7 @@ describe('sendInvoiceEmail', () => {
       Resend: vi.fn().mockImplementation(function () { return { emails: { send: sendMock } } }),
     }))
     const { sendInvoiceEmail } = await import('./email.js')
-    await sendInvoiceEmail('client@acme.com', {
+    const result = await sendInvoiceEmail('client@acme.com', {
       firmName: 'Acme Recruiting', senderName: 'Jo Recruiter', invoiceNumber: 'INV-2026-0001', total: '15,750.00', currency: 'AED',
       dueDate: '2026-09-10', pdfBase64: 'YmFzZTY0', pdfFilename: 'INV-2026-0001.pdf',
     })
@@ -190,6 +190,9 @@ describe('sendInvoiceEmail', () => {
     expect(call.html).toContain('2026-09-10')
     expect(call.html).toContain('Jo Recruiter')
     expect(call.attachments).toEqual([{ filename: 'INV-2026-0001.pdf', content: 'YmFzZTY0' }])
+    // 2026-08-31: resend-webhook.js matches an incoming delivery event back
+    // to this invoice by this exact id — see that file's own header.
+    expect(result).toEqual({ sent: true, resendEmailId: 'x' })
   })
 })
 

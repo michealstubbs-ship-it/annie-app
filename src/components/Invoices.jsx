@@ -19,6 +19,20 @@ const STATUS_COLOR = {
   void: 'bg-red-100 text-red-400',
 }
 
+// 2026-08-31 audit fix: "Sent" used to be the only word this page ever had
+// for what happened to the email — true the moment Resend's API accepted
+// the request, but silently still true forever after, even if it actually
+// bounced or got flagged as spam by the client's own mail server (see
+// resend-webhook.js for the delivery-tracking half of this fix). Only the
+// two outcomes actually worth interrupting the recruiter for get a line —
+// 'pending'/'delivered' stay invisible on purpose, same "don't show a
+// confidently wrong number, and don't show noise either" principle as the
+// currency-totals fix above.
+const DELIVERY_WARNING = {
+  bounced: "This email bounced — it didn't reach the client's inbox. Check the address and resend.",
+  complained: 'The client marked this email as spam. Worth reaching out another way.',
+}
+
 export default function Invoices() {
   const { user } = useAuth()
   const [invoices, setInvoices] = useState([])
@@ -223,6 +237,11 @@ export default function Invoices() {
               <span className="font-semibold text-navy tabular-nums">{formatMoney(inv.total, inv.currency)}</span>
               {inv.due_date && <span>Due {new Date(inv.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>}
             </div>
+            {DELIVERY_WARNING[inv.email_delivery_status] && (
+              <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
+                <span aria-hidden="true">⚠</span> {DELIVERY_WARNING[inv.email_delivery_status]}
+              </p>
+            )}
             {rowError[inv.id] && <p className="text-xs text-red-600 mt-1">{rowError[inv.id]}</p>}
           </div>
           {/* 2026-08-29 audit fix: Void/Delete used to sit in the same

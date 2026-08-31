@@ -50,33 +50,43 @@ function loadResend() {
 // is exactly the shape this passes straight through, so a caller building
 // a PDF (invoicePdf.js) only needs to base64-encode the raw bytes once and
 // hand them here, no format translation happening in two places.
-export async function sendEmail({ to, subject, html, attachments }) {
-  if (!process.env.RESEND_API_KEY) return false // not configured — silently a no-op, same as analytics.js with no key
+// 2026-08-31: `returnId` added, default false — every existing caller
+// (sendWelcomeEmail, sendPaymentFailedEmail, sendAddCardToContinueEmail,
+// sendSupportEscalationEmail) keeps getting the plain boolean it always has,
+// unchanged. Only sendInvoiceEmail passes `returnId: true`, since it's the
+// one caller that now needs the Resend message id afterward (see
+// resend-webhook.js): send-invoice.js stores it on the invoice row so an
+// incoming Resend delivery webhook — delivered, bounced, complained — can be
+// matched back to the right invoice and actually surfaced, instead of an
+// invoice staying marked "Sent" forever regardless of what really happened
+// to the email after Resend accepted it.
+export async function sendEmail({ to, subject, html, attachments, returnId = false }) {
+  const fail = () => (returnId ? { ok: false, id: null } : false)
+  if (!process.env.RESEND_API_KEY) return fail() // not configured — silently a no-op, same as analytics.js with no key
   try {
     const resend = await loadResend()
-    if (!resend) return false
+    if (!resend) return fail()
     const { data, error } = await resend.emails.send({ from: FROM_ADDRESS, to, subject, html, ...(attachments?.length ? { attachments } : {}) })
     if (error) {
       console.error('[email] Resend rejected a send to', to, ':', error.message || error)
-      return false
+      return fail()
     }
     // 2026-08-31: log the Resend message id on every accepted send. This
-    // function returning `true` only ever meant "Resend's API accepted the
+    // function returning success only ever meant "Resend's API accepted the
     // request" — never "the recipient's inbox actually got it". Those are
     // different things: SPF/DKIM/DMARC can all be configured correctly (as
     // they are for mail.meetannie.ai) and a send can still be accepted by
     // Resend and then bounced, quarantined, or spam-foldered by the
-    // receiving mail server after the fact — invisible to this function and
-    // to send-invoice.js's 200 response. Previously `data` (which carries
+    // receiving mail server after the fact. Previously `data` (which carries
     // that id) was discarded entirely, so a "the customer says they never
     // got it" report had no way to be looked up in Resend's own dashboard
-    // (resend.com/emails) to see its real delivery status. Now it's one
-    // Netlify function log away.
+    // (resend.com/emails). Now it's one Netlify function log away, and for
+    // sendInvoiceEmail's callers it's also handed back directly.
     console.log('[email] Resend accepted send to', to, '— message id', data?.id)
-    return true
+    return returnId ? { ok: true, id: data?.id || null } : true
   } catch (err) {
     console.error('[email] send threw for', to, ':', err.message)
-    return false
+    return fail()
   }
 }
 
@@ -198,8 +208,13 @@ export async function sendSupportEscalationEmail(to, { customerEmail, firmName, 
 // senderName/firmName come from the sending recruiter's own profile/team,
 // not from Annie, since this email is from them to their client — Annie's
 // branding stays limited to the footer, same as every other email here.
+// 2026-08-31: return shape changed from a plain boolean to { sent,
+// resendEmailId } — this is the one email in the app that goes to someone
+// outside the recruiter's own account (their client), so it's the one case
+// where "did the API accept it" isn't a good enough answer on its own. See
+// sendEmail's own header for why every other caller is unaffected.
 export async function sendInvoiceEmail(to, { firmName, senderName, invoiceNumber, total, currency, dueDate, pdfBase64, pdfFilename }) {
-  return sendEmail({
+  const { ok, id } = await sendEmail({
     to,
     subject: `Invoice ${invoiceNumber}${firmName ? ` from ${firmName}` : ''}`,
     html: wrapEmail(`
@@ -209,5 +224,7 @@ export async function sendInvoiceEmail(to, { firmName, senderName, invoiceNumber
       <p style="margin:0;">${senderName || 'Thanks'}</p>
     `),
     attachments: [{ filename: pdfFilename, content: pdfBase64 }],
+    returnId: true,
   })
+  return { sent: ok, resendEmailId: id }
 }

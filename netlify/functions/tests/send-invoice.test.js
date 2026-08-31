@@ -36,7 +36,7 @@ function makeSupabase({ invoice = BASE_INVOICE, details = {}, profile = { full_n
   const detailsQuery = { select: () => detailsQuery, maybeSingle: () => Promise.resolve({ data: detailsErr ? null : details, error: detailsErr }) }
   const profileQuery = { select: () => profileQuery, eq: () => profileQuery, maybeSingle: () => Promise.resolve({ data: profile, error: null }) }
   const updateQuery = {
-    update: () => updateQuery,
+    update: vi.fn(() => updateQuery),
     eq: () => updateQuery,
     select: () => updateQuery,
     single: () => Promise.resolve({ data: updateErr ? null : (updateResult || { ...invoice, status: 'sent' }), error: updateErr }),
@@ -56,6 +56,10 @@ function makeSupabase({ invoice = BASE_INVOICE, details = {}, profile = { full_n
       throw new Error(`unexpected table ${table}`)
     },
     rpc: vi.fn().mockResolvedValue(rpcErr ? { data: null, error: rpcErr } : rpcResult),
+    // Exposed for assertions only — the handler never reads this itself,
+    // it's how tests inspect what the final status-update call was made
+    // with (see the resend_email_id/email_delivery_status test below).
+    _updateQuery: updateQuery,
   }
 }
 
@@ -75,7 +79,7 @@ beforeEach(async () => {
   process.env.VITE_SUPABASE_ANON_KEY = 'anon_x'
 
   mockGenerateInvoicePdf.mockResolvedValue(new Uint8Array([1, 2, 3]))
-  mockSendInvoiceEmail.mockResolvedValue(true)
+  mockSendInvoiceEmail.mockResolvedValue({ sent: true, resendEmailId: 're_test_id_1' })
   mockGetAuthedClient.mockResolvedValue({ client: makeSupabase(), user: { id: 'user_1' }, error: null })
 
   vi.resetModules()
@@ -168,7 +172,7 @@ it('names the actual role and candidate on the PLACEMENT block via whatever getI
 })
 
 it('reports and returns 502 without marking the invoice sent when the email fails to send', async () => {
-  mockSendInvoiceEmail.mockResolvedValue(false)
+  mockSendInvoiceEmail.mockResolvedValue({ sent: false, resendEmailId: null })
   const supabase = makeSupabase()
   mockGetAuthedClient.mockResolvedValue({ client: supabase, user: { id: 'user_1' }, error: null })
   const resp = await handler(makeRequest())
@@ -181,6 +185,32 @@ it('marks the invoice sent with a sent_at timestamp once the email succeeds', as
   const body = await resp.json()
   expect(resp.status).toBe(200)
   expect(body.invoice.status).toBe('sent')
+})
+
+// 2026-08-31 audit fix: previously the Resend message id came back from
+// sendInvoiceEmail and was thrown away — an invoice stayed marked 'sent'
+// forever with no way to ever find out it had actually bounced or been
+// flagged as spam. Storing resend_email_id is what lets resend-webhook.js
+// match a real delivery event back to this exact invoice afterward.
+it('stores the Resend message id and starts email_delivery_status as pending', async () => {
+  const supabase = makeSupabase()
+  mockGetAuthedClient.mockResolvedValue({ client: supabase, user: { id: 'user_1' }, error: null })
+  await handler(makeRequest())
+  expect(supabase._updateQuery.update).toHaveBeenCalledWith(expect.objectContaining({
+    resend_email_id: 're_test_id_1',
+    email_delivery_status: 'pending',
+  }))
+})
+
+it('leaves email_delivery_status null when sendInvoiceEmail reports success with no id (defensive — should not happen in practice)', async () => {
+  mockSendInvoiceEmail.mockResolvedValue({ sent: true, resendEmailId: null })
+  const supabase = makeSupabase()
+  mockGetAuthedClient.mockResolvedValue({ client: supabase, user: { id: 'user_1' }, error: null })
+  await handler(makeRequest())
+  expect(supabase._updateQuery.update).toHaveBeenCalledWith(expect.objectContaining({
+    resend_email_id: null,
+    email_delivery_status: null,
+  }))
 })
 
 it('falls back to a profile lookup for created_by_name only when the invoice has none yet', async () => {
