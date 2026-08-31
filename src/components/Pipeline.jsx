@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
 import { listDeals, createDeal, updateDeal, deleteDeal } from '../lib/data/deals'
 import { listJobsForPipelineSummary } from '../lib/data/jobs'
 import InfoTip from './InfoTip'
@@ -8,35 +7,12 @@ import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
-import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
-import { currencySymbol } from '../lib/invoiceCalc'
+import { useMarketCurrency } from '../lib/useMarketCurrency'
 
 const STAGES = ['prospect', 'approached', 'meeting_booked', 'pitch_sent', 'negotiating', 'won', 'lost']
 const STAGE_LABELS = { prospect: 'Prospect', approached: 'Approached', meeting_booked: 'Meeting Booked', pitch_sent: 'Pitch Sent', negotiating: 'Negotiating', won: 'Won', lost: 'Lost' }
 const STAGE_COLORS = { prospect: 'bg-gray-100 text-gray-600', approached: 'bg-blue-100 text-blue-700', meeting_booked: 'bg-purple-100 text-purple-700', pitch_sent: 'bg-amber-100 text-amber-700', negotiating: 'bg-orange-100 text-orange-700', won: 'bg-green-100 text-green-700', lost: 'bg-red-100 text-red-700' }
 const EMPTY = { company: '', role: '', stage: 'prospect', value: '', probability: 25, notes: '', next_action: '', next_action_date: '' }
-
-// 2026-08-31 audit fix: this used to carry its own local copy of the
-// onboarding-market -> currency mapping (a real duplicate of exactly what
-// lib/marketCurrency.js exists to be the single source of truth for — see
-// that file's own header, which already called out Pipeline.jsx by name as
-// the pre-existing duplicate it was meant to replace, but this file was
-// never actually migrated). Two independent copies meant a future market
-// added to one map silently wouldn't reach the other. Now resolves the
-// same currency CODE Invoices/Overview/Settings/InvoiceFormModal already
-// use, then turns it into a display prefix with the same "add a space for
-// a multi-letter symbol" rule formatMoney() in invoiceCalc.js uses (so
-// "AED 420,850" keeps its space, "£420,850"/"$420,850" don't).
-function currencyPrefix(code) {
-  const symbol = currencySymbol(code)
-  return symbol.length > 1 ? `${symbol} ` : symbol
-}
-
-function currencyLabel(symbol) {
-  // A prefix with a trailing space ("AED ") already reads correctly as an
-  // amount but not as a label ("Value (AED )" is off), so trim it here.
-  return symbol.trim()
-}
 
 export default function Pipeline() {
   const { user } = useAuth()
@@ -73,7 +49,14 @@ export default function Pipeline() {
   // to whatever the modal happens to be showing now) instead of saveError.
   const saveTokenRef = useRef(0)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
-  const [currency, setCurrency] = useState(currencyPrefix(DEFAULT_CURRENCY_CODE))
+  // 2026-08-31 audit fix: this used to carry its own local onboarding-market
+  // -> currency-symbol lookup, duplicating exactly what the shared
+  // useMarketCurrency() hook (Candidates/Jobs/JobFormModal/Overview/
+  // Invoices) already does — including, as of the same fix, checking a
+  // multi-market firm's explicit Settings -> Invoicing currency choice
+  // first, instead of just guessing from whichever onboarding market
+  // happened to be clicked first. See that hook's own header for why.
+  const { currencyPrefix: currency, currencyLabel } = useMarketCurrency()
   // 2026-08-31 audit fix: powers the two headline stats below — see
   // listJobsForPipelineSummary's own header comment for why this replaced
   // summing the deal board's own freeform value field.
@@ -93,24 +76,10 @@ export default function Pipeline() {
     try {
       setDeals(await listDeals(user.id))
       setJobs(await listJobsForPipelineSummary())
-      await loadCurrency()
     } catch (err) {
       setListError(err.message || 'Could not load your pipeline. Please try again.')
     } finally {
       setLoading(false)
-    }
-  }
-
-  // Target market lives in the `onboarding` table (locations column, an
-  // array), not on `profiles` — profiles only carries onboarding_completed
-  // and firm_name (see netlify/functions/save-onboarding.js). So we query
-  // `onboarding` directly rather than reading it off useAuth()'s profile.
-  async function loadCurrency() {
-    try {
-      const { data, error: err } = await supabase.from('onboarding').select('locations').eq('user_id', user.id).single()
-      setCurrency(currencyPrefix(err ? DEFAULT_CURRENCY_CODE : resolveMarketCurrencyCode(data?.locations)))
-    } catch {
-      setCurrency(currencyPrefix(DEFAULT_CURRENCY_CODE))
     }
   }
 
@@ -185,8 +154,9 @@ export default function Pipeline() {
     //
     // `stillCurrent` is also re-checked AFTER load() rather than reused
     // from a snapshot taken before it — load() is itself an async round
-    // trip (listDeals + loadCurrency), during which the user can close
-    // this modal and open (and even save) a completely different one.
+    // trip (listDeals + listJobsForPipelineSummary), during which the user
+    // can close this modal and open (and even save) a completely different
+    // one.
     // Re-checking here is what stops a slow-to-settle save from reaching
     // back in and force-closing a newer, unrelated modal the user is
     // actively using, and from re-enabling `saving` while that newer save
@@ -325,7 +295,7 @@ export default function Pipeline() {
               ))}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="label" htmlFor="pipeline-value">Value ({currencyLabel(currency)})</label>
+                  <label className="label" htmlFor="pipeline-value">Value ({currencyLabel})</label>
                   <input id="pipeline-value" className="input" type="number" value={form.value} onChange={e => setForm(p => ({ ...p, value: e.target.value }))} />
                   {/* 2026-08-31: this is now just the recruiter's own working
                       estimate for this one card — it no longer feeds

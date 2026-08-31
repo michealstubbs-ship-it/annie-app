@@ -3,8 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { listInvoices, getInvoice, deleteInvoice, markInvoicePaid, voidInvoice, markInvoiceSent } from '../lib/data/invoices'
 import { fetchInvoicePdfBlobUrl } from '../lib/invoiceApi'
 import { formatMoney } from '../lib/invoiceCalc'
-import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
-import { supabase } from '../lib/supabase'
+import { useMarketCurrency } from '../lib/useMarketCurrency'
 import InvoiceFormModal from './InvoiceFormModal'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBanner from './ErrorBanner'
@@ -56,17 +55,15 @@ export default function Invoices() {
   // (sorted first, and the fallback bucket for an invoice with no currency
   // set) — but 2026-08-31 audit fix: it's no longer the ONLY currency the
   // summary bar can report in. See currencyTotals below.
-  const [displayCurrency, setDisplayCurrency] = useState(DEFAULT_CURRENCY_CODE)
+  // 2026-08-31: now goes through the same shared useMarketCurrency() hook
+  // Candidates/Jobs/Overview/Pipeline already use, instead of its own local
+  // onboarding-market lookup — this is also what makes a multi-market
+  // firm's explicit Settings -> Invoicing currency choice apply here too,
+  // instead of always guessing from onboarding.locations. See that hook's
+  // own header for the full reasoning.
+  const { currencyCode: displayCurrency } = useMarketCurrency()
 
   useEffect(() => { load() }, [user])
-
-  useEffect(() => {
-    if (!user) return
-    // Best-effort — a failure here just leaves the sensible GBP default in
-    // place, never worth surfacing as a page error over a summary label.
-    supabase.from('onboarding').select('locations').eq('user_id', user.id).single()
-      .then(({ data }) => setDisplayCurrency(resolveMarketCurrencyCode(data?.locations)), () => {})
-  }, [user])
 
   async function load() {
     setLoading(true)

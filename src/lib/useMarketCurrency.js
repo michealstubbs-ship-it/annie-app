@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from './supabase'
 import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from './marketCurrency'
 import { currencySymbol } from './invoiceCalc'
+import { getInvoicingDetails } from './data/invoicingDetails'
 
 // 2026-08-30: the 2026-08-29 currency audit fixed Overview, Invoices,
 // InvoiceFormModal and Settings but missed Candidates, Jobs and
@@ -27,16 +28,36 @@ import { currencySymbol } from './invoiceCalc'
 // places for invoice-line precision, which is wrong for a salary or a fee
 // headline. currencySymbol() is still the one shared source for the symbol
 // itself, so this can't drift from invoiceCalc.js's currency list.
+//
+// 2026-08-31 audit fix: a firm working more than one onboarding market
+// (e.g. both "United Kingdom" and "UAE / GCC" ticked) used to get whichever
+// one happened to be first in the array they clicked during onboarding —
+// order-dependent, not a deliberate choice. Settings -> Invoicing already
+// has a real "Default currency" picker (invoicing_details.default_currency,
+// any of CURRENCY_OPTIONS — not limited to the 3 onboarding markets), which
+// only InvoiceFormModal itself used to check, as a fallback of a fallback.
+// This is the one place a multi-market firm can deliberately say "AED, not
+// whatever picking UAE-then-UK in that order happened to resolve to" — now
+// it's checked FIRST here, so every screen this hook powers (Candidates,
+// Jobs, JobFormModal, Overview, Invoices, Pipeline) agrees with it, not
+// just new-invoice defaults. Still falls back to guessing from
+// onboarding.locations for a team that has never opened Settings ->
+// Invoicing (no invoicing_details row exists yet to have an opinion).
 export function useMarketCurrency() {
   const { user } = useAuth()
   const [currencyCode, setCurrencyCode] = useState(DEFAULT_CURRENCY_CODE)
 
   useEffect(() => {
     if (!user) return
-    // Best-effort — a failure here leaves the sensible GBP default in place.
-    // Never worth surfacing as a page error over a currency label.
-    supabase.from('onboarding').select('locations').eq('user_id', user.id).single()
-      .then(({ data }) => setCurrencyCode(resolveMarketCurrencyCode(data?.locations)), () => {})
+    // Best-effort, run in parallel — a failure in either leaves whichever
+    // half did resolve (or the sensible GBP default) in place. Never worth
+    // surfacing as a page error over a currency label.
+    Promise.all([
+      supabase.from('onboarding').select('locations').eq('user_id', user.id).single().then(r => r.data, () => null),
+      getInvoicingDetails().catch(() => null),
+    ]).then(([onboardingRow, invoicingDetails]) => {
+      setCurrencyCode(invoicingDetails?.default_currency || resolveMarketCurrencyCode(onboardingRow?.locations))
+    })
   }, [user])
 
   const currencyPrefix = useMemo(() => {

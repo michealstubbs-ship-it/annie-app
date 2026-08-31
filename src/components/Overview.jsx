@@ -24,8 +24,7 @@ import {
   buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool, buildSourcedPool,
   selectDailyItems, resolveTodaysActions,
 } from '../lib/todaysActions/index.js'
-import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
-import { currencySymbol } from '../lib/invoiceCalc'
+import { useMarketCurrency } from '../lib/useMarketCurrency'
 
 const JOB_STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled', lost: 'Lost' }
 const JOB_STATUS_COLOR = { active: '#2f9e5b', onhold: '#d99a2b', filled: '#c9a84c', lost: '#9ca0ac' }
@@ -149,11 +148,6 @@ export default function Overview() {
   const [meetings, setMeetings] = useState([])
   const [tasks, setTasks] = useState([])
   const [contactsCount, setContactsCount] = useState(null) // null = not checked yet, avoids a flash of the reminder
-  // 2026-08-29 audit fix: the pipeline-value stat used to hardcode "AED" —
-  // Annie's own home market, not necessarily this account's. Resolved from
-  // the account's own onboarding market instead, same source Pipeline.jsx's
-  // currency display already uses.
-  const [marketCurrency, setMarketCurrency] = useState(DEFAULT_CURRENCY_CODE)
   const [scanOutcome, setScanOutcome] = useState(null) // set once scan-status.js reports the scan is actually done, tells us WHY there's nothing (or something) to show
   const [chainProgress, setChainProgress] = useState(null) // live counts while a chained scan is still running — updated on every poll tick via useScanStatusPoll's onTick
   const [retrying, setRetrying] = useState(false)
@@ -271,7 +265,6 @@ export default function Overview() {
       { data: meetingRows },
       { data: taskRows },
       { count: contactsCountResult },
-      { data: onboardingRow },
     ] = await Promise.all([
       // jobs/candidates/meetings/bd_tasks/contacts are the shared CRM —
       // team-scoped by RLS, dropping the user_id filter is what makes the
@@ -300,9 +293,7 @@ export default function Overview() {
       // profiles.linkedin_import_completed which gets set true on skip too. This banner
       // self-clears the moment a real import lands, no extra state to keep in sync.
       supabase.from('contacts').select('id', { count: 'exact', head: true }),
-      supabase.from('onboarding').select('locations').eq('user_id', user.id).single(),
     ])
-    setMarketCurrency(resolveMarketCurrencyCode(onboardingRow?.locations))
 
     // Same pools -> selectDailyItems -> resolveTodaysActions pipeline
     // useTodaysActions.js runs, minus the AI-copy-writing step (Overview
@@ -361,16 +352,15 @@ export default function Overview() {
     }
   }
 
-  // A whole-number KPI tile (Pipeline Value), not an invoice line amount —
-  // deliberately not routed through formatMoney(), which forces two decimal
-  // places for invoice precision; this wants the same no-decimal convention
-  // Pipeline.jsx's own currency prefix already uses for the same kind of
-  // stat. currencySymbol() is still the single shared source for the symbol
-  // itself, so this can't drift from invoiceCalc.js's own currency list.
-  const pipelineCurrencyPrefix = useMemo(() => {
-    const symbol = currencySymbol(marketCurrency)
-    return symbol.length > 1 ? `${symbol} ` : symbol
-  }, [marketCurrency])
+  // 2026-08-29 audit fix: the pipeline-value stat used to hardcode "AED" —
+  // Annie's own home market, not necessarily this account's.
+  // 2026-08-31: now goes through the same shared useMarketCurrency() hook
+  // Candidates/Jobs/JobFormModal already use, instead of its own local
+  // onboarding-market lookup — this is also what makes a multi-market
+  // firm's explicit Settings -> Invoicing currency choice (rather than
+  // whichever onboarding market they happened to click first) apply here
+  // too. See that hook's own header for the full reasoning.
+  const { currencyPrefix: pipelineCurrencyPrefix } = useMarketCurrency()
 
   const jobStats = useMemo(() => {
     const active = jobs.filter(j => j.status === 'active')

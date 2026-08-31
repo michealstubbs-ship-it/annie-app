@@ -328,6 +328,11 @@ Only return the style profile text, nothing else.`
               <select id="inv-default-currency" className="input" value={invoicingForm.default_currency || DEFAULT_CURRENCY_CODE} onChange={e => setInvoicingForm(p => ({ ...p, default_currency: e.target.value }))}>
                 {CURRENCY_OPTIONS.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
               </select>
+              {/* 2026-08-31: this used to only affect a new invoice's default — now
+                  useMarketCurrency() checks it everywhere (Pipeline, Overview, Candidates,
+                  Jobs), so it's worth explaining why a firm working more than one market
+                  would come here rather than just relying on their onboarding market. */}
+              <p className="text-xs text-gray-400 mt-1">Also sets the currency shown across your dashboard, Pipeline and CRM — handy if you work across more than one market.</p>
             </div>
             <div><label className="label" htmlFor="inv-payment-terms">Default payment terms (days)</label><input id="inv-payment-terms" type="number" min="0" className="input" value={invoicingForm.default_payment_terms_days ?? 14} onChange={e => setInvoicingForm(p => ({ ...p, default_payment_terms_days: e.target.value }))} /></div>
           </div>
