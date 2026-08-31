@@ -8,32 +8,33 @@ import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
+import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
+import { currencySymbol } from '../lib/invoiceCalc'
 
 const STAGES = ['prospect', 'approached', 'meeting_booked', 'pitch_sent', 'negotiating', 'won', 'lost']
 const STAGE_LABELS = { prospect: 'Prospect', approached: 'Approached', meeting_booked: 'Meeting Booked', pitch_sent: 'Pitch Sent', negotiating: 'Negotiating', won: 'Won', lost: 'Lost' }
 const STAGE_COLORS = { prospect: 'bg-gray-100 text-gray-600', approached: 'bg-blue-100 text-blue-700', meeting_booked: 'bg-purple-100 text-purple-700', pitch_sent: 'bg-amber-100 text-amber-700', negotiating: 'bg-orange-100 text-orange-700', won: 'bg-green-100 text-green-700', lost: 'bg-red-100 text-red-700' }
 const EMPTY = { company: '', role: '', stage: 'prospect', value: '', probability: 25, notes: '', next_action: '', next_action_date: '' }
 
-// Maps an onboarding target market (LOCATIONS in Onboarding.jsx step 4) to
-// the currency prefix deals in that market are actually valued in. AED has
-// no single-character symbol in common use, so it renders as a "AED "
-// prefix rather than a symbol, following how it's actually written.
-// Asia Pacific/Global have no single sane default currency, so they fall
-// back to $ same as the US. Unknown/missing data falls back to £, the
-// product's original (UK-only) default.
-const MARKET_CURRENCY = {
-  'United Kingdom': '£',
-  'UAE / GCC': 'AED ',
-  'United States': '$',
-  'Europe': '€',
-  'Asia Pacific': '$',
-  'Global': '$',
+// 2026-08-31 audit fix: this used to carry its own local copy of the
+// onboarding-market -> currency mapping (a real duplicate of exactly what
+// lib/marketCurrency.js exists to be the single source of truth for — see
+// that file's own header, which already called out Pipeline.jsx by name as
+// the pre-existing duplicate it was meant to replace, but this file was
+// never actually migrated). Two independent copies meant a future market
+// added to one map silently wouldn't reach the other. Now resolves the
+// same currency CODE Invoices/Overview/Settings/InvoiceFormModal already
+// use, then turns it into a display prefix with the same "add a space for
+// a multi-letter symbol" rule formatMoney() in invoiceCalc.js uses (so
+// "AED 420,850" keeps its space, "£420,850"/"$420,850" don't).
+function currencyPrefix(code) {
+  const symbol = currencySymbol(code)
+  return symbol.length > 1 ? `${symbol} ` : symbol
 }
-const DEFAULT_CURRENCY = '£'
 
 function currencyLabel(symbol) {
-  // "AED " already reads correctly as a label ("Value (AED )" is off, so
-  // trim it for the form label but keep the trailing space for amounts).
+  // A prefix with a trailing space ("AED ") already reads correctly as an
+  // amount but not as a label ("Value (AED )" is off), so trim it here.
   return symbol.trim()
 }
 
@@ -72,7 +73,7 @@ export default function Pipeline() {
   // to whatever the modal happens to be showing now) instead of saveError.
   const saveTokenRef = useRef(0)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
-  const [currency, setCurrency] = useState(DEFAULT_CURRENCY)
+  const [currency, setCurrency] = useState(currencyPrefix(DEFAULT_CURRENCY_CODE))
   // 2026-08-31 audit fix: powers the two headline stats below — see
   // listJobsForPipelineSummary's own header comment for why this replaced
   // summing the deal board's own freeform value field.
@@ -107,10 +108,9 @@ export default function Pipeline() {
   async function loadCurrency() {
     try {
       const { data, error: err } = await supabase.from('onboarding').select('locations').eq('user_id', user.id).single()
-      if (err || !data?.locations?.length) { setCurrency(DEFAULT_CURRENCY); return }
-      setCurrency(MARKET_CURRENCY[data.locations[0]] || DEFAULT_CURRENCY)
+      setCurrency(currencyPrefix(err ? DEFAULT_CURRENCY_CODE : resolveMarketCurrencyCode(data?.locations)))
     } catch {
-      setCurrency(DEFAULT_CURRENCY)
+      setCurrency(currencyPrefix(DEFAULT_CURRENCY_CODE))
     }
   }
 
