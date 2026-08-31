@@ -56,6 +56,23 @@ export async function listJobsForCompany(companyId) {
   return data || []
 }
 
+// Pipeline.jsx's own headline stats — just enough per job to sum real
+// fees across open/filled mandates. 2026-08-31 audit fix, a real gap
+// Michael caught live: "Pipeline Value" used to sum the Pipeline board's
+// own freeform, manually-typed deal.value field, including deals still
+// at Prospect/Pitch Sent — before anything is confirmed. "You cannot
+// measure a value on sending out a proposal": a real dollar figure only
+// exists once there's an actual mandate with a real fee, i.e. a row in
+// Jobs & Mandates. The Pipeline board's own deal cards keep tracking
+// sales activity (stage, probability, notes) exactly as before; their
+// typed-in value is still shown per-card as the recruiter's own working
+// estimate, it just no longer feeds the headline totals.
+export async function listJobsForPipelineSummary() {
+  const { data, error } = await supabase.from('jobs').select('status, fee_value')
+  if (error) throw error
+  return data || []
+}
+
 export function createJob(row, userId) {
   return supabase.from('jobs').insert({ ...row, user_id: userId }).select().single()
 }

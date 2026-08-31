@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { listDeals, createDeal, updateDeal, deleteDeal } from '../lib/data/deals'
+import { listJobsForPipelineSummary } from '../lib/data/jobs'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
@@ -72,6 +73,10 @@ export default function Pipeline() {
   const saveTokenRef = useRef(0)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [currency, setCurrency] = useState(DEFAULT_CURRENCY)
+  // 2026-08-31 audit fix: powers the two headline stats below — see
+  // listJobsForPipelineSummary's own header comment for why this replaced
+  // summing the deal board's own freeform value field.
+  const [jobs, setJobs] = useState([])
 
   useEffect(() => { load() }, [user])
 
@@ -86,6 +91,7 @@ export default function Pipeline() {
     // to "you have no deals yet".
     try {
       setDeals(await listDeals(user.id))
+      setJobs(await listJobsForPipelineSummary())
       await loadCurrency()
     } catch (err) {
       setListError(err.message || 'Could not load your pipeline. Please try again.')
@@ -205,8 +211,18 @@ export default function Pipeline() {
     setDeals(prev => prev.filter(d => d.id !== id))
   }
 
-  const totalValue = deals.filter(d => d.stage !== 'lost').reduce((sum, d) => sum + (d.value || 0), 0)
-  const wonValue = deals.filter(d => d.stage === 'won').reduce((sum, d) => sum + (d.value || 0), 0)
+  // 2026-08-31 audit fix, a real gap Michael caught live: these two used to
+  // sum the deal board's OWN freeform value field — including deals still
+  // at Prospect/Pitch Sent, before anything is confirmed. "You cannot
+  // measure a value on sending out a proposal." Now sourced from real
+  // fees on real mandates in Jobs & Mandates instead: open (active/onhold)
+  // for Pipeline Value, filled for Won. A job with no fee entered
+  // contributes nothing, same as the ask — only fees you've actually put
+  // against a job count. The deal cards below are unaffected: they keep
+  // their own typed-in value as the recruiter's own working estimate, it
+  // just no longer rolls up into either headline number.
+  const totalValue = jobs.filter(j => ['active', 'onhold'].includes(j.status)).reduce((sum, j) => sum + (Number(j.fee_value) || 0), 0)
+  const wonValue = jobs.filter(j => j.status === 'filled').reduce((sum, j) => sum + (Number(j.fee_value) || 0), 0)
 
   return (
     <div className="p-8">
@@ -226,13 +242,17 @@ export default function Pipeline() {
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4 mb-6">
         {[
-          { label: 'Pipeline Value', value: `${currency}${totalValue.toLocaleString()}`, color: 'text-navy' },
-          { label: 'Won', value: `${currency}${wonValue.toLocaleString()}`, color: 'text-green-600' },
-          { label: 'Active Deals', value: deals.filter(d => !['won','lost'].includes(d.stage)).length, color: 'text-navy' },
+          { label: 'Pipeline Value', value: `${currency}${totalValue.toLocaleString()}`, color: 'text-navy', hint: 'Fees on your open Jobs & Mandates' },
+          { label: 'Won', value: `${currency}${wonValue.toLocaleString()}`, color: 'text-green-600', hint: 'Fees on your filled Jobs & Mandates' },
+          { label: 'Active Deals', value: deals.filter(d => !['won','lost'].includes(d.stage)).length, color: 'text-navy', hint: null },
         ].map(s => (
           <div key={s.label} className="card p-4">
             <div className={`text-2xl font-bold ${s.color}`}>{s.value}</div>
             <div className="text-gray-500 text-sm mt-1">{s.label}</div>
+            {/* 2026-08-31: these two now come from Jobs & Mandates, not the
+                deal cards below — a one-line source note so a card showing
+                its own estimated value never reads as a discrepancy. */}
+            {s.hint && <div className="text-gray-400 text-xs mt-1">{s.hint}</div>}
           </div>
         ))}
       </div>
@@ -299,7 +319,16 @@ export default function Pipeline() {
                 <div key={f}><label className="label" htmlFor={`pipeline-${f}`}>{l}</label><input id={`pipeline-${f}`} className="input" type={t} value={form[f]} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} required={req} /></div>
               ))}
               <div className="grid grid-cols-2 gap-3">
-                <div><label className="label" htmlFor="pipeline-value">Value ({currencyLabel(currency)})</label><input id="pipeline-value" className="input" type="number" value={form.value} onChange={e => setForm(p => ({ ...p, value: e.target.value }))} /></div>
+                <div>
+                  <label className="label" htmlFor="pipeline-value">Value ({currencyLabel(currency)})</label>
+                  <input id="pipeline-value" className="input" type="number" value={form.value} onChange={e => setForm(p => ({ ...p, value: e.target.value }))} />
+                  {/* 2026-08-31: this is now just the recruiter's own working
+                      estimate for this one card — it no longer feeds
+                      "Pipeline Value" above, which is real fees from Jobs &
+                      Mandates instead (see Pipeline.jsx's own header
+                      comment on totalValue). */}
+                  <p className="text-xs text-gray-400 mt-1">Your own estimate for this deal — not counted in Pipeline Value above</p>
+                </div>
                 <div><label className="label" htmlFor="pipeline-probability">Probability (%)</label><input id="pipeline-probability" className="input" type="number" min="0" max="100" value={form.probability} onChange={e => setForm(p => ({ ...p, probability: e.target.value }))} /></div>
               </div>
               <div><label className="label" htmlFor="pipeline-stage">Stage</label>

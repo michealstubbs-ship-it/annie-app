@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
 
-import { listJobsMinimal, listActiveJobsForPicker, listJobsWithCompanies, listJobsForCompany, createJob, updateJob, deleteJob } from './jobs.js'
+import { listJobsMinimal, listActiveJobsForPicker, listJobsWithCompanies, listJobsForCompany, listJobsForPipelineSummary, createJob, updateJob, deleteJob } from './jobs.js'
 
 function makeBuilder(result) {
   const builder = {}
@@ -99,6 +99,28 @@ describe('listJobsForCompany', () => {
     builder = makeBuilder({ data: null, error: { message: 'db down' } })
     fromMock.mockReturnValue(builder)
     await expect(listJobsForCompany('co1')).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+describe('listJobsForPipelineSummary', () => {
+  it('reads only status and fee_value, team-scoped by RLS with no client-side filter', async () => {
+    builder = makeBuilder({ data: [{ status: 'active', fee_value: 15000 }], error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await listJobsForPipelineSummary()
+    expect(fromMock).toHaveBeenCalledWith('jobs')
+    expect(builder.select).toHaveBeenCalledWith('status, fee_value')
+    expect(builder.eq).not.toHaveBeenCalled()
+    expect(result).toEqual([{ status: 'active', fee_value: 15000 }])
+  })
+
+  it('returns an empty array rather than null when there are no rows', async () => {
+    expect(await listJobsForPipelineSummary()).toEqual([])
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listJobsForPipelineSummary()).rejects.toEqual({ message: 'db down' })
   })
 })
 
