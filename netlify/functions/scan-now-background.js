@@ -389,19 +389,33 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   const learnedEntries = []
 
   const groups = chunkSectors(ob.sectors, MAX_SECTOR_GROUPS)
+  // 2026-08-31 audit fix: fetched ONCE here, reused across every sector-group
+  // call below — same "fetch once, reuse across groups" shape as
+  // `learned`/`watchlist` just above, and matches how the daily cron
+  // (intelligence-scan-background.js) calls this: one TheirStack search per
+  // scan, full sectors: ob.sectors — instead of one per sector group. This
+  // used to run INSIDE the groups.map below, so a single manual "Scan now"
+  // click with MAX_SECTOR_GROUPS (4) sector groups spent up to 4x a routine
+  // scan's TheirStack credits (up to 40 vs the cron's 10) — on Starter's
+  // 40/day cap, one click could exhaust the entire day's TheirStack budget.
+  // TheirStack is one keyword search against one live-jobs board, not a
+  // per-company enrichment call the way Apollo's discovery is, so there's
+  // no real quality loss from asking once with the full sector profile
+  // instead of once per narrower group — this just brings scan-now's
+  // TheirStack cost in line with what a routine daily scan already costs.
+  const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, userId, resourceCaps.theirStack)
   const groupResults = await Promise.all(groups.map(async (sectorGroup) => {
     const groupSectors = sectorGroup?.length ? sectorGroup : ob.sectors
-    const [apolloLeads, adzunaLeads, theirStackLeads] = await Promise.all([
+    const [apolloLeads, adzunaLeads] = await Promise.all([
       discoverHotCompanies(apolloKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }, supabase, userId, resourceCaps.apollo),
       discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }),
-      // Fills the UAE/GCC gap Adzuna leaves — see discoverTheirStackJobs's
-      // own header in scanShared.js. This is exactly the noAdzunaCoverage
-      // case below, which is why that broaden pass stays on regardless of
-      // whether this returns leads: TheirStack supplements the search, it
-      // doesn't replace casting a wide net on a market Adzuna can't seed.
-      discoverTheirStackJobs(theirStackApiKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }, supabase, userId, resourceCaps.theirStack),
     ])
     try {
+      // theirStackLeads is the same full-profile result for every group
+      // (fetched once above) — matches the noAdzunaCoverage broaden-pass
+      // reasoning that used to sit on the per-group call: TheirStack
+      // supplements the search on markets Adzuna can't seed, it doesn't
+      // need to be re-fetched per group to do that.
       const promptOpts = { sectorsOverride: sectorGroup, apolloLeads, adzunaLeads, theirStackLeads, learned, watchlist }
       if (noAdzunaCoverage) {
         promptOpts.broaden = true
