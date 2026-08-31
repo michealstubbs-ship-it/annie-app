@@ -60,13 +60,22 @@ function loadResend() {
 // matched back to the right invoice and actually surfaced, instead of an
 // invoice staying marked "Sent" forever regardless of what really happened
 // to the email after Resend accepted it.
-export async function sendEmail({ to, subject, html, attachments, returnId = false }) {
+// 2026-08-31: `replyTo` added — every send in this file goes from the
+// shared FROM_ADDRESS, so with nothing set here, hitting Reply on ANY
+// email this app sends (not just invoices) went to annie@mail.meetannie.ai,
+// an address nothing reads. Only sendInvoiceEmail actually passes one (the
+// sending recruiter's own email) — that's the one email in the app whose
+// own body text invites a reply ("Let us know if you have any questions"),
+// so it's the one place that promise needs to actually be true. Every other
+// caller is unaffected (undefined `reply_to` is simply omitted below, same
+// as attachments).
+export async function sendEmail({ to, subject, html, attachments, replyTo, returnId = false }) {
   const fail = () => (returnId ? { ok: false, id: null } : false)
   if (!process.env.RESEND_API_KEY) return fail() // not configured — silently a no-op, same as analytics.js with no key
   try {
     const resend = await loadResend()
     if (!resend) return fail()
-    const { data, error } = await resend.emails.send({ from: FROM_ADDRESS, to, subject, html, ...(attachments?.length ? { attachments } : {}) })
+    const { data, error } = await resend.emails.send({ from: FROM_ADDRESS, to, subject, html, ...(replyTo ? { reply_to: replyTo } : {}), ...(attachments?.length ? { attachments } : {}) })
     if (error) {
       console.error('[email] Resend rejected a send to', to, ':', error.message || error)
       return fail()
@@ -213,7 +222,14 @@ export async function sendSupportEscalationEmail(to, { customerEmail, firmName, 
 // outside the recruiter's own account (their client), so it's the one case
 // where "did the API accept it" isn't a good enough answer on its own. See
 // sendEmail's own header for why every other caller is unaffected.
-export async function sendInvoiceEmail(to, { firmName, senderName, invoiceNumber, total, currency, dueDate, pdfBase64, pdfFilename }) {
+// senderEmail — 2026-08-31 audit fix: the recruiter's own login email
+// (send-invoice.js passes the authed user's own `user.email`), set as
+// reply_to so a client's "just hit reply with a question" actually reaches
+// the person who sent it, not annie@mail.meetannie.ai. Optional rather than
+// required so a genuinely missing email (shouldn't happen for an
+// authenticated user, but never worth failing a real invoice send over)
+// degrades to "no reply-to set" rather than blocking the send.
+export async function sendInvoiceEmail(to, { firmName, senderName, senderEmail, invoiceNumber, total, currency, dueDate, pdfBase64, pdfFilename }) {
   const { ok, id } = await sendEmail({
     to,
     subject: `Invoice ${invoiceNumber}${firmName ? ` from ${firmName}` : ''}`,
@@ -224,6 +240,7 @@ export async function sendInvoiceEmail(to, { firmName, senderName, invoiceNumber
       <p style="margin:0;">${senderName || 'Thanks'}</p>
     `),
     attachments: [{ filename: pdfFilename, content: pdfBase64 }],
+    replyTo: senderEmail || undefined,
     returnId: true,
   })
   return { sent: ok, resendEmailId: id }

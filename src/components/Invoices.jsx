@@ -42,6 +42,7 @@ export default function Invoices() {
   const [editInvoice, setEditInvoice] = useState(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [confirmVoidId, setConfirmVoidId] = useState(null)
+  const [confirmSendId, setConfirmSendId] = useState(null)
   const [sendingId, setSendingId] = useState(null)
   const [editLoadingId, setEditLoadingId] = useState(null)
   const [rowError, setRowError] = useState({})
@@ -117,14 +118,17 @@ export default function Invoices() {
     }
   }
 
-  async function handleSend(inv) {
-    setSendingId(inv.id)
-    setRowErr(inv.id, '')
+  // 2026-08-31: takes an id now (matching handleDel/handleVoid below), not
+  // the whole invoice row — the confirm dialog this is triggered from only
+  // ever has the id (see confirmSendId).
+  async function handleSend(id) {
+    setSendingId(id)
+    setRowErr(id, '')
     try {
-      const updated = await sendInvoice(inv.id)
-      setInvoices(prev => prev.map(i => i.id === inv.id ? { ...i, ...updated } : i))
+      const updated = await sendInvoice(id)
+      setInvoices(prev => prev.map(i => i.id === id ? { ...i, ...updated } : i))
     } catch (err) {
-      setRowErr(inv.id, err.message || 'Could not send this invoice')
+      setRowErr(id, err.message || 'Could not send this invoice')
     } finally {
       setSendingId(null)
     }
@@ -262,12 +266,12 @@ export default function Invoices() {
               {inv.status !== 'draft' && <button onClick={() => openEdit(inv)} disabled={editLoadingId === inv.id} className="text-xs text-gray-500 font-semibold hover:underline disabled:opacity-50">{editLoadingId === inv.id ? 'Opening...' : 'View'}</button>}
               <button onClick={() => handleDownload(inv)} className="text-xs text-gold-ink font-semibold hover:underline">Download PDF</button>
               {(inv.status === 'draft') && (
-                <button onClick={() => handleSend(inv)} disabled={sendingId === inv.id} className="text-xs text-navy font-semibold hover:underline disabled:opacity-50">
+                <button onClick={() => setConfirmSendId(inv.id)} disabled={sendingId === inv.id} className="text-xs text-navy font-semibold hover:underline disabled:opacity-50">
                   {sendingId === inv.id ? 'Sending...' : 'Send'}
                 </button>
               )}
               {inv.status === 'sent' && (
-                <button onClick={() => handleSend(inv)} disabled={sendingId === inv.id} className="text-xs text-navy font-semibold hover:underline disabled:opacity-50">
+                <button onClick={() => setConfirmSendId(inv.id)} disabled={sendingId === inv.id} className="text-xs text-navy font-semibold hover:underline disabled:opacity-50">
                   {sendingId === inv.id ? 'Resending...' : 'Resend'}
                 </button>
               )}
@@ -352,6 +356,22 @@ export default function Invoices() {
         title="Void this invoice?"
         message="A voided invoice is kept for your records but marked cancelled — its number is never reused."
         confirmLabel="Void invoice"
+      />
+
+      {/* 2026-08-31, Michael's own call: the client needs to know up front
+          this comes from Annie's own address, not a surprise they discover
+          in their inbox — and needs an easy way out if they'd rather not.
+          Cancelling here leaves the invoice untouched; "Download PDF" is
+          already right next to Send/Resend on the row for anyone who'd
+          rather attach it to an email from their own address instead. */}
+      <ConfirmDialog
+        open={!!confirmSendId}
+        onClose={() => setConfirmSendId(null)}
+        onConfirm={() => handleSend(confirmSendId)}
+        title="Send this invoice by email?"
+        message={`Your client will see this arrive from annie@mail.meetannie.ai, signed with your name — not from your own email address. If you'd rather send it yourself, cancel here and use "Download PDF" to attach it to an email from your own inbox instead.`}
+        confirmLabel="Send"
+        danger={false}
       />
     </div>
   )

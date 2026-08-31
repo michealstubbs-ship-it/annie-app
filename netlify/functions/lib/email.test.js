@@ -194,6 +194,38 @@ describe('sendInvoiceEmail', () => {
     // to this invoice by this exact id — see that file's own header.
     expect(result).toEqual({ sent: true, resendEmailId: 'x' })
   })
+
+  // 2026-08-31 audit fix: without this, hitting Reply on this email — whose
+  // own body text invites one ("Let us know if you have any questions") —
+  // went to Annie's shared sending address, not the recruiter who actually
+  // sent it.
+  it('sets reply_to to the sending recruiter\'s own email when given', async () => {
+    process.env.RESEND_API_KEY = 're_test'
+    const sendMock = vi.fn().mockResolvedValue({ data: { id: 'x' }, error: null })
+    vi.doMock('resend', () => ({
+      Resend: vi.fn().mockImplementation(function () { return { emails: { send: sendMock } } }),
+    }))
+    const { sendInvoiceEmail } = await import('./email.js')
+    await sendInvoiceEmail('client@acme.com', {
+      firmName: 'Acme Recruiting', senderName: 'Jo Recruiter', senderEmail: 'jo@acmerecruiting.com', invoiceNumber: 'INV-2026-0001', total: '15750.00', currency: 'AED',
+      dueDate: '2026-09-10', pdfBase64: 'YmFzZTY0', pdfFilename: 'INV-2026-0001.pdf',
+    })
+    expect(sendMock.mock.calls[0][0].reply_to).toBe('jo@acmerecruiting.com')
+  })
+
+  it('omits reply_to entirely when no senderEmail is given, rather than sending an empty/undefined value', async () => {
+    process.env.RESEND_API_KEY = 're_test'
+    const sendMock = vi.fn().mockResolvedValue({ data: { id: 'x' }, error: null })
+    vi.doMock('resend', () => ({
+      Resend: vi.fn().mockImplementation(function () { return { emails: { send: sendMock } } }),
+    }))
+    const { sendInvoiceEmail } = await import('./email.js')
+    await sendInvoiceEmail('client@acme.com', {
+      firmName: 'Acme Recruiting', senderName: 'Jo Recruiter', invoiceNumber: 'INV-2026-0001', total: '15750.00', currency: 'AED',
+      dueDate: '2026-09-10', pdfBase64: 'YmFzZTY0', pdfFilename: 'INV-2026-0001.pdf',
+    })
+    expect(sendMock.mock.calls[0][0]).not.toHaveProperty('reply_to')
+  })
 })
 
 afterAll(() => {

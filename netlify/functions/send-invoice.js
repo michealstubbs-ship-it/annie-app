@@ -94,6 +94,12 @@ export default async (req) => {
     const { sent, resendEmailId } = await sendInvoiceEmail(invoice.bill_to_email, {
       firmName: details?.business_name,
       senderName: createdByName,
+      // 2026-08-31 audit fix: without this, hitting Reply on this email
+      // went to Annie's own shared sending address, not the recruiter who
+      // actually sent the invoice — see email.js's own header. `user` here
+      // is always the authed caller (getAuthedClient never returns a
+      // service-role client), so `.email` is their real login email.
+      senderEmail: user.email,
       invoiceNumber,
       total: Number(invoice.total).toFixed(2),
       currency: invoice.currency,
