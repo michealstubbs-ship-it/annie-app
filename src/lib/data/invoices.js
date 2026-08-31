@@ -95,3 +95,21 @@ export async function markInvoicePaid(id) {
 export async function voidInvoice(id) {
   return updateInvoice(id, { status: 'void' })
 }
+
+// 2026-08-31: with in-app Send disabled (Michael's own call, after the
+// annie@mail.meetannie.ai reply concern) — invoices now leave Annie
+// through the recruiter's own email, not a click here. This still does
+// what "Send" used to do to the invoice ROW itself: mint its permanent
+// number via the same atomic RPC send-invoice.js has always used
+// (claim_invoice_number is SECURITY DEFINER and re-checks team
+// membership itself — 2026-08-27-atomic-invoice-number-claim.sql — so
+// it's safe to call directly from the client, same trust boundary as any
+// other RLS-respecting call in this file), then flips status to 'sent'
+// so it shows as outstanding and can be marked paid later. It just never
+// emails anything — send-invoice.js is left in place, untouched, for if
+// this gets switched back on.
+export async function markInvoiceSent(id) {
+  const { data: invoiceNumber, error: claimErr } = await supabase.rpc('claim_invoice_number', { p_invoice_id: id })
+  if (claimErr) throw claimErr
+  return updateInvoice(id, { invoice_number: invoiceNumber, status: 'sent', sent_at: new Date().toISOString() })
+}

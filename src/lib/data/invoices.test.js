@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
-vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
+const { fromMock, rpcMock } = vi.hoisted(() => ({ fromMock: vi.fn(), rpcMock: vi.fn() }))
+vi.mock('../supabase', () => ({ supabase: { from: fromMock, rpc: rpcMock } }))
 
-import { listInvoices, getInvoice, createInvoice, updateInvoice, replaceLineItems, deleteInvoice, markInvoicePaid, voidInvoice } from './invoices.js'
+import { listInvoices, getInvoice, createInvoice, updateInvoice, replaceLineItems, deleteInvoice, markInvoicePaid, voidInvoice, markInvoiceSent } from './invoices.js'
 
 function makeBuilder(result) {
   const builder = {}
@@ -28,6 +28,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   builder = makeBuilder({ data: null, error: null })
   fromMock.mockReturnValue(builder)
+  rpcMock.mockResolvedValue({ data: 'INV-2026-0042', error: null })
 })
 
 describe('listInvoices', () => {
@@ -175,5 +176,35 @@ describe('voidInvoice', () => {
     await voidInvoice('inv1')
     expect(builder.update).toHaveBeenCalledWith({ status: 'void' })
     expect(builder.eq).toHaveBeenCalledWith('id', 'inv1')
+  })
+})
+
+describe('markInvoiceSent', () => {
+  it('claims the permanent invoice number via the atomic RPC, then sets status to sent with that number and stamps sent_at', async () => {
+    await markInvoiceSent('inv1')
+    expect(rpcMock).toHaveBeenCalledWith('claim_invoice_number', { p_invoice_id: 'inv1' })
+    expect(builder.update).toHaveBeenCalledWith(expect.objectContaining({ invoice_number: 'INV-2026-0042', status: 'sent', sent_at: expect.any(String) }))
+    expect(builder.eq).toHaveBeenCalledWith('id', 'inv1')
+  })
+
+  it('never emails anything — this is a pure data update, no fetch/network call of its own', async () => {
+    // Nothing to assert against a fetch mock here by design: markInvoiceSent
+    // only ever touches supabase.rpc/from, unlike sendInvoice() in
+    // invoiceApi.js which POSTs to send-invoice.js. This test exists so a
+    // future change that reaches for fetch() here gets caught immediately.
+    await markInvoiceSent('inv1')
+    expect(rpcMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('throws instead of silently succeeding when the invoice-number claim fails', async () => {
+    rpcMock.mockResolvedValue({ data: null, error: { message: 'not authorized' } })
+    await expect(markInvoiceSent('inv1')).rejects.toEqual({ message: 'not authorized' })
+    expect(builder.update).not.toHaveBeenCalled()
+  })
+
+  it('throws instead of silently succeeding when the status update itself fails', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(markInvoiceSent('inv1')).rejects.toEqual({ message: 'db down' })
   })
 })

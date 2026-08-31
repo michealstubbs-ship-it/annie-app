@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { listInvoices, getInvoice, deleteInvoice, markInvoicePaid, voidInvoice } from '../lib/data/invoices'
-import { sendInvoice, fetchInvoicePdfBlobUrl } from '../lib/invoiceApi'
+import { listInvoices, getInvoice, deleteInvoice, markInvoicePaid, voidInvoice, markInvoiceSent } from '../lib/data/invoices'
+import { fetchInvoicePdfBlobUrl } from '../lib/invoiceApi'
 import { formatMoney } from '../lib/invoiceCalc'
 import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
 import { supabase } from '../lib/supabase'
@@ -42,8 +42,11 @@ export default function Invoices() {
   const [editInvoice, setEditInvoice] = useState(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [confirmVoidId, setConfirmVoidId] = useState(null)
-  const [confirmSendId, setConfirmSendId] = useState(null)
-  const [sendingId, setSendingId] = useState(null)
+  // 2026-08-31: renamed from confirmSendId/sendingId — in-app Send is off
+  // (Michael's own call), so this now drives the "mark as sent" flow
+  // instead. See markInvoiceSent's own header for why.
+  const [confirmMarkSentId, setConfirmMarkSentId] = useState(null)
+  const [markSentLoadingId, setMarkSentLoadingId] = useState(null)
   const [editLoadingId, setEditLoadingId] = useState(null)
   const [rowError, setRowError] = useState({})
   // 2026-08-29 audit fix: this summary bar hardcoded 'AED' — Annie's own
@@ -118,19 +121,22 @@ export default function Invoices() {
     }
   }
 
-  // 2026-08-31: takes an id now (matching handleDel/handleVoid below), not
-  // the whole invoice row — the confirm dialog this is triggered from only
-  // ever has the id (see confirmSendId).
-  async function handleSend(id) {
-    setSendingId(id)
+  // 2026-08-31: replaces the old handleSend — in-app Send is off (Michael's
+  // own call, after the annie@mail.meetannie.ai reply concern). This never
+  // emails anything; it only mints the invoice's permanent number and
+  // flips it to 'sent' so it tracks as outstanding and can be marked paid
+  // once the recruiter's sent it themselves — see markInvoiceSent's own
+  // header comment.
+  async function handleMarkSent(id) {
+    setMarkSentLoadingId(id)
     setRowErr(id, '')
     try {
-      const updated = await sendInvoice(id)
+      const updated = await markInvoiceSent(id)
       setInvoices(prev => prev.map(i => i.id === id ? { ...i, ...updated } : i))
     } catch (err) {
-      setRowErr(id, err.message || 'Could not send this invoice')
+      setRowErr(id, err.message || 'Could not mark this invoice as sent')
     } finally {
-      setSendingId(null)
+      setMarkSentLoadingId(null)
     }
   }
 
@@ -264,17 +270,18 @@ export default function Invoices() {
             <div className="flex gap-2 flex-wrap justify-end">
               {inv.status === 'draft' && <button onClick={() => openEdit(inv)} disabled={editLoadingId === inv.id} className="text-xs text-gold-ink font-semibold hover:underline disabled:opacity-50">{editLoadingId === inv.id ? 'Opening...' : 'Edit'}</button>}
               {inv.status !== 'draft' && <button onClick={() => openEdit(inv)} disabled={editLoadingId === inv.id} className="text-xs text-gray-500 font-semibold hover:underline disabled:opacity-50">{editLoadingId === inv.id ? 'Opening...' : 'View'}</button>}
+              {/* 2026-08-31: in-app Send/Resend removed (Michael's own
+                  call) — Annie doesn't email clients right now. "Mark as
+                  sent" comes before "Download PDF" here on purpose: it's
+                  what assigns the permanent invoice number, so downloading
+                  afterward gets the final numbered copy to attach to the
+                  recruiter's own email. */}
+              {inv.status === 'draft' && (
+                <button onClick={() => setConfirmMarkSentId(inv.id)} disabled={markSentLoadingId === inv.id} className="text-xs text-navy font-semibold hover:underline disabled:opacity-50">
+                  {markSentLoadingId === inv.id ? 'Marking sent...' : 'Mark as sent'}
+                </button>
+              )}
               <button onClick={() => handleDownload(inv)} className="text-xs text-gold-ink font-semibold hover:underline">Download PDF</button>
-              {(inv.status === 'draft') && (
-                <button onClick={() => setConfirmSendId(inv.id)} disabled={sendingId === inv.id} className="text-xs text-navy font-semibold hover:underline disabled:opacity-50">
-                  {sendingId === inv.id ? 'Sending...' : 'Send'}
-                </button>
-              )}
-              {inv.status === 'sent' && (
-                <button onClick={() => setConfirmSendId(inv.id)} disabled={sendingId === inv.id} className="text-xs text-navy font-semibold hover:underline disabled:opacity-50">
-                  {sendingId === inv.id ? 'Resending...' : 'Resend'}
-                </button>
-              )}
               {inv.status === 'sent' && <button onClick={() => handleMarkPaid(inv)} className="text-xs text-green-600 font-semibold hover:underline">Mark paid</button>}
             </div>
             {(inv.status === 'draft' || inv.status === 'sent') && (
@@ -358,19 +365,20 @@ export default function Invoices() {
         confirmLabel="Void invoice"
       />
 
-      {/* 2026-08-31, Michael's own call: the client needs to know up front
-          this comes from Annie's own address, not a surprise they discover
-          in their inbox — and needs an easy way out if they'd rather not.
-          Cancelling here leaves the invoice untouched; "Download PDF" is
-          already right next to Send/Resend on the row for anyone who'd
-          rather attach it to an email from their own address instead. */}
+      {/* 2026-08-31, Michael's own call: in-app Send is off for now — even
+          with reply-to fixed (email.js), every invoice still arrives
+          FROM annie@mail.meetannie.ai, and he'd rather recruiters send
+          from their own address until that's not the case. This dialog
+          replaces the old "Send this invoice by email?" one: it never
+          emails anything, it just records that the invoice went out (and
+          mints its permanent number) so it tracks as outstanding. */}
       <ConfirmDialog
-        open={!!confirmSendId}
-        onClose={() => setConfirmSendId(null)}
-        onConfirm={() => handleSend(confirmSendId)}
-        title="Send this invoice by email?"
-        message={`Your client will see this arrive from annie@mail.meetannie.ai, signed with your name — not from your own email address. If you'd rather send it yourself, cancel here and use "Download PDF" to attach it to an email from your own inbox instead.`}
-        confirmLabel="Send"
+        open={!!confirmMarkSentId}
+        onClose={() => setConfirmMarkSentId(null)}
+        onConfirm={() => handleMarkSent(confirmMarkSentId)}
+        title="Mark this invoice as sent?"
+        message={`This won't email your client — Annie doesn't send invoice emails right now. This assigns the invoice's permanent number; download the PDF afterward to get the final numbered copy and send it from your own inbox. Mark it paid here once your client has paid.`}
+        confirmLabel="Mark as sent"
         danger={false}
       />
     </div>
