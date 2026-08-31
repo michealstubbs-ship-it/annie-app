@@ -51,7 +51,21 @@
     # the browser. Stripe's hosted Checkout/Portal pages are full-page
     # redirects, not an embedded frame or script, so no stripe.com entry is
     # needed here.
-    Content-Security-Policy = "default-src 'self'; script-src 'self' https://challenges.cloudflare.com https://eu-assets.i.posthog.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://us.i.posthog.com https://eu.i.posthog.com https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+    #
+    # 2026-08-31: script-src only allowlisted eu-assets.i.posthog.com, but
+    # analytics.js (src/lib/analytics.js) defaults api_host to
+    # us.i.posthog.com and only switches region via an optional
+    # VITE_POSTHOG_HOST env var — connect-src already allowed both regions
+    # for ordinary event capture, but PostHog's session-replay recorder is
+    # fetched as its own script chunk from "<region>-assets.i.posthog.com",
+    # which is governed by script-src, not connect-src. If production is on
+    # the (default) US region, that recorder script would be silently
+    # CSP-blocked — replay would just never start, with nothing else
+    # visibly broken, since regular tracking doesn't touch this host at
+    # all. Allowlisting both region asset hosts here removes the
+    # dependency on knowing which region is actually configured in
+    # Netlify's env vars.
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://challenges.cloudflare.com https://eu-assets.i.posthog.com https://us-assets.i.posthog.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://us.i.posthog.com https://eu.i.posthog.com https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
     # Missing entirely before this audit — Netlify's automatic TLS does NOT
     # inject this by default (it's a separate dashboard opt-in under Domain
     # settings, invisible from this repo), so a SaaS with login/billing

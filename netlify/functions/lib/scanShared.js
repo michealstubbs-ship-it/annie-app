@@ -68,7 +68,19 @@ export const LEADERSHIP_VERIFY_WINDOW_DAYS = 45
 // How far in the past an eventDate can be and still be trusted, wider than
 // even the broaden pass's 4-week window so a genuinely real, slightly older
 // signal isn't discarded, while a wildly stale or fabricated date is.
-const MAX_EVENT_AGE_DAYS = 60
+//
+// 2026-08-31: raised from 60 to 120 after sampling production funding
+// signals with a null event_at against their real source URLs. Several were
+// genuine, correctly-dated funding rounds (Stitch/a16z, Arib/wamda,
+// CargoX/agbi) whose source articles were published 85-115 days before the
+// scan found them — the model's eventDate was accurate, but the old 60-day
+// cutoff discarded it anyway. Funding/M&A news routinely gets picked up by
+// roundups and trend pieces months after the original announcement, so
+// "old source article" isn't the same signal as "hallucinated date" — a
+// wider, still-bounded window separates those two cases better than the
+// original one did — the news being new to the recruiter is still real
+// value even when the underlying event isn't from this week.
+const MAX_EVENT_AGE_DAYS = 120
 
 export function isoDateDaysAgo(days) {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
