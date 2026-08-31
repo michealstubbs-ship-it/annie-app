@@ -108,7 +108,10 @@ describe('the ANNIE100 no-card code', () => {
     expect(res.status).toBe(302)
     expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
       payment_method_collection: 'if_required',
-      allow_promotion_codes: true,
+      // Stripe's own promo-code box is turned off here on purpose — see
+      // the code comment. It has no real coupon behind annie100 and would
+      // just confuse anyone who re-typed the same code they were given.
+      allow_promotion_codes: false,
       subscription_data: expect.objectContaining({
         trial_period_days: 7,
         metadata: expect.objectContaining({ free_month_code: 'annie100' }),

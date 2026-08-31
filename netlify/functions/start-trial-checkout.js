@@ -136,7 +136,20 @@ export default async (req) => {
         quantity: tier === 'team' ? TEAM_MIN_SEATS : 1,
         ...(tier === 'team' ? { adjustable_quantity: { enabled: true, minimum: TEAM_MIN_SEATS, maximum: 100 } } : {}),
       }],
-      allow_promotion_codes: true,
+      // 2026-08-31, real incident: annie100 is a plain string this file
+      // checks itself, never a Stripe coupon object (see the header
+      // comment) — so Stripe's own "got a promo code?" box, shown here by
+      // allow_promotion_codes, has no idea what annie100 is. A visitor who
+      // used the free-trial link naturally re-types the one code they were
+      // just given into that visible box, and Stripe correctly tells them
+      // it's invalid — which reads as "the free trial didn't work" even
+      // though it already had, silently, via the URL param. Michael hit
+      // this exact confusion testing his own link. Turning this off only
+      // on the free-month path removes the one box that can collide with
+      // the one code someone on that path would actually try — the
+      // standard paid path keeps it, in case a real Stripe coupon is ever
+      // wanted there.
+      allow_promotion_codes: !isFreeMonth,
       // 'if_required' only skips the card because a trial alone already
       // makes today's total $0 — true for every signup, not just the free-
       // month one. Only the free-month link is allowed to skip it; a
