@@ -17,6 +17,34 @@ function tokenize(str) {
     .filter(w => w.length > 2)
 }
 
+// 2026-08-31 audit fix, root cause of "role fields holding sector names, and
+// the matcher can't tell": tokenize() above treats a comma exactly like a
+// space, so a role typed the way recruiters actually type them — "Partner,
+// Financial Services", "Director, Real Estate", "Head of HR, EMEA" — comes
+// out as one undifferentiated bag of words. "Partner, Financial Services"
+// tokenized that way is indistinguishable from a genuine title like
+// "Financial Services Partner", so "financial" reads as a title word and
+// wrongly overlaps a CFO signal's title keywords ("Financial Controller",
+// a headline mentioning "Chief Financial Officer") — the exact miss on
+// Susan Okoye. Blacklisting "financial" as a word would just break the many
+// genuine finance titles that legitimately contain it (Financial Controller,
+// Financial Analyst, Chief Financial Officer) — the last three "title-keyword
+// gate" tests above prove those still need to work.
+// The comma itself is the actual signal: everything a recruiter types after
+// it in a role field is near-universally a practice-area/sector qualifier,
+// not part of the job title. So the title-matching tokens come only from the
+// part before the first comma, and everything after it is folded into the
+// candidate's industry tokens instead — where a stray "Financial Services"
+// belongs, and where it can still help (a candidate whose role says "Partner,
+// Financial Services" but has no separate industry field on file still
+// surfaces correctly for a Financial Services job on industry alone).
+function splitRoleForMatching(role) {
+  const str = role || ''
+  const commaIdx = str.indexOf(',')
+  if (commaIdx === -1) return { titlePart: str, qualifierPart: '' }
+  return { titlePart: str.slice(0, commaIdx), qualifierPart: str.slice(commaIdx + 1) }
+}
+
 function overlapScore(tokensA, tokensB) {
   if (!tokensA.length || !tokensB.length) return 0
   const setB = new Set(tokensB)
@@ -51,7 +79,19 @@ function overlapScore(tokensA, tokensB) {
 export function prepareCandidatesForMatching(candidates) {
   return (candidates || [])
     .filter(c => !CLOSED_STATUSES.includes(c.status))
-    .map(c => ({ candidate: c, roleTokens: tokenize(c.role), industryTokens: tokenize(c.industry) }))
+    .map(c => {
+      const { titlePart, qualifierPart } = splitRoleForMatching(c.role)
+      return {
+        candidate: c,
+        roleTokens: tokenize(titlePart),
+        // Sector words a recruiter typed after a comma in the role field
+        // (see splitRoleForMatching above) join the real industry field's
+        // own tokens here — same array, so a candidate still surfaces on
+        // industry overlap either way, but that comma-qualifier text can no
+        // longer masquerade as a title word.
+        industryTokens: [...tokenize(c.industry), ...tokenize(qualifierPart)],
+      }
+    })
 }
 
 // Shared scorer: takes already-tokenized query fields rather than a

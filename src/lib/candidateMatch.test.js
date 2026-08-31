@@ -185,3 +185,37 @@ describe('title-keyword gate', () => {
     expect(matchCandidatesToSignal(signal, candidates).map(c => c.id).sort()).toEqual([1, 2])
   })
 })
+
+// 2026-08-31: root-cause fix for "role fields holding sector names, and the
+// matcher can't tell" — a real miss on the demo tenant (Susan Okoye, role
+// "Partner, Financial Services", surfaced for a CFO signal purely because
+// "financial" tokenized as if it were part of her title).
+describe('comma-qualified role fields (sector words after a comma)', () => {
+  it('does not match a "Partner, Financial Services" candidate to a CFO signal on the word "financial"', () => {
+    const signal = {
+      title_keywords: ['CFO', 'Finance Director', 'Financial Controller'],
+      headline: 'Aldermere Partners appoints a new Chief Financial Officer',
+      company_industry: 'Financial Services',
+    }
+    const candidates = [{ id: 1, role: 'Partner, Financial Services', industry: '', status: 'active' }]
+    expect(matchCandidatesToSignal(signal, candidates)).toEqual([])
+  })
+
+  it('still matches a genuine title that happens to come before a comma-qualified sector', () => {
+    const signal = { title_keywords: ['CFO'], headline: '', company_industry: '' }
+    const candidates = [{ id: 1, role: 'CFO, Financial Services', industry: '', status: 'active' }]
+    expect(matchCandidatesToSignal(signal, candidates).map(c => c.id)).toEqual([1])
+  })
+
+  it('folds the comma-qualifier into industry tokens, so it can still surface a candidate on real industry overlap', () => {
+    const job = { title: 'Managing Director', notes: '', industry: 'Financial Services' }
+    const candidates = [{ id: 1, role: 'Partner, Financial Services', industry: '', status: 'active' }]
+    expect(matchCandidatesToJob(job, candidates).map(c => c.id)).toEqual([1])
+  })
+
+  it('a bare role with no comma is unaffected (existing behaviour)', () => {
+    const signal = { title_keywords: ['Chief Financial Officer'], headline: '', company_industry: '' }
+    const candidates = [{ id: 1, role: 'Chief Financial Officer', industry: '', status: 'active' }]
+    expect(matchCandidatesToSignal(signal, candidates).map(c => c.id)).toEqual([1])
+  })
+})
