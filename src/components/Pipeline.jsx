@@ -239,8 +239,13 @@ export default function Pipeline() {
 
       <ErrorBanner>{listError}</ErrorBanner>
 
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      {/* Stats. 2026-08-31 audit fix, mobile: unlike Overview.jsx's own
+          equivalent stat row (grid-cols-2 sm:grid-cols-4), this one never
+          had a mobile variant — three cards jammed into one row at phone
+          width, each too narrow for a currency figure like "AED 420,850"
+          to sit comfortably. Stacks to one column below sm, 3-up from sm:
+          up, same as Candidates.jsx's own equivalent fix. */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
         {[
           { label: 'Pipeline Value', value: `${currency}${totalValue.toLocaleString()}`, color: 'text-navy', hint: 'Fees on your open Jobs & Mandates' },
           { label: 'Won', value: `${currency}${wonValue.toLocaleString()}`, color: 'text-green-600', hint: 'Fees on your filled Jobs & Mandates' },

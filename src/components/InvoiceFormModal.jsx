@@ -258,19 +258,37 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved }) {
           <div className="border-t border-gray-100 pt-3">
             <label className="label">Line items</label>
             <div className="space-y-2">
+              {/* 2026-08-31 audit fix, mobile: this was a flat grid-cols-12
+                  row at every width — description/qty/unit/remove squeezed
+                  into a phone's ~340px of usable modal width left almost no
+                  room for the qty and remove-button cells especially (the
+                  ✕ button's own tap target dropped well under any
+                  reasonable minimum). Below sm: description gets its own
+                  full-width row; qty/unit/remove form a second row via
+                  their own 3-column sub-grid. `sm:contents` makes that
+                  sub-grid wrapper disappear at sm: and up so its children
+                  rejoin the outer 12-col grid exactly as before —desktop
+                  layout is byte-for-byte unchanged. */}
               {lineItems.map(row => (
-                <div key={row.key} className="grid grid-cols-12 gap-2 items-start">
-                  <input className="input col-span-6" placeholder="Description" value={row.description} onChange={e => updateRow(row.key, { description: e.target.value })} />
-                  <input className="input col-span-2" type="number" min="0" placeholder="Qty" value={row.quantity} onChange={e => updateRow(row.key, { quantity: e.target.value })} />
-                  <input className="input col-span-3" type="number" min="0" placeholder="Unit amount" value={row.unitAmount} onChange={e => updateRow(row.key, { unitAmount: e.target.value })} />
-                  <button type="button" onClick={() => removeRow(row.key)} disabled={lineItems.length === 1} className="col-span-1 text-red-400 hover:text-red-600 disabled:opacity-30 text-sm h-10">✕</button>
+                <div key={row.key} className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-start">
+                  <input className="input sm:col-span-6" placeholder="Description" value={row.description} onChange={e => updateRow(row.key, { description: e.target.value })} />
+                  <div className="grid grid-cols-[2fr_3fr_auto] gap-2 sm:contents">
+                    <input className="input sm:col-span-2" type="number" min="0" placeholder="Qty" value={row.quantity} onChange={e => updateRow(row.key, { quantity: e.target.value })} />
+                    <input className="input sm:col-span-3" type="number" min="0" placeholder="Unit amount" value={row.unitAmount} onChange={e => updateRow(row.key, { unitAmount: e.target.value })} />
+                    <button type="button" onClick={() => removeRow(row.key)} disabled={lineItems.length === 1} className="sm:col-span-1 text-red-400 hover:text-red-600 disabled:opacity-30 text-sm h-10 w-10">✕</button>
+                  </div>
                 </div>
               ))}
             </div>
             <button type="button" onClick={addRow} className="text-xs text-gold-ink font-semibold hover:underline mt-2">+ Add line</button>
           </div>
 
-          <div className="grid grid-cols-3 gap-3 border-t border-gray-100 pt-3">
+          {/* 2026-08-31 audit fix, mobile: no responsive variant at all —
+              currency/issue date/due date squeezed into one row left a
+              date input almost no room to show its own value at phone
+              width. Stacks to one column below sm, 3-up from sm: up, same
+              pattern as the stat-row fixes on Candidates.jsx/Pipeline.jsx. */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 border-t border-gray-100 pt-3">
             <div>
               <label className="label" htmlFor="inv-currency">Currency</label>
               <select id="inv-currency" className="input" value={form.currency} onChange={e => setForm(p => ({ ...p, currency: e.target.value }))}>

@@ -268,7 +268,12 @@ export default function Candidates() {
         <button onClick={openAdd} className="btn-primary">+ Add Candidate</button>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      {/* 2026-08-31 audit fix, mobile: unlike Overview.jsx's own equivalent
+          stat row (grid-cols-2 sm:grid-cols-4), this one never had a mobile
+          variant at all — three cards jammed into one row at phone width,
+          each too narrow for its own number to sit comfortably. Stacks to
+          one column below the sm breakpoint, same 3-up from sm: up. */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
         <div className="card p-4">
           <div className="text-2xl font-bold text-navy">{metrics.total}</div>
           <div className="text-xs text-gray-500 mt-0.5">Total candidates</div>

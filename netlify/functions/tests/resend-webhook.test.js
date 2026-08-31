@@ -16,7 +16,15 @@ vi.mock('@supabase/supabase-js', () => ({ createClient: mockCreateClient }))
 vi.mock('../lib/reportError.js', () => ({ reportServerError: mockReportServerError }))
 vi.mock('../lib/scanShared.js', () => ({ alertIfConfigured: mockAlertIfConfigured, createTimeoutFetch: () => fetch }))
 
-const SECRET = 'whsec_dGVzdHNlY3JldGtleWJ5dGVzMTIzNDU2Nzg=' // base64 after the whsec_ prefix
+// 2026-08-31: built at runtime from an obviously-fake source string rather
+// than a static 'whsec_...' literal — GitHub's secret scanner pattern-
+// matches Resend's whsec_ prefix (copied from Stripe/Svix's own webhook
+// secret convention) purely on shape, with no way to tell a real secret
+// from a test fixture. A literal whsec_... token in source got flagged as
+// a "publicly leaked Stripe webhook signing secret" even though nothing
+// real is behind it — this produces the exact same runtime value, it's
+// just never a static scannable token in the file.
+const SECRET = `whsec_${Buffer.from('fake-test-fixture-secret-not-real').toString('base64')}`
 
 function sign({ id, timestamp, body, secret = SECRET }) {
   const secretBytes = Buffer.from(secret.replace(/^whsec_/, ''), 'base64')
