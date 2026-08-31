@@ -101,7 +101,19 @@ export const SCAN_TIER_CONFIG = {
     anthropicBroadenMaxUses: 10,
     apolloContactRetry: false,
     apolloUserDailyCap: 120,
-    theirStackUserDailyCap: 40,
+    // 2026-08-31: raised 40 -> 60 (Michael's call, cheap headroom on top of
+    // the scan-now over-spend fix shipped the same day). The routine daily
+    // cron alone already costs 20/day (confirmed in Annie-Cost-Analysis-
+    // 50-100-Clients.md) — after fixing manual "Scan now" to cost the same
+    // 10 credits as a routine scan instead of up to 40, a customer who
+    // scans once automatically and clicks "Scan now" a couple more times
+    // the same day could still reach 40 within a few days. 60 gives real
+    // room above that pattern (cron 20 + up to 4 manual scans at 10 each)
+    // without raising the platform-wide backstop — extra cost is small:
+    // TheirStack's real bulk rate is $0.012/credit, so 20 more credits/day
+    // ceiling is at most ~$7.20/customer/month if fully used, well under
+    // what a once-daily-cadence cut would have cost in detection delay.
+    theirStackUserDailyCap: 60,
     anthropicUserDailyTokenCap: 80_000,
   },
   growth: {
