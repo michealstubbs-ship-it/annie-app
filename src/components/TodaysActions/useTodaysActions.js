@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import {
   buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool, buildSourcedPool,
@@ -85,9 +85,28 @@ export function useTodaysActions({ user, profile }) {
   const [error, setError] = useState('')
   const [onboarding, setOnboarding] = useState(null)
   const [crmAdded, setCrmAdded] = useState({})
+  // 2026-08-30 audit fix, found while shooting the walkthrough video: click
+  // away to another page (Contacts, Jobs, anywhere) while Today's Actions is
+  // still mid-refresh, and the sidebar highlight moves immediately but the
+  // content pane keeps showing the actions list for several seconds after —
+  // the route already changed, so React had already scheduled the new
+  // page's render, but a big synchronous chunk of THIS unmounted component's
+  // leftover work (candidate-matching's tokenize/score pass is the heaviest
+  // single piece — see prepareCandidatesForMatching/matchPreparedCandidatesToSignal
+  // below) was still running on the main thread, and JS is single-threaded:
+  // nothing else, including a route change already in flight, can paint
+  // until that finishes. refresh() never checked whether anyone still cared
+  // about its result once the network calls it's awaiting come back. This
+  // ref flips true on unmount, and refresh() bails out before every
+  // remaining expensive phase (the AI batches, the candidate-matching pass,
+  // reassembly) once it's set — real work for a page nobody's looking at
+  // gets skipped instead of blocking whatever the user actually navigated
+  // to, and it stops spending AI-batch credits on an abandoned page view too.
+  const cancelledRef = useRef(false)
 
   useEffect(() => {
     if (!user) return
+    cancelledRef.current = false
     loadOnboarding()
     // Today's Actions is meant to always be there — this always loads and
     // shows whatever's currently eligible immediately, then a silent
@@ -96,6 +115,7 @@ export function useTodaysActions({ user, profile }) {
     // simply not silent (shows the loading state) so a first-time visitor
     // sees something happening rather than a blank page.
     refresh({ silent: false })
+    return () => { cancelledRef.current = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user])
 
@@ -130,6 +150,7 @@ export function useTodaysActions({ user, profile }) {
         listCandidatesForMatching(user.id),
       ])
 
+      if (cancelledRef.current) return
       const ob = freshOnboarding || onboarding
 
       // Step 1: deterministic pool building + selection, no AI involved.
@@ -230,6 +251,7 @@ export function useTodaysActions({ user, profile }) {
         enrichmentFailed = !anyBatchSucceeded
       }
 
+      if (cancelledRef.current) return
       // Pipeline matches computed once per sourced item here, up front —
       // reused by both the pitch-generation batch below and the final
       // reassembly, rather than calling matchCandidatesToSignal twice for
@@ -296,6 +318,7 @@ export function useTodaysActions({ user, profile }) {
         })
       }
 
+      if (cancelledRef.current) return
       // Step 3: reassemble in the ranked order decided in step 1, whether an
       // item is a CRM follow-up or a sourced lead makes no difference to
       // where it lands.

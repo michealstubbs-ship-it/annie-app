@@ -34,7 +34,7 @@ function stars(n) { return '★'.repeat(n) + '☆'.repeat(5 - n) }
 // Matches are computed lazily, only for an expanded card — cheap either way
 // once candidates are prepared once (see Jobs()'s own load()), but there's
 // no reason to compute or render suggestions for a card nobody asked to see.
-function JobCard({ j, count, expanded, onToggleExpand, matches, currencyPrefix }) {
+function JobCard({ j, count, expanded, onToggleExpand, matches, candidatesLoading, currencyPrefix }) {
   return (
     <div className="card p-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -70,7 +70,9 @@ function JobCard({ j, count, expanded, onToggleExpand, matches, currencyPrefix }
       </button>
       {expanded && (
         <div className="mt-2 pt-3 border-t border-gray-100 space-y-2">
-          {matches.length === 0 ? (
+          {candidatesLoading ? (
+            <p className="text-xs text-gray-400">Checking your CRM for a match…</p>
+          ) : matches.length === 0 ? (
             <p className="text-xs text-gray-400">No obvious matches in your CRM yet — Annie checks role, industry, and notes on file against this job's title, industry, and brief.</p>
           ) : (
             matches.map(c => (
@@ -98,6 +100,7 @@ export default function Jobs() {
   const [jobs, setJobs] = useState([])
   const [candCounts, setCandCounts] = useState({})
   const [preparedCandidates, setPreparedCandidates] = useState([])
+  const [candidatesLoading, setCandidatesLoading] = useState(true)
   const [expandedJobIds, setExpandedJobIds] = useState(() => new Set())
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
@@ -106,7 +109,7 @@ export default function Jobs() {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [listError, setListError] = useState('')
 
-  useEffect(() => { load() }, [user])
+  useEffect(() => { load(); loadCandidatePool() }, [user])
   useEffect(() => { if (location.state?.autoOpenAdd) openAdd() }, [location.state])
 
   async function load() {
@@ -117,26 +120,48 @@ export default function Jobs() {
     // 2026-08-26 audit fix: each of these now throws on a real Supabase
     // error instead of quietly returning [] — previously that looked
     // identical to "you have no jobs yet".
-    // 2026-08-29: also loads the same candidate pool Today's Actions
-    // matches against (listCandidatesForMatching, deliberately uncapped —
-    // see that function's own comment) and prepares it once here, so every
-    // job's "Suggested candidates" panel reuses the same tokenized pool
-    // instead of re-tokenizing per job.
     try {
-      const [j, c, matchCandidates] = await Promise.all([
+      const [j, c] = await Promise.all([
         listJobsWithCompanies(user.id),
         listCandidateJobLinks(user.id),
-        listCandidatesForMatching(user.id),
       ])
       setJobs(j)
       const counts = {}
       c.forEach(row => { counts[row.job_id] = (counts[row.job_id] || 0) + 1 })
       setCandCounts(counts)
-      setPreparedCandidates(prepareCandidatesForMatching(matchCandidates))
     } catch (err) {
       setListError(err.message || 'Could not load your jobs. Please try again.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  // 2026-08-31 audit fix: found chasing "Jobs & Mandates is the slowest page
+  // in the app... several seconds to paint even with a warm cache and only
+  // 7 jobs." This used to be awaited inside load()'s own Promise.all, so
+  // the whole page — jobs, 7 of them — sat behind fetching AND tokenizing
+  // the recruiter's ENTIRE candidate pool (deliberately uncapped, notes
+  // field included — see listCandidatesForMatching's own comment) on every
+  // single visit to this page, even though that pool is only ever read
+  // once a card is actually expanded (see renderJobCard below). A firm with
+  // a real, well-populated CRM was paying that full fetch-and-tokenize cost
+  // just to paint a list of job titles. Split into its own effect so it
+  // loads in the background instead of gating the page's own render;
+  // candidatesLoading covers the one real edge case (a card gets expanded
+  // before this resolves) with a "still checking" line rather than a false
+  // "no matches" while it's mid-flight.
+  async function loadCandidatePool() {
+    setCandidatesLoading(true)
+    try {
+      const matchCandidates = await listCandidatesForMatching(user.id)
+      setPreparedCandidates(prepareCandidatesForMatching(matchCandidates))
+    } catch {
+      // Best-effort, same as elsewhere: a failed background prefetch just
+      // means "no suggested candidates" rather than a page-level error —
+      // the job list itself already loaded fine.
+      setPreparedCandidates([])
+    } finally {
+      setCandidatesLoading(false)
     }
   }
 
@@ -182,6 +207,7 @@ export default function Jobs() {
         expanded={expanded}
         onToggleExpand={cardActions}
         matches={expanded ? matchPreparedCandidatesToJob(j, preparedCandidates) : []}
+        candidatesLoading={candidatesLoading}
         currencyPrefix={currencyPrefix}
       />
     )
