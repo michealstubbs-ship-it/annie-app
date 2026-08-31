@@ -132,7 +132,16 @@ export default function Pipeline() {
     if (!form.company.trim()) { setSaveError('Company is required'); return }
     setSaving(true)
     setSaveError('')
-    const payload = { ...form, company: form.company.trim(), value: parseFloat(form.value) || 0, probability: parseInt(form.probability) || 0 }
+    // 2026-08-31 audit fix, a real bug confirmed live: leaving "Next action
+    // date" blank (the common case — most people don't set one up front)
+    // sent it through as `""` instead of null, and the deals table's
+    // next_action_date column is a real `date`, not text — Postgres rejects
+    // an empty string with "invalid input syntax for type date", surfaced
+    // to the user verbatim as an HTTP 400. Every other form in this app
+    // already normalizes its own optional date the same way (JobFormModal's
+    // `deadline || null`, InvoiceFormModal's `due_date || null`, Meetings
+    // and Tasks the same) — Pipeline was the one that never got that fix.
+    const payload = { ...form, company: form.company.trim(), value: parseFloat(form.value) || 0, probability: parseInt(form.probability) || 0, next_action_date: form.next_action_date || null }
     const { error: err } = editId
       ? await updateDeal(editId, { ...payload, updated_at: new Date().toISOString() })
       : await createDeal(payload, user.id)

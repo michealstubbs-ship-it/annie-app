@@ -55,11 +55,24 @@ export async function sendEmail({ to, subject, html, attachments }) {
   try {
     const resend = await loadResend()
     if (!resend) return false
-    const { error } = await resend.emails.send({ from: FROM_ADDRESS, to, subject, html, ...(attachments?.length ? { attachments } : {}) })
+    const { data, error } = await resend.emails.send({ from: FROM_ADDRESS, to, subject, html, ...(attachments?.length ? { attachments } : {}) })
     if (error) {
       console.error('[email] Resend rejected a send to', to, ':', error.message || error)
       return false
     }
+    // 2026-08-31: log the Resend message id on every accepted send. This
+    // function returning `true` only ever meant "Resend's API accepted the
+    // request" — never "the recipient's inbox actually got it". Those are
+    // different things: SPF/DKIM/DMARC can all be configured correctly (as
+    // they are for mail.meetannie.ai) and a send can still be accepted by
+    // Resend and then bounced, quarantined, or spam-foldered by the
+    // receiving mail server after the fact — invisible to this function and
+    // to send-invoice.js's 200 response. Previously `data` (which carries
+    // that id) was discarded entirely, so a "the customer says they never
+    // got it" report had no way to be looked up in Resend's own dashboard
+    // (resend.com/emails) to see its real delivery status. Now it's one
+    // Netlify function log away.
+    console.log('[email] Resend accepted send to', to, '— message id', data?.id)
     return true
   } catch (err) {
     console.error('[email] send threw for', to, ':', err.message)

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { listInvoices, deleteInvoice, markInvoicePaid, voidInvoice } from '../lib/data/invoices'
+import { listInvoices, getInvoice, deleteInvoice, markInvoicePaid, voidInvoice } from '../lib/data/invoices'
 import { sendInvoice, fetchInvoicePdfBlobUrl } from '../lib/invoiceApi'
 import { formatMoney } from '../lib/invoiceCalc'
 import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
@@ -29,15 +29,15 @@ export default function Invoices() {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [confirmVoidId, setConfirmVoidId] = useState(null)
   const [sendingId, setSendingId] = useState(null)
+  const [editLoadingId, setEditLoadingId] = useState(null)
   const [rowError, setRowError] = useState({})
   // 2026-08-29 audit fix: this summary bar hardcoded 'AED' — Annie's own
   // home market, not necessarily this account's. Resolved from the
   // account's own onboarding market instead, same source Overview.jsx and
-  // Pipeline.jsx already use. Known limitation, not fixed here: unpaidTotal/
-  // paidTotal below sum every invoice's raw `total` regardless of that
-  // invoice's own currency — correct for the common case of one market per
-  // account, but a genuinely mixed-currency account would need real
-  // per-currency subtotals, not just the right label on a combined sum.
+  // Pipeline.jsx already use. Still used below as the account's own default
+  // (sorted first, and the fallback bucket for an invoice with no currency
+  // set) — but 2026-08-31 audit fix: it's no longer the ONLY currency the
+  // summary bar can report in. See currencyTotals below.
   const [displayCurrency, setDisplayCurrency] = useState(DEFAULT_CURRENCY_CODE)
 
   useEffect(() => { load() }, [user])
@@ -64,7 +64,33 @@ export default function Invoices() {
   }
 
   function openAdd() { setEditInvoice(null); setShowModal(true) }
-  function openEdit(inv) { setEditInvoice(inv); setShowModal(true) }
+
+  // 2026-08-31 audit fix, a real, confirmed data-loss bug: this used to hand
+  // the row straight from listInvoices() to the form — but that query never
+  // selects invoice_line_items (getInvoice(id) just below already does; it
+  // was just never called from here). The form read invoice.invoice_line_items
+  // straight off that row, always found it undefined, and rendered one blank
+  // line item — so an invoice was effectively write-once: opening any saved
+  // invoice showed no line items at all, and hitting Save either got
+  // rejected ("Add at least one line item with a description", the row you
+  // see is blank) or, worse, succeeded and silently replaced the real line
+  // items with that one empty row (replaceLineItems does a delete-then-
+  // insert). This affected View just as much as Edit — the locked/read-only
+  // path renders from the same invoice.invoice_line_items. Now fetches the
+  // real row (with its line items) before opening the form either way.
+  async function openEdit(inv) {
+    setRowErr(inv.id, '')
+    setEditLoadingId(inv.id)
+    try {
+      const full = await getInvoice(inv.id)
+      setEditInvoice(full || inv)
+      setShowModal(true)
+    } catch (err) {
+      setRowErr(inv.id, err.message || 'Could not open this invoice')
+    } finally {
+      setEditLoadingId(null)
+    }
+  }
   function setRowErr(id, msg) { setRowError(prev => ({ ...prev, [id]: msg })) }
 
   async function del(id) {
@@ -143,14 +169,33 @@ export default function Invoices() {
     }
   }
 
-  const { unpaidTotal, paidTotal } = useMemo(() => {
-    let unpaid = 0, paid = 0
+  // 2026-08-31 audit fix, a real, confirmed bug: this used to sum every
+  // invoice's raw `total` into one combined number regardless of that
+  // invoice's own `currency` — a known limitation flagged (but not fixed)
+  // in an earlier pass, since confirmed live: with one GBP invoice
+  // outstanding and one AED invoice added, the header read "£41,920.00
+  // outstanding" — literally £31,920 + 10,000 added together as though
+  // AED and GBP were the same unit. Annie supports five currencies across
+  // two target markets (UK and GCC); this was never a one-currency-only
+  // edge case. Now buckets by each invoice's own currency and shows one
+  // correctly-labelled total per currency actually in use, instead of one
+  // confidently wrong number.
+  const currencyTotals = useMemo(() => {
+    const byCurrency = new Map()
     for (const inv of invoices) {
-      if (inv.status === 'sent') unpaid += Number(inv.total) || 0
-      if (inv.status === 'paid') paid += Number(inv.total) || 0
+      const currency = inv.currency || displayCurrency
+      if (!byCurrency.has(currency)) byCurrency.set(currency, { unpaid: 0, paid: 0 })
+      const t = byCurrency.get(currency)
+      if (inv.status === 'sent') t.unpaid += Number(inv.total) || 0
+      if (inv.status === 'paid') t.paid += Number(inv.total) || 0
     }
-    return { unpaidTotal: unpaid, paidTotal: paid }
-  }, [invoices])
+    // Nothing billed yet — show the account's own market currency at zero
+    // rather than an empty summary line.
+    if (!byCurrency.size) byCurrency.set(displayCurrency, { unpaid: 0, paid: 0 })
+    return [...byCurrency.entries()]
+      .sort(([a], [b]) => (a === displayCurrency ? -1 : b === displayCurrency ? 1 : a.localeCompare(b)))
+      .map(([currency, totals]) => ({ currency, ...totals }))
+  }, [invoices, displayCurrency])
 
   function InvoiceRow({ inv }) {
     const roleLine = [inv.jobs?.title, inv.candidates?.name].filter(Boolean).join(' · ')
@@ -194,8 +239,8 @@ export default function Invoices() {
               that, not instead of it. */}
           <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
             <div className="flex gap-2 flex-wrap justify-end">
-              {inv.status === 'draft' && <button onClick={() => openEdit(inv)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>}
-              {inv.status !== 'draft' && <button onClick={() => openEdit(inv)} className="text-xs text-gray-500 font-semibold hover:underline">View</button>}
+              {inv.status === 'draft' && <button onClick={() => openEdit(inv)} disabled={editLoadingId === inv.id} className="text-xs text-gold-ink font-semibold hover:underline disabled:opacity-50">{editLoadingId === inv.id ? 'Opening...' : 'Edit'}</button>}
+              {inv.status !== 'draft' && <button onClick={() => openEdit(inv)} disabled={editLoadingId === inv.id} className="text-xs text-gray-500 font-semibold hover:underline disabled:opacity-50">{editLoadingId === inv.id ? 'Opening...' : 'View'}</button>}
               <button onClick={() => handleDownload(inv)} className="text-xs text-gold-ink font-semibold hover:underline">Download PDF</button>
               {(inv.status === 'draft') && (
                 <button onClick={() => handleSend(inv)} disabled={sendingId === inv.id} className="text-xs text-navy font-semibold hover:underline disabled:opacity-50">
@@ -230,7 +275,12 @@ export default function Invoices() {
             <InfoTip text="Generate a professional placement-fee invoice naming the role and candidate placed, with your own bank details on it. Annie never collects payment itself — your client pays you directly by bank transfer, and you mark it paid yourself once it lands." />
           </h1>
           <p className="text-gray-500 mt-1">
-            {formatMoney(unpaidTotal, displayCurrency)} outstanding · {formatMoney(paidTotal, displayCurrency)} paid
+            {currencyTotals.map((c, i) => (
+              <span key={c.currency}>
+                {i > 0 && <span className="mx-2 text-gray-300">·</span>}
+                {formatMoney(c.unpaid, c.currency)} outstanding, {formatMoney(c.paid, c.currency)} paid
+              </span>
+            ))}
           </p>
         </div>
         {/* 2026-08-31 audit fix, cosmetic: every other page's primary create
