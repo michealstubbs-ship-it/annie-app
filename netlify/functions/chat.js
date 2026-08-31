@@ -130,8 +130,26 @@ export default async (req, context) => {
   // codebase at all (unlike Apollo, which does). Both checked before the
   // request body is even parsed, so a rate-limited or over-cap caller never
   // reaches the Anthropic call.
+  //
+  // 2026-08-31 audit fix, part of chasing Michael's "40 to 65 seconds to
+  // reply" report: this and getEntitlements() just below used to run one
+  // after the other — two full round trips to Supabase, back to back,
+  // neither one's result needed by the other (reserveChatCall only reads
+  // perMinuteCap/user.id; getEntitlements only reads user.id). Every
+  // millisecond either one takes is now paid once, not twice, on every
+  // single chat message — real latency on the actual critical path before
+  // Annie has even started thinking about the question, and paid AGAIN in
+  // full on the non-streaming retry chat.js's own streaming timeout can
+  // trigger below (see callChatStream's fallback in Chat.jsx) — this fix
+  // shaves time off both attempts, not just one. Kept as two named
+  // variables rather than inline destructuring so the 429 branch right
+  // below reads exactly as it did before.
   const perMinuteCap = parseIntEnv(process.env.CHAT_PER_MINUTE_CAP, DEFAULT_CHAT_PER_MINUTE_CAP)
-  if (!(await reserveChatCall(usageClient, user.id, perMinuteCap))) {
+  const [chatCallReserved, entitlements] = await Promise.all([
+    reserveChatCall(usageClient, user.id, perMinuteCap),
+    usageClient ? getEntitlements(usageClient, user.id) : Promise.resolve({ tier: 'starter', limits: { chatMessagesPerMonth: Infinity } }),
+  ])
+  if (!chatCallReserved) {
     return new Response(JSON.stringify({ error: 'Too many requests — please slow down and try again in a minute.' }), { status: 429, headers: { 'Content-Type': 'application/json' } })
   }
 
@@ -143,7 +161,6 @@ export default async (req, context) => {
   // this counts what's actually been sent, not a separate guess at it.
   // Soft gate means this only ever narrows a perk, never blocks the rest of
   // the product — see entitlements.js's header comment.
-  const entitlements = usageClient ? await getEntitlements(usageClient, user.id) : { tier: 'starter', limits: { chatMessagesPerMonth: Infinity } }
   if (Number.isFinite(entitlements.limits.chatMessagesPerMonth)) {
     const startOfMonth = new Date()
     startOfMonth.setUTCDate(1)

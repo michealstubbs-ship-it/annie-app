@@ -494,21 +494,60 @@ export default function Overview() {
         </div>
       )}
 
+      {/* 2026-08-31 audit fix, "the dashboard shows £0 before it shows the
+          truth": these four tiles used to render unconditionally straight
+          off jobs/candidates/signals state, which all start at []/0 before
+          load() below ever resolves — so a brand-new customer's very first
+          look at the product was a finished-looking dashboard confidently
+          reporting £0, 0 jobs, 0 candidates, with no spinner or any other
+          sign it was still loading. First paint at ~800ms, real numbers not
+          in until 1.4-1.8s — plenty long enough to read as "this product
+          has nothing in it" rather than "this is still loading". Gated on
+          `loading` now, same as "Needs your attention" just below already
+          was — a pulsing placeholder bar in place of each number, rather
+          than a number that's simply wrong for a second. */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
         <div className="bg-white rounded-xl border border-gray-100 p-4">
           <div className="text-xs text-gray-400 font-medium mb-1.5">Active pipeline</div>
-          <div className="text-[22px] font-bold text-navy tracking-tight">{pipelineCurrencyPrefix}{jobStats.pipelineValue.toLocaleString()}</div>
-          <div className="text-[11px] text-gray-400 mt-1">{jobStats.active.length} active mandate{jobStats.active.length === 1 ? '' : 's'}</div>
+          {loading ? (
+            <>
+              <div className="h-[22px] w-20 bg-gray-100 rounded animate-pulse" />
+              <div className="h-[11px] w-24 bg-gray-100 rounded animate-pulse mt-2" />
+            </>
+          ) : (
+            <>
+              <div className="text-[22px] font-bold text-navy tracking-tight">{pipelineCurrencyPrefix}{jobStats.pipelineValue.toLocaleString()}</div>
+              <div className="text-[11px] text-gray-400 mt-1">{jobStats.active.length} active mandate{jobStats.active.length === 1 ? '' : 's'}</div>
+            </>
+          )}
         </div>
         <div className="bg-white rounded-xl border border-gray-100 p-4">
           <div className="text-xs text-gray-400 font-medium mb-1.5">Open jobs</div>
-          <div className="text-[22px] font-bold text-navy tracking-tight">{jobStats.active.length + jobStats.onhold.length}</div>
-          <div className="text-[11px] text-gray-400 mt-1">{jobStats.active.length} active &middot; {jobStats.onhold.length} on hold</div>
+          {loading ? (
+            <>
+              <div className="h-[22px] w-10 bg-gray-100 rounded animate-pulse" />
+              <div className="h-[11px] w-28 bg-gray-100 rounded animate-pulse mt-2" />
+            </>
+          ) : (
+            <>
+              <div className="text-[22px] font-bold text-navy tracking-tight">{jobStats.active.length + jobStats.onhold.length}</div>
+              <div className="text-[11px] text-gray-400 mt-1">{jobStats.active.length} active &middot; {jobStats.onhold.length} on hold</div>
+            </>
+          )}
         </div>
         <div className="bg-white rounded-xl border border-gray-100 p-4">
           <div className="text-xs text-gray-400 font-medium mb-1.5">Candidates in play</div>
-          <div className="text-[22px] font-bold text-navy tracking-tight">{candidateStats.inPlay}</div>
-          <div className="text-[11px] text-gray-400 mt-1">{candidateStats.interviewing} interviewing</div>
+          {loading ? (
+            <>
+              <div className="h-[22px] w-10 bg-gray-100 rounded animate-pulse" />
+              <div className="h-[11px] w-20 bg-gray-100 rounded animate-pulse mt-2" />
+            </>
+          ) : (
+            <>
+              <div className="text-[22px] font-bold text-navy tracking-tight">{candidateStats.inPlay}</div>
+              <div className="text-[11px] text-gray-400 mt-1">{candidateStats.interviewing} interviewing</div>
+            </>
+          )}
         </div>
         <div className="bg-white rounded-xl border border-gray-100 p-4">
           {/* 2026-08-26 audit fix: label was "New signals" but newSignalsCount
@@ -521,8 +560,17 @@ export default function Overview() {
               useful stat on its own — it just isn't "new" in the Feed's
               sense. */}
           <div className="text-xs text-gray-400 font-medium mb-1.5">Signals found, 7 days</div>
-          <div className="text-[22px] font-bold text-navy tracking-tight">{newSignalsCount}</div>
-          <div className="text-[11px] text-gray-400 mt-1">{urgentCount} need action</div>
+          {loading ? (
+            <>
+              <div className="h-[22px] w-10 bg-gray-100 rounded animate-pulse" />
+              <div className="h-[11px] w-24 bg-gray-100 rounded animate-pulse mt-2" />
+            </>
+          ) : (
+            <>
+              <div className="text-[22px] font-bold text-navy tracking-tight">{newSignalsCount}</div>
+              <div className="text-[11px] text-gray-400 mt-1">{urgentCount} need action</div>
+            </>
+          )}
         </div>
       </div>
 

@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase'
 import { callChat, callChatStream } from '../lib/callChat'
 import { trackEvent } from '../lib/analytics'
 import { getWatchlistCompanyNames, buildWatchlistChatHint } from '../lib/watchlist'
+import { loadChatCrmSnapshot, buildCrmSnapshotChatHint } from '../lib/chatCrmSnapshot'
 import { shouldSearchWeb } from '../lib/chatWebSearch'
 import { describeChatFailure, describeStaleTab, isGenericNetworkFailure } from '../lib/chatErrorMessage'
 import { isTabStale } from '../lib/staleBuild'
@@ -33,9 +34,10 @@ export default function Chat() {
   const [loading, setLoading] = useState(false)
   const [onboarding, setOnboarding] = useState(null)
   const [watchlist, setWatchlist] = useState([])
+  const [crmSnapshot, setCrmSnapshot] = useState(null)
   const bottomRef = useRef(null)
 
-  useEffect(() => { loadHistory(); loadOnboarding(); loadWatchlist() }, [user])
+  useEffect(() => { loadHistory(); loadOnboarding(); loadWatchlist(); loadCrmSnapshot() }, [user])
 
   // Arriving from Intelligence Feed's "Draft outreach" button, prefill the input
   // with context so the recruiter doesn't retype what Annie already knows.
@@ -55,6 +57,17 @@ export default function Chat() {
   // sectors/functions/markets — see watchlist.js's own header.
   async function loadWatchlist() {
     setWatchlist(await getWatchlistCompanyNames())
+  }
+
+  // 2026-08-31 audit fix, item 1: see chatCrmSnapshot.js's own header for
+  // the full story — this is what makes Annie able to answer real questions
+  // about this recruiter's own pipeline, jobs, and the BD signals she's
+  // already surfaced, instead of "I do not have that information." Loaded
+  // once here alongside onboarding/watchlist above, not re-fetched on every
+  // message.
+  async function loadCrmSnapshot() {
+    if (!user) return
+    setCrmSnapshot(await loadChatCrmSnapshot(user.id))
   }
 
   async function loadHistory() {
@@ -117,6 +130,7 @@ Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Communication tone: ${onboarding?.tone || 'professional'}.
 ${onboarding?.writing_style ? `\nWhen drafting any message, email, or LinkedIn copy on the recruiter's behalf, follow their real writing style closely:\n${onboarding.writing_style}\n` : ''}
 ${buildWatchlistChatHint(watchlist)}
+${buildCrmSnapshotChatHint(crmSnapshot)}
 You help with: BD strategy, outreach messages, market intelligence, interview prep, candidate pitches, objection handling, and anything recruitment business development related.
 Be specific, actionable and concise. No waffle.`
 

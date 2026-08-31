@@ -90,16 +90,36 @@ export default function Invoices() {
     }
   }
 
+  // 2026-08-31 audit fix: "Download PDF" didn't download anything — it
+  // opened the PDF in a new tab via window.open(), and if a popup blocker
+  // stopped that (the default in most browsers for a window.open() call it
+  // doesn't consider "clearly user-triggered") the customer got nothing at
+  // all, silently: window.open() returns null rather than throwing when
+  // blocked, and the try/catch below only ever covered fetchInvoicePdfBlobUrl's
+  // own network call, which had already succeeded by that point. Switched to
+  // a real download: a temporary <a download> element, clicked
+  // programmatically. That's not the same behaviour with an error message
+  // bolted on — an anchor click like this isn't a window.open() call at
+  // all, so it was never subject to popup blocking in the first place, and
+  // it does what the button has always claimed to do.
   async function handleDownload(inv) {
     setRowErr(inv.id, '')
     try {
       const blobUrl = await fetchInvoicePdfBlobUrl(inv.id)
-      window.open(blobUrl, '_blank', 'noopener')
-      // Revoke once the new tab has had a chance to load the PDF — the blob
-      // URL only needs to live long enough for that navigation to fetch it.
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000)
+      const filename = `${inv.invoice_number || 'draft-invoice'}.pdf`
+      const link = document.createElement('a')
+      link.href = blobUrl
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      // The blob only needs to live long enough for the browser to hand it
+      // off to the file system — revoked shortly after, same reasoning as
+      // the previous new-tab approach's own revoke, just no longer needing
+      // to wait out a tab's page-load.
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 5_000)
     } catch (err) {
-      setRowErr(inv.id, err.message || 'Could not open this invoice')
+      setRowErr(inv.id, err.message || 'Could not download this invoice')
     }
   }
 
@@ -213,7 +233,16 @@ export default function Invoices() {
             {formatMoney(unpaidTotal, displayCurrency)} outstanding · {formatMoney(paidTotal, displayCurrency)} paid
           </p>
         </div>
-        <button onClick={openAdd} className="btn-primary">+ New invoice</button>
+        {/* 2026-08-31 audit fix, cosmetic: every other page's primary create
+            button follows "+ Add {Entity}" in Title Case (Contact, Job,
+            Company, Deal, Task, Candidate) — Meetings' own "+ Log Meeting"
+            is the one deliberate exception, matching that whole page's
+            established "log a meeting" voice throughout its copy. This
+            button was the one true outlier: lowercase "invoice" and a
+            different verb ("New") that isn't used anywhere else on this
+            same page either — the empty state below says "Create your
+            first invoice". Conformed to the dominant convention. */}
+        <button onClick={openAdd} className="btn-primary">+ Add Invoice</button>
       </div>
 
       <ErrorBanner>{listError}</ErrorBanner>
