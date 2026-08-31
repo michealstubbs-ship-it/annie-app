@@ -21,34 +21,35 @@ const VALID_TIERS = ['starter', 'growth', 'team']
 // (which broke silently the day that coupon didn't actually exist in live
 // Stripe — see the incident this replaced). ANNIE100 is now just a literal
 // code checked in this file, no Stripe object required to keep it working:
-//   - a normal signup gets a real card collected up front and the standard
-//     7-day trial, same as always.
+//   - a normal signup gets a real card collected up front, standard 7-day
+//     trial.
 //   - `?code=annie100` (case-insensitive — Michael types it in caps) skips
-//     the card entirely and gets a 30-day trial instead of 7 — a genuine
-//     free month, no strings attached at signup.
+//     the card entirely, same 7-day trial as everyone else — the only
+//     difference is no card required to start.
 // The only way anyone gets this is a link Michael hands out directly —
 // there's no self-serve box for it anywhere, so that act of sending the
 // link out IS the approval step, deliberately, rather than building an
 // actual approval workflow Stripe has no native way to support.
-// When the 30-day trial ends with no card on file, Stripe itself creates
-// an invoice, that invoice fails to charge (no payment method), and
-// stripe-webhook.js's invoice.payment_failed / trial_will_end handlers
-// send the customer an email pointed at the billing portal — same account,
-// same data, they're just adding a card, never a new signup.
+// 2026-08-31, per Michael: this used to give 30 days instead of 7 — cut
+// back to the same 7-day length as a normal signup, no-card is the only
+// thing this code still buys. When the trial ends with no card on file,
+// Stripe itself creates an invoice, that invoice fails to charge (no
+// payment method), and stripe-webhook.js's invoice.payment_failed /
+// trial_will_end handlers send the customer an email pointed at the
+// billing portal — same account, same data, they're just adding a card,
+// never a new signup.
 const FREE_MONTH_CODE = 'annie100'
 const DEFAULT_TRIAL_DAYS = 7
-const FREE_MONTH_TRIAL_DAYS = 30
 
 // 2026-08-26: the free-month link had no limit on it at all -- no expiry,
 // no per-use cap, no rate limiting, and (by design, so a bare marketing-
 // site <a href> works with zero JS) no Turnstile check either. It's a
 // plain GET link with the code visible in the URL text itself -- the
 // moment it's shared anywhere public (a screenshot, a forum post, a
-// forwarded email), anyone can mint unlimited free 30-day trials with no
-// card on file. Trialing accounts aren't a lesser tier internally
-// (LIVE_STATUSES in adminDashboard.js treats them the same as active), so
-// each one spends real Apollo/Anthropic/TheirStack credit for up to 30
-// days against zero revenue.
+// forwarded email), anyone can mint unlimited free trials with no card on
+// file. Trialing accounts aren't a lesser tier internally (LIVE_STATUSES
+// in adminDashboard.js treats them the same as active), so each one spends
+// real Apollo/Anthropic/TheirStack credit against zero revenue.
 //
 // This caps total redemptions rather than picking an arbitrary expiry
 // date or per-email check (Stripe Checkout hasn't collected an email yet
@@ -146,7 +147,10 @@ export default async (req) => {
       cancel_url: `${marketingUrl}/#pricing`,
       subscription_data: {
         metadata: { tier, source: 'marketing_site_signup', ...(isFreeMonth ? { free_month_code: FREE_MONTH_CODE } : {}) },
-        trial_period_days: isFreeMonth ? FREE_MONTH_TRIAL_DAYS : DEFAULT_TRIAL_DAYS,
+        // 2026-08-31: both paths use the same trial length now — no-card
+        // is the only thing the free-month code still changes, see the
+        // header comment.
+        trial_period_days: DEFAULT_TRIAL_DAYS,
       },
     })
 

@@ -102,15 +102,15 @@ it('always requires a card for a normal signup, even though the trial makes $0 d
   expect(mockCountQuery).not.toHaveBeenCalled()
 })
 
-describe('the ANNIE100 free-month code', () => {
-  it('skips the card and gives a 30-day trial for ?code=annie100, under the redemption cap', async () => {
+describe('the ANNIE100 no-card code', () => {
+  it('skips the card but keeps the standard 7-day trial for ?code=annie100, under the redemption cap', async () => {
     const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
     expect(res.status).toBe(302)
     expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
       payment_method_collection: 'if_required',
       allow_promotion_codes: true,
       subscription_data: expect.objectContaining({
-        trial_period_days: 30,
+        trial_period_days: 7,
         metadata: expect.objectContaining({ free_month_code: 'annie100' }),
       }),
     }))

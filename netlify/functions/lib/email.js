@@ -155,7 +155,7 @@ export async function sendPaymentFailedEmail(to) {
   })
 }
 
-// 2026-08-25 — for the ANNIE100 free-month flow specifically (see
+// 2026-08-25 — for the ANNIE100 no-card flow specifically (see
 // start-trial-checkout.js): these accounts never had a card on file at
 // all, so sendPaymentFailedEmail's "we weren't able to charge your card" /
 // "if your card's expired or changed" copy would be actively wrong for
@@ -163,15 +163,20 @@ export async function sendPaymentFailedEmail(to) {
 // routes here instead of sendPaymentFailedEmail whenever it detects no
 // default_payment_method on the subscription, whichever event triggered
 // it (trial_will_end as an early heads-up, or invoice.payment_failed as
-// the moment the free month actually runs out).
+// the moment the trial actually runs out).
+//
+// 2026-08-31: copy used to say "free month" — accurate back when the
+// no-card trial ran 30 days, but ANNIE100 is now the same 7-day length as
+// every other trial (see start-trial-checkout.js), so "free trial" is what
+// stays true regardless of length.
 export async function sendAddCardToContinueEmail(to, { endingSoon = false } = {}) {
   return sendEmail({
     to,
-    subject: endingSoon ? 'Your free month with Annie is ending soon' : 'Add a card to keep using Annie',
+    subject: endingSoon ? 'Your free trial with Annie is ending soon' : 'Add a card to keep using Annie',
     html: wrapEmail(`
       <p style="margin:0 0 16px;">${endingSoon
-        ? 'Your free month with Annie ends in a few days.'
-        : 'Your free month with Annie has ended.'}</p>
+        ? 'Your free trial with Annie ends in a few days.'
+        : 'Your free trial with Annie has ended.'}</p>
       <p style="margin:0 0 16px;">Nothing else changes — same account, same data, same setup. Just add a card to keep it running.</p>
       <p style="margin:0;"><a href="https://app.meetannie.ai/dashboard/billing" style="color:#0f1e3d;font-weight:600;">Add a card →</a></p>
     `),

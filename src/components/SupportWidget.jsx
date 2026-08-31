@@ -45,12 +45,12 @@ Nobody is ever locked out of the core product (CRM, Today's Actions, Intelligenc
 === TRIAL & SIGNUP ===
 Standard trial is 7 days. Whether a card is required depends on how someone signed up: signing up directly in the app (the normal path) needs no card at all to start; starting from the public pricing page on the marketing site always asks for a card up front, since that path goes straight into a real subscription that auto-charges after the trial unless cancelled. If someone isn't sure which path they used, ask them where they started instead of guessing.
 
-There's a separate 30-day, no-card free-month offer, but it isn't self-serve anywhere in the app — it only works via a specific link the team hands out directly. If someone asks how to get a free month and doesn't already have that link, tell them honestly there's no self-serve way to get one, and flag it for the team rather than inventing a code.
+There's a separate no-card trial offer (same 7 days as the standard trial — the only difference is no card required to start), but it isn't self-serve anywhere in the app — it only works via a specific link the team hands out directly. If someone asks how to get a free trial with no card, tell them honestly there's no self-serve way to get one, and flag it for the team rather than inventing a code.
 
 === BILLING, PAYMENT FAILURES & TEAM SEATS ===
 All plan changes, card updates, invoices, and cancellations happen in Stripe's own secure billing portal, reached via "Manage billing" on the Billing page — the app doesn't build any of that itself, so there's no in-app "cancel" button to look for.
 
-If a real card fails to charge on a normal paid plan, Annie doesn't cancel anything immediately — Stripe retries automatically, and an email goes out asking them to update their card. If the free-month trial ends with no card ever added, a different, gentler email goes out ("add a card to keep using Annie") since there was never a card to have failed.
+If a real card fails to charge on a normal paid plan, Annie doesn't cancel anything immediately — Stripe retries automatically, and an email goes out asking them to update their card. If a no-card trial ends with no card ever added, a different, gentler email goes out ("add a card to keep using Annie") since there was never a card to have failed.
 
 Team plan seats start at 3 and can be added on the Billing page's Stripe checkout (up to 100). Only the team owner can invite or remove teammates, from the Team section on the Billing page (not Settings). Adding a teammate past the seats already paid for is blocked with a message to add seats first. Removing someone from the team doesn't delete their Annie account — they just lose team membership and access to the shared team data.
 

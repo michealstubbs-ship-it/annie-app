@@ -226,8 +226,8 @@ export default async (req) => {
       // Annie-branded notice pointed at the billing page — not a
       // replacement for Stripe's own dunning emails, a supplement to them.
       //
-      // 2026-08-25: this also fires for the ANNIE100 free-month flow the
-      // moment its 30-day trial ends with no card on file — Stripe still
+      // 2026-08-25: this also fires for the ANNIE100 no-card flow the
+      // moment its trial ends with no card on file — Stripe still
       // creates an invoice (trial_settings.end_behavior.missing_payment_
       // method defaults to 'create_invoice'), which then fails to charge
       // immediately since there's nothing to charge. sendPaymentFailedEmail
