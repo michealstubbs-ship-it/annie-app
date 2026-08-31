@@ -6,6 +6,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   extractJson, normalizeKey, toEventIso, resolveSignalType, splitToKeywords, buildSearchKeywords,
+  buildJobTitleQueries, functionParentLabel, FUNCTION_JOB_TITLES, GENERIC_LEADERSHIP_TITLES,
+  THEIRSTACK_SENIORITIES,
   mapLocationsToAdzunaCountries, SIGNAL_TYPES, reserveApolloCredits, releaseApolloCredits,
   normalizeCompanyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
@@ -184,6 +186,89 @@ describe('buildSearchKeywords', () => {
 
   it('respects a custom max', () => {
     expect(buildSearchKeywords(['Financial Services', 'Technology', 'Real Estate'], ['Strategy'], 2)).toEqual(['Financial Services', 'Strategy'])
+  })
+})
+
+describe('functionParentLabel', () => {
+  it('returns a bare parent label unchanged', () => {
+    expect(functionParentLabel('Finance & Accounting')).toBe('Finance & Accounting')
+  })
+
+  it('strips the sub-option from a "Parent > Sub" value', () => {
+    expect(functionParentLabel('Finance & Accounting > Financial Control')).toBe('Finance & Accounting')
+  })
+
+  it('handles empty and nullish input', () => {
+    expect(functionParentLabel('')).toBe('')
+    expect(functionParentLabel(null)).toBe('')
+    expect(functionParentLabel(undefined)).toBe('')
+  })
+})
+
+describe('buildJobTitleQueries (the 2026-08-31 live-jobs fix)', () => {
+  it('returns real job titles, never the function label itself', () => {
+    const titles = buildJobTitleQueries(['Finance & Accounting'])
+    expect(titles).toContain('Chief Financial Officer')
+    expect(titles).not.toContain('Finance & Accounting')
+  })
+
+  it('interleaves across functions so a later selection is still represented', () => {
+    // The whole point of the old buildSearchKeywords interleave, kept here:
+    // four functions and a cap of four must yield one title from each,
+    // not four titles from the first.
+    const titles = buildJobTitleQueries(
+      ['Finance & Accounting', 'Legal & Compliance', 'HR & People', 'Risk & Audit'],
+      4,
+    )
+    expect(titles).toEqual([
+      'Chief Financial Officer',
+      'General Counsel',
+      'Chief People Officer',
+      'Chief Risk Officer',
+    ])
+  })
+
+  it('resolves "Parent > Sub" values to the parent’s titles', () => {
+    expect(buildJobTitleQueries(['Legal & Compliance > Regulatory'])).toContain('General Counsel')
+  })
+
+  it('deduplicates a title two disciplines share', () => {
+    const titles = buildJobTitleQueries(
+      ['Operations & Supply Chain', 'General Management / Executive Leadership'],
+      8,
+    )
+    expect(new Set(titles).size).toBe(titles.length)
+  })
+
+  it('falls back to generic leadership titles for an unmapped or empty function list', () => {
+    expect(buildJobTitleQueries([])).toEqual(GENERIC_LEADERSHIP_TITLES.slice(0, 4))
+    expect(buildJobTitleQueries(null)).toEqual(GENERIC_LEADERSHIP_TITLES.slice(0, 4))
+    expect(buildJobTitleQueries(['Not A Real Function'])).toEqual(GENERIC_LEADERSHIP_TITLES.slice(0, 4))
+  })
+
+  it('respects the max', () => {
+    expect(buildJobTitleQueries(['Finance & Accounting'], 2)).toHaveLength(2)
+  })
+
+  it('every mapped function has at least three real titles and none is its own label', () => {
+    for (const [label, titles] of Object.entries(FUNCTION_JOB_TITLES)) {
+      expect(titles.length).toBeGreaterThanOrEqual(3)
+      expect(titles).not.toContain(label)
+    }
+  })
+})
+
+describe('THEIRSTACK_SENIORITIES', () => {
+  it('only contains values TheirStack’s own enum accepts', () => {
+    // Confirmed live 2026-08-31 by sending a bad value and reading the
+    // validation error: 'c_level', 'staff', 'senior', 'junior', 'mid_level'.
+    const allowed = ['c_level', 'staff', 'senior', 'junior', 'mid_level']
+    for (const s of THEIRSTACK_SENIORITIES) expect(allowed).toContain(s)
+  })
+
+  it('excludes junior and mid_level, which are not mandates', () => {
+    expect(THEIRSTACK_SENIORITIES).not.toContain('junior')
+    expect(THEIRSTACK_SENIORITIES).not.toContain('mid_level')
   })
 })
 

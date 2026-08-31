@@ -465,6 +465,116 @@ export function buildSearchKeywords(sectors, functions, max = 6) {
   return merged
 }
 
+// 2026-08-31, measured live against both APIs. buildSearchKeywords above is
+// correct for what it was written for (an interleaved list of the customer's
+// own sector/function LABELS) but it was being handed straight to Adzuna's
+// and TheirStack's job-TITLE fields, which is a category error: it asked
+// those APIs for job titles containing "Financial Services" or "Real
+// Estate". Nobody's job title is "Financial Services".
+//
+// What that actually cost, verified against the real keys on 2026-08-31:
+//   Adzuna     `what` ANDs every word it is given, so a realistic
+//              multi-sector customer's query matched NOTHING AT ALL —
+//              count: 0, zero results, every scan, silently. The UK live-job
+//              source has effectively never returned anything.
+//   TheirStack returned results but only ~1 in 10 was a usable executive
+//              lead; the rest were Indian recruitment agencies posting
+//              remote roles tagged to the UAE, "Confidential" employers and
+//              junior technical roles. The scan then correctly discarded
+//              them under its own agency-posted rule — which is exactly how
+//              a full credit spend produces zero signals.
+// Same query with real job titles plus a seniority filter: 5 of 10 usable.
+//
+// So this maps a customer's FUNCTIONS (the discipline they place into) to
+// the job titles a senior opening in that discipline is actually advertised
+// under. Keyed on functionTaxonomy.js's own parent labels — deliberately
+// duplicated here as literals rather than imported, for the same reason
+// discoverHotCompanies keeps its own splitToKeywords: these Netlify
+// functions stay self-contained and don't reach into src/ (untested bundler
+// risk). If a parent label is renamed in the taxonomy, add the new spelling
+// here; an unmapped function degrades to the generic leadership titles
+// below rather than breaking the scan.
+export const FUNCTION_JOB_TITLES = {
+  'Strategy & Corporate Development': ['Chief Strategy Officer', 'Head of Strategy', 'Strategy Director', 'Corporate Development Director'],
+  'Policy & Government Affairs': ['Head of Public Affairs', 'Director of Government Relations', 'Head of Policy', 'Regulatory Affairs Director'],
+  'HSE, Sustainability & Quality': ['Head of HSE', 'Head of Sustainability', 'HSE Manager', 'Director of ESG'],
+  'Construction & Built Environment': ['Project Director', 'Construction Director', 'Development Director', 'Head of Projects'],
+  'Healthcare & Clinical': ['Chief Medical Officer', 'Medical Director', 'Director of Nursing', 'Head of Clinical Services'],
+  'Finance & Accounting': ['Chief Financial Officer', 'Finance Director', 'Head of Finance', 'Financial Controller'],
+  'HR & People': ['Chief People Officer', 'HR Director', 'Head of Talent', 'Director of Human Resources'],
+  'Legal & Compliance': ['General Counsel', 'Head of Legal', 'Head of Compliance', 'Legal Director'],
+  'Sales & Business Development': ['Chief Commercial Officer', 'Sales Director', 'Commercial Director', 'Head of Business Development'],
+  'Marketing, Communications & Creative': ['Chief Marketing Officer', 'Marketing Director', 'Head of Communications', 'Brand Director'],
+  'Operations & Supply Chain': ['Chief Operating Officer', 'Operations Director', 'Head of Supply Chain', 'Head of Operations'],
+  'Technology, Data & Engineering': ['Chief Technology Officer', 'Chief Information Officer', 'Head of Engineering', 'Head of Data'],
+  'Investment & Asset Management': ['Chief Investment Officer', 'Head of Investments', 'Investment Director', 'Portfolio Director'],
+  'Risk & Audit': ['Chief Risk Officer', 'Head of Risk', 'Head of Internal Audit', 'Audit Director'],
+  'Manufacturing & Production': ['Manufacturing Director', 'Plant Director', 'Production Director', 'Head of Manufacturing'],
+  'Real Estate, Facilities & Hospitality': ['Head of Real Estate', 'Facilities Director', 'Asset Management Director', 'General Manager'],
+  'General Management / Executive Leadership': ['Chief Executive Officer', 'Managing Director', 'Chief Operating Officer', 'General Manager'],
+  'Administration & Office Support': ['Head of Administration', 'Head of Business Support', 'Office Director'],
+  'Customer Service & Success': ['Chief Customer Officer', 'Head of Customer Success', 'Customer Experience Director'],
+  'Education & Training': ['Director of Education', 'Head of Learning and Development', 'Academic Director'],
+}
+
+// The fallback when a customer's function isn't in the map above (a renamed
+// taxonomy label, or a customer who selected no functions at all). Senior
+// generalist titles, so the scan still asks a sensible question rather than
+// falling back to the sector-label behaviour this whole block exists to fix.
+export const GENERIC_LEADERSHIP_TITLES = ['Chief Executive Officer', 'Managing Director', 'Chief Financial Officer', 'Chief Operating Officer']
+
+// TheirStack's own enum, confirmed live 2026-08-31 by sending a deliberate
+// bad value and reading the validation error back: 'c_level', 'staff',
+// 'senior', 'junior', 'mid_level'. Only the top three are BD-relevant for an
+// executive search firm — a junior or mid-level opening is not a mandate.
+export const THEIRSTACK_SENIORITIES = ['c_level', 'staff', 'senior']
+
+// Onboarding stores a function as either a bare parent label ('Finance &
+// Accounting') or 'Parent > Sub' ('Finance & Accounting > Financial
+// Control'). Both resolve to the same parent here, because the job titles a
+// discipline advertises under don't change with the sub-speciality.
+export function functionParentLabel(value) {
+  const raw = (value || '').trim()
+  if (!raw) return ''
+  const gt = raw.indexOf('>')
+  return (gt === -1 ? raw : raw.slice(0, gt)).trim()
+}
+
+// Turns the customer's selected functions into real job titles to search
+// for. Interleaved across functions, not concatenated, for exactly the
+// reason buildSearchKeywords interleaves: a customer who picked four
+// functions must get their fourth one represented, not have the first one
+// fill the cap on its own. Deduplicated, because several disciplines
+// legitimately share a title (Chief Operating Officer sits under both
+// Operations and General Management).
+export function buildJobTitleQueries(functions, max = 4) {
+  const perFunction = []
+  const seenFn = new Set()
+  for (const value of functions || []) {
+    const parent = functionParentLabel(value)
+    if (!parent || seenFn.has(parent)) continue
+    seenFn.add(parent)
+    const titles = FUNCTION_JOB_TITLES[parent]
+    if (titles?.length) perFunction.push(titles)
+  }
+  if (!perFunction.length) perFunction.push(GENERIC_LEADERSHIP_TITLES)
+
+  const out = []
+  const seen = new Set()
+  for (let i = 0; out.length < max && perFunction.some(list => i < list.length); i++) {
+    for (const list of perFunction) {
+      if (out.length >= max) break
+      const title = list[i]
+      if (!title) continue
+      const key = title.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(title)
+    }
+  }
+  return out
+}
+
 // Validates a model-reported eventDate is plausible before it's trusted:
 // not in the future (a hallucinated or misread date), and not so far in the
 // past that it can't genuinely be what a "signals from the last N days"
@@ -539,51 +649,74 @@ export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, lo
   const countries = mapLocationsToAdzunaCountries(locations)
   if (!countries.length) return []
 
-  const keywords = buildSearchKeywords(sectors, functions)
-  if (!keywords.length) return []
+  // 2026-08-31, the worst of the two live-job bugs. This used to be
+  // `what: buildSearchKeywords(sectors, functions).join(' ')`. Adzuna's
+  // `what` ANDs every word it is given, so a realistic multi-sector
+  // customer was asking Adzuna for a single job matching every one of their
+  // sector AND function words at once. Verified live against Michael's own
+  // key: count 0, zero results. The UK live-job source has been returning
+  // literally nothing, indistinguishably from "no jobs today".
+  //
+  // `title_only` is the right field — it matches against the job title
+  // rather than the whole ad, which is what "find me a senior opening"
+  // actually means — but it ANDs its own words too, so each title has to be
+  // its own request rather than one combined query. Adzuna is free and
+  // uncapped for this volume, so the extra requests cost nothing.
+  const jobTitles = buildJobTitleQueries(functions)
+  if (!jobTitles.length) return []
 
   const perCountry = []
   for (const country of countries) {
     const countryResults = []
-    try {
-      const params = new URLSearchParams({
-        app_id: appId,
-        app_key: appKey,
-        results_per_page: '10',
-        what: keywords.join(' '),
-        max_days_old: String(lookbackDays),
-        sort_by: 'date',
-      })
-      const resp = await fetchWithRetry(`https://api.adzuna.com/v1/api/jobs/${country}/search/1?${params.toString()}`)
-      if (resp.ok) {
-        const data = await resp.json()
-        for (const j of data.results || []) {
-          const title = (j.title || '').replace(/<[^>]+>/g, '').trim()
-          const company = j.company?.display_name || ''
-          if (!title || !company) continue
-          countryResults.push({
-            title,
-            company,
-            location: j.location?.display_name || '',
-            url: j.redirect_url || '',
-            salary: j.salary_min ? `${Math.round(j.salary_min)}${j.salary_max && j.salary_max !== j.salary_min ? `-${Math.round(j.salary_max)}` : ''}` : null,
-          })
+    const seenUrls = new Set()
+    for (const jobTitle of jobTitles) {
+      try {
+        const params = new URLSearchParams({
+          app_id: appId,
+          app_key: appKey,
+          results_per_page: '5',
+          title_only: jobTitle,
+          max_days_old: String(lookbackDays),
+          sort_by: 'date',
+        })
+        const resp = await fetchWithRetry(`https://api.adzuna.com/v1/api/jobs/${country}/search/1?${params.toString()}`)
+        if (resp.ok) {
+          const data = await resp.json()
+          for (const j of data.results || []) {
+            const title = (j.title || '').replace(/<[^>]+>/g, '').trim()
+            const company = j.company?.display_name || ''
+            const url = j.redirect_url || ''
+            if (!title || !company) continue
+            // The same posting legitimately matches more than one title
+            // query ("Finance Director" and "Head of Finance" both hit a
+            // "Finance Director / Head of Finance" ad), so dedupe within the
+            // country before it reaches the merge below.
+            if (url && seenUrls.has(url)) continue
+            if (url) seenUrls.add(url)
+            countryResults.push({
+              title,
+              company,
+              location: j.location?.display_name || '',
+              url,
+              salary: j.salary_min ? `${Math.round(j.salary_min)}${j.salary_max && j.salary_max !== j.salary_min ? `-${Math.round(j.salary_max)}` : ''}` : null,
+            })
+          }
+        } else {
+          // 2026-08-29 audit fix: a non-ok response (a suspended app_id/
+          // app_key, a bad request, an Adzuna-side outage) fell through this
+          // branch with nothing logged at all — identical, in every log and
+          // in the product, to "genuinely zero jobs in this country right
+          // now." Every other discover*/lookup* function in this file at
+          // least logs its non-ok branch (see discoverTheirStackJobs,
+          // discoverHotCompanies, verifyContact above); this was the one
+          // real gap. Still fails open on purpose (one country's outage
+          // shouldn't drop the others this loop already found), just no
+          // longer invisibly.
+          console.error(`[scanShared] Adzuna non-ok response for ${country} / "${jobTitle}": ${resp.status}`)
         }
-      } else {
-        // 2026-08-29 audit fix: a non-ok response (a suspended app_id/
-        // app_key, a bad request, an Adzuna-side outage) fell through this
-        // branch with nothing logged at all — identical, in every log and
-        // in the product, to "genuinely zero jobs in this country right
-        // now." Every other discover*/lookup* function in this file at
-        // least logs its non-ok branch (see discoverTheirStackJobs,
-        // discoverHotCompanies, verifyContact above); this was the one
-        // real gap. Still fails open on purpose (one country's outage
-        // shouldn't drop the others this loop already found), just no
-        // longer invisibly.
-        console.error(`[scanShared] Adzuna non-ok response for ${country}: ${resp.status}`)
+      } catch (err) {
+        console.error('[scanShared] adzuna discovery failed for', country, `/ "${jobTitle}":`, err.message)
       }
-    } catch (err) {
-      console.error('[scanShared] adzuna discovery failed for', country, ':', err.message)
     }
     perCountry.push(countryResults)
   }
@@ -725,7 +858,10 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
   const countries = mapLocationsToTheirStackCountries(locations)
   if (!countries.length) return []
 
-  const keywords = buildSearchKeywords(sectors, functions)
+  // 2026-08-31: was buildSearchKeywords(sectors, functions), which handed
+  // this API sector/function LABELS as job titles. See FUNCTION_JOB_TITLES
+  // above for what that measured out at (1 usable lead per 10 results).
+  const jobTitles = buildJobTitleQueries(functions)
 
   const limit = 10
   if (!(await reserveTheirStackCredits(supabase, userId, limit, caps))) return []
@@ -736,8 +872,12 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
       offset: 0,
       posted_at_max_age_days: lookbackDays,
       job_country_code_or: countries,
+      // Without this the feed is dominated by junior and mid-level roles,
+      // which are not mandates and which the scan then discards anyway —
+      // paying full credits for results that were never going to be used.
+      job_seniority_or: THEIRSTACK_SENIORITIES,
     }
-    if (keywords.length) body.job_title_or = keywords
+    if (jobTitles.length) body.job_title_or = jobTitles
 
     const resp = await fetchWithRetry('https://api.theirstack.com/v1/jobs/search', {
       method: 'POST',
