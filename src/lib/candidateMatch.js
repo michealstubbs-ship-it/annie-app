@@ -58,21 +58,36 @@ export function prepareCandidatesForMatching(candidates) {
 // signal/job shape directly, so both the signal-matching functions and the
 // job-matching functions below funnel through exactly one scoring
 // implementation instead of two near-identical copies.
-function scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens }, prepared) {
+function scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens }, prepared, { requireTitleOverlap = false, limit = 5 } = {}) {
   if (!prepared.length) return []
 
   const scored = prepared.map(({ candidate, roleTokens, industryTokens: candidateIndustryTokens }) => {
     // Role match matters far more than industry match, a CFO candidate is a
     // CFO candidate whether or not the industry label lines up exactly.
-    const roleScore = overlapScore(titleTokens, roleTokens) * 2 + overlapScore(freeTextTokens, roleTokens)
+    const titleScore = overlapScore(titleTokens, roleTokens)
+    const roleScore = titleScore * 2 + overlapScore(freeTextTokens, roleTokens)
     const industryScore = overlapScore(industryTokens, candidateIndustryTokens)
-    return { candidate, score: roleScore + industryScore }
+    return { candidate, titleScore, score: roleScore + industryScore }
   })
 
+  // 2026-08-31: with requireTitleOverlap (BD signals only — see
+  // scoreAgainstPrepared), a candidate must overlap the signal's TITLE
+  // KEYWORDS to be suggested at all; industry overlap or a chance hit
+  // against the headline prose is no longer enough on its own. Without this
+  // a "Chief Operating Officer" was surfacing against the headline "…appoints
+  // a new Chief Financial Officer" purely on the words "chief" and "officer",
+  // and a "Partner, Financial Services" was scoring on "Financial" — a sector
+  // sitting in a role field. Recommending a COO and a Partner for a CFO search
+  // is the kind of miss a recruiter spots instantly, and it costs trust in
+  // every other suggestion on the card. Signals also cap at 3 rather than 5
+  // for the same reason: three defensible matches read as judgement, five
+  // loose ones read as a keyword dump. Job matching keeps the older, looser
+  // behaviour deliberately — there, an industry-only match with no title
+  // overlap is covered by its own test and is wanted.
   return scored
-    .filter(s => s.score >= 1)
+    .filter(s => s.score >= 1 && (!requireTitleOverlap || s.titleScore >= 1))
     .sort((a, b) => b.score - a.score)
-    .slice(0, 5)
+    .slice(0, limit)
     .map(s => s.candidate)
 }
 
@@ -81,7 +96,7 @@ function scoreAgainstPrepared(signal, prepared) {
   const titleTokens = (signal.title_keywords || []).flatMap(tokenize)
   const freeTextTokens = tokenize(signal.headline)
   const industryTokens = tokenize(signal.company_industry)
-  return scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens }, prepared)
+  return scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens }, prepared, { requireTitleOverlap: true, limit: 3 })
 }
 
 // 2026-08-29: same matching, pointed at a real job posting instead of a BD
@@ -99,7 +114,7 @@ function scoreJobAgainstPrepared(job, prepared) {
 }
 
 // Returns the candidates (best matches first) worth surfacing for this
-// signal, capped at 5. An empty array means "nothing in the pool fits,
+// signal, best first, capped at 3. An empty array means "nothing in the pool fits,
 // worth sourcing fresh" which is itself useful information, not a failure.
 //
 // One-off convenience wrapper — fine for matching a single signal. A caller

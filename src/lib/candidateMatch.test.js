@@ -28,10 +28,10 @@ describe('matchCandidatesToSignal', () => {
     expect(matchCandidatesToSignal(signal, candidates)).toEqual([])
   })
 
-  it('caps results at 5, best matches first', () => {
+  it('caps results at 3, best matches first', () => {
     const signal = { title_keywords: ['Chief Financial Officer'], headline: '', company_industry: '' }
     const candidates = Array.from({ length: 8 }, (_, i) => ({ id: i, role: 'Chief Financial Officer', status: 'active' }))
-    expect(matchCandidatesToSignal(signal, candidates)).toHaveLength(5)
+    expect(matchCandidatesToSignal(signal, candidates)).toHaveLength(3)
   })
 
   it('handles missing signal or empty candidate list without throwing', () => {
@@ -149,5 +149,39 @@ describe('matchPreparedCandidatesToJob', () => {
   it('handles a missing/empty prepared pool without throwing', () => {
     expect(matchPreparedCandidatesToJob({ title: 'CFO' }, [])).toEqual([])
     expect(matchPreparedCandidatesToJob({ title: 'CFO' }, null)).toEqual([])
+  })
+})
+
+// 2026-08-31: a candidate must overlap the signal's TITLE KEYWORDS, not just
+// the headline prose or the industry. Regression cover for two real misses
+// seen on the Aldermere CFO signal in the demo tenant.
+describe('title-keyword gate', () => {
+  it('does not match a COO to a CFO signal on the headline words "chief"/"officer"', () => {
+    const signal = {
+      title_keywords: ['CFO', 'Finance Director', 'Financial Controller'],
+      headline: 'Aldermere Partners appoints a new Chief Financial Officer',
+      company_industry: 'Financial Services',
+    }
+    const candidates = [{ id: 1, role: 'Chief Operating Officer', industry: 'Financial Services', status: 'interviewing' }]
+    expect(matchCandidatesToSignal(signal, candidates)).toEqual([])
+  })
+
+  it('does not match on industry overlap alone', () => {
+    const signal = { title_keywords: ['CFO'], headline: '', company_industry: 'Financial Services' }
+    const candidates = [{ id: 1, role: 'Warehouse Operative', industry: 'Financial Services', status: 'active' }]
+    expect(matchCandidatesToSignal(signal, candidates)).toEqual([])
+  })
+
+  it('still matches a genuine finance title', () => {
+    const signal = {
+      title_keywords: ['CFO', 'Finance Director', 'Financial Controller'],
+      headline: 'Aldermere Partners appoints a new Chief Financial Officer',
+      company_industry: 'Financial Services',
+    }
+    const candidates = [
+      { id: 1, role: 'Group Financial Controller', industry: 'Energy & Utilities', status: 'sourced' },
+      { id: 2, role: 'Finance Manager', industry: 'Financial Services', status: 'sourced' },
+    ]
+    expect(matchCandidatesToSignal(signal, candidates).map(c => c.id).sort()).toEqual([1, 2])
   })
 })
