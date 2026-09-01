@@ -53,6 +53,7 @@ import {
   buildRegionalSourceHint,
   buildLiveJobBoardHint,
   buildTargetFirmHint,
+  buildFunctionBreadthHint,
   getLearnedSources,
   recordLearnedDiscoveries,
   splitLearnedEntries,
@@ -72,6 +73,31 @@ const INTERNAL_SCAN_SECRET = process.env.INTERNAL_SCAN_SECRET
 // but this is the real, code-enforced cap, since Apollo credits are a
 // limited monthly budget and this cron runs across every customer.
 const MAX_SIGNALS_PER_RUN = 5
+
+// 2026-09-01: this file now runs two AI calls per customer (the sector-
+// scoped one, plus the cross-industry-by-function one) instead of one, and
+// MAX_SIGNALS_PER_RUN is a tight cap (5) — a plain concat-then-slice would
+// let whichever list is longer (or happens to be checked first) silently
+// take every slot, every run, starving the other call's results completely.
+// Interleaves round-robin instead, deduping by the same real-fact key
+// (company + headline + sourceUrl) mergeSignals in scan-now-background.js
+// already uses for the same reason there.
+export function interleaveSignalLists(lists) {
+  const seen = new Set()
+  const out = []
+  for (let i = 0; lists.some(list => i < (list?.length || 0)); i++) {
+    for (const list of lists) {
+      if (!list || i >= list.length) continue
+      const s = list[i]
+      if (!s?.company || !s?.headline) continue
+      const key = normalizeKey(s.company, s.headline, s.sourceUrl)
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(s)
+    }
+  }
+  return out
+}
 
 // The exact shape a real customer confirmed works (2026-08-23 product-copy
 // pass): a warm opener, one paragraph that introduces the firm and the
@@ -98,17 +124,36 @@ function introMessageInstruction(onboarding) {
 
 function buildScanPrompt(onboarding, recentCompanies, opts = {}) {
   const functions = onboarding?.functions?.length ? onboarding.functions.join(', ') : null
+  const functionBreadthHint = buildFunctionBreadthHint(onboarding?.functions)
   const introMessageField = introMessageInstruction(onboarding)
+  // 2026-09-01, Michael: same reasoning as scan-now-background.js's own
+  // crossIndustryByFunction branch (see that file's header on
+  // runCrossIndustryFunctionPass) — a sector-scoped search alone can't see a
+  // real BD opportunity at a company outside this recruiter's chosen
+  // sectors, even though this recruiter places into the same FUNCTIONS
+  // there too. Extended to the recurring cron as a genuinely separate,
+  // additive second call (see scanOneCustomer below) rather than folded
+  // into this single call, per Michael's explicit call after seeing the
+  // real cost numbers — general for any account's own chosen functions.
+  const crossIndustryByFunction = !!opts.crossIndustryByFunction
+  const sectorLine = crossIndustryByFunction
+    ? `Sectors this recruiter also actively targets (for reference only — NOT a restriction for this specific pass, see below): ${onboarding?.sectors?.join(', ') || 'General recruitment'}.`
+    : `Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.`
+  const scopeInstruction = crossIndustryByFunction ? `This pass is deliberately NOT limited to the sectors above. Search for genuine, timely BD-relevant signals tied specifically to these functions/roles: ${functions || "this recruiter's target functions"} — funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity — at companies in ANY industry, not only the sectors this recruiter's other searches already cover. The industry the company operates in genuinely does not matter for this pass, only that the signal involves one of the functions listed above.
+${functionBreadthHint ? `Each function covers real breadth, not just its most senior title — search across all of it, not only the obvious C-suite headline:\n${functionBreadthHint}\n` : ''}
+Also actively look for layoffs, redundancies, or restructuring news affecting these functions specifically, regardless of industry. This cuts both ways and both are worth surfacing: a company doing layoffs sometimes still needs to quietly backfill specific roles (frame the signal around that need), and separately, a real layoff or redundancy event puts a pool of genuinely available, often strong candidates on the market at once, worth surfacing on its own even with no obvious open role at that company, in which case candidateAngle should describe that available talent pool. Classify these as signalType "regulatory" and make the headline clearly say layoffs or redundancy so it's not confused with an ordinary hiring signal.
+Search thoroughly before concluding there is nothing. Run multiple distinct searches, try each function AND each of its sub-disciplines listed above by name, combined with "appoints" / "hires" / "promotes" / "funding" / "expansion" / "restructuring", spread deliberately across a wide range of industries, not just this recruiter's usual sectors. Do not stop after one or two searches.
+${functions ? `Every signal you find this way should already involve one of the functions listed above directly — that's what this pass searches for, not something to connect afterward. State which function (and sub-discipline, if it's clearly one of the ones listed above) it involves as part of your reasoning.` : ''}` : `Use web search to find genuine, timely BD-relevant signals in these sectors and markets right now: funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity.
+Also actively look for layoffs, redundancies, or restructuring news. This cuts both ways and both are worth surfacing: a company doing layoffs sometimes still needs to quietly backfill specific roles (frame the signal around that need), and separately, a real layoff or redundancy event puts a pool of genuinely available, often strong candidates on the market at once, worth surfacing on its own even with no obvious open role at that company, in which case candidateAngle should describe that available talent pool. Classify these as signalType "regulatory" and make the headline clearly say layoffs or redundancy so it's not confused with an ordinary hiring signal.
+Search thoroughly before concluding there is nothing. Run multiple distinct searches, try each sector and each function by name, try combinations of sector + "funding" / "hiring" / "appoints" / "expansion" / "acquires", try the specified markets by name, and try recent news generally in these sectors before narrowing. Do not stop after one or two searches, a real, live-news industry genuinely has more happening in it than that.
+${functions ? `This recruiter places into the functions listed above. When you find a strong, genuine signal, connect it to whichever of those functions it most plausibly affects, even if the reasoning takes a small logical step (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring, a new market launch signals Government/Regulatory Affairs hiring, an M&A deal signals Corporate Development or Legal hiring). Make your best reasonable case for the closest function rather than discarding a real, well-sourced signal purely because the function match isn't perfect. Only leave a strong signal out entirely if you genuinely cannot connect it to any of the functions listed, even loosely.${functionBreadthHint ? ` Remember each function covers real breadth beyond its most senior title:\n${functionBreadthHint}` : ''}` : ''}`
   return `You are Annie, an expert BD researcher for a recruitment firm.
-Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
+${sectorLine}
 Functions this recruiter places candidates into: ${functions || 'All functions, no specific focus given'}.
 Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
 Communication tone: ${onboarding?.tone || 'professional'}.
 ${onboarding?.writing_style ? `The recruiter's real writing style, follow this closely when writing the introMessage, candidateAngle, and benchStrengthAngle text:\n${onboarding.writing_style}\n` : ''}
-Use web search to find genuine, timely BD-relevant signals in these sectors and markets right now: funding rounds, leadership changes, hiring activity, expansions, team-building posts, notable public commentary, unclaimed job postings (posted directly by a company with no recruiter attached), M&A, or regulatory news that creates a real BD opportunity.
-Also actively look for layoffs, redundancies, or restructuring news. This cuts both ways and both are worth surfacing: a company doing layoffs sometimes still needs to quietly backfill specific roles (frame the signal around that need), and separately, a real layoff or redundancy event puts a pool of genuinely available, often strong candidates on the market at once, worth surfacing on its own even with no obvious open role at that company, in which case candidateAngle should describe that available talent pool. Classify these as signalType "regulatory" and make the headline clearly say layoffs or redundancy so it's not confused with an ordinary hiring signal.
-Search thoroughly before concluding there is nothing. Run multiple distinct searches, try each sector and each function by name, try combinations of sector + "funding" / "hiring" / "appoints" / "expansion" / "acquires", try the specified markets by name, and try recent news generally in these sectors before narrowing. Do not stop after one or two searches, a real, live-news industry genuinely has more happening in it than that.
-${functions ? `This recruiter places into the functions listed above. When you find a strong, genuine signal, connect it to whichever of those functions it most plausibly affects, even if the reasoning takes a small logical step (e.g. a funding round signals Finance/Strategy hiring, a safety incident signals HSE hiring, a new market launch signals Government/Regulatory Affairs hiring, an M&A deal signals Corporate Development or Legal hiring). Make your best reasonable case for the closest function rather than discarding a real, well-sourced signal purely because the function match isn't perfect. Only leave a strong signal out entirely if you genuinely cannot connect it to any of the functions listed, even loosely.` : ''}
+${scopeInstruction}
 
 Bias against obvious, oversaturated, famous names everyone already targets when a quieter, equally strong alternative exists, but do not discard a genuinely strong, well-sourced signal just because the company is well known, a real opportunity is better than an artificially obscure one.
 
@@ -321,8 +366,37 @@ async function scanOneCustomer(ob, ctx) {
     const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
     const watchlist = await getCustomerWatchlistCompanies(supabase, ob)
 
-    const text = await callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }), supabase, { maxTokens: tierConfig.anthropicMaxTokens, maxUses: tierConfig.anthropicMaxUses, userId: ob.user_id, anthropicCaps: resourceCaps.anthropicTokens })
+    // 2026-09-01, Michael: applied to every recurring scan now, not just the
+    // one-off onboarding scan — explicit call after seeing the real added
+    // Anthropic cost (~$4-8.50/customer/month, roughly doubling just this
+    // line of the recurring-scan cost). Run alongside the existing sector-
+    // scoped call as a genuinely separate, equal-budget pass (not folded
+    // into the one call, and not just a bigger token/search-use ceiling on
+    // it — see buildScanPrompt's own header for why that alone wouldn't
+    // have delivered real cross-industry coverage). Skipped entirely for an
+    // account with no functions selected, same guard as the onboarding
+    // scan's runCrossIndustryFunctionPass.
+    const [text, crossIndustryText] = await Promise.all([
+      callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }), supabase, { maxTokens: tierConfig.anthropicMaxTokens, maxUses: tierConfig.anthropicMaxUses, userId: ob.user_id, anthropicCaps: resourceCaps.anthropicTokens }),
+      ob.functions?.length
+        ? callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { crossIndustryByFunction: true, learned, watchlist }), supabase, { maxTokens: tierConfig.anthropicMaxTokens, maxUses: tierConfig.anthropicMaxUses, userId: ob.user_id, anthropicCaps: resourceCaps.anthropicTokens })
+            .catch(err => {
+              // A cap hit or transient failure on JUST this second call
+              // should never take down the customer's whole scan — the
+              // primary sector-scoped call above still runs and writes
+              // normally, this pass simply contributes nothing this round.
+              console.error('[intelligence-scan] cross-industry-by-function call failed for', ob.user_id, err.message)
+              return null
+            })
+        : Promise.resolve(null),
+    ])
     const { learned: learnedFound, rest: rawFound } = splitLearnedEntries(extractJson(text))
+    let crossIndustryFound = []
+    if (crossIndustryText) {
+      const parsed = splitLearnedEntries(extractJson(crossIndustryText))
+      crossIndustryFound = parsed.rest
+      learnedFound.push(...parsed.learned)
+    }
     // Fire-and-forget on purpose — this is Annie's own research memory
     // growing for next time (see getLearnedSources/recordLearnedDiscoveries's
     // own headers), it has zero bearing on this customer's signals and
@@ -331,12 +405,13 @@ async function scanOneCustomer(ob, ctx) {
     if (learnedFound.length) recordLearnedDiscoveries(supabase, learnedFound).catch(() => {})
     // Enforce "replace, not supplement" here in code — see the function's own
     // comment in scanShared.js for why this can't just be a prompt instruction
-    // alone. Pool hits are merged in first — mergeSignals isn't imported here
-    // (this file only ever had one AI call, unlike scan-now-background.js's
-    // several), so a plain array concat is enough; the downstream dedup
-    // filter below still catches the (rare) case where fresh discovery
-    // independently re-found the exact same event a pool hit already covers.
-    const found = dropGenericHiringWhereLiveJobsExist([...poolPersonalized, ...rawFound])
+    // alone. Pool hits go first (they're free, already-verified). The sector-
+    // scoped and cross-industry-by-function results are interleaved, not
+    // concatenated, before the MAX_SIGNALS_PER_RUN slice below — a plain
+    // concat would let whichever call happens to return first (or biggest)
+    // silently crowd out the other every single run, the same class of bug
+    // buildSearchKeywords' own header describes for sector/function keywords.
+    const found = dropGenericHiringWhereLiveJobsExist([...poolPersonalized, ...interleaveSignalLists([rawFound, crossIndustryFound])])
     if (!found.length) {
       // Log a preview so a zero-result customer is diagnosable from the log,
       // not guessed at. See looksTruncatedByTokenLimit's own header — tells

@@ -33,6 +33,7 @@ function makeSupabase(onboardingResult) {
 }
 
 let handler
+let interleaveSignalLists
 
 beforeEach(async () => {
   vi.clearAllMocks()
@@ -41,7 +42,7 @@ beforeEach(async () => {
   process.env.ANTHROPIC_API_KEY = 'sk-ant-test'
   process.env.INTERNAL_SCAN_SECRET = 'test-internal-secret'
   vi.resetModules()
-  ;({ default: handler } = await import('../intelligence-scan-background.js'))
+  ;({ default: handler, interleaveSignalLists } = await import('../intelligence-scan-background.js'))
 })
 
 afterEach(() => {
@@ -105,5 +106,63 @@ describe('empty customer list', () => {
     const res = await handler(makeRequest())
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('No customers to scan')
+  })
+})
+
+// 2026-09-01: this file now runs a second AI call per customer (sector-scoped
+// + cross-industry-by-function), so a plain concat-then-slice ahead of
+// MAX_SIGNALS_PER_RUN (5) would let whichever list happens to be longer, or
+// gets checked first, silently take every slot every run — starving the
+// other call's results completely even though both are real, deduped
+// signals. interleaveSignalLists is the fix; these tests cover it directly
+// since the handler-level tests above deliberately don't mock Anthropic/
+// Apollo/Adzuna far enough to exercise scanOneCustomer's internals.
+describe('interleaveSignalLists (2026-09-01: cross-industry-by-function second call)', () => {
+  const sig = (company, headline, sourceUrl = `https://example.com/${company}`) => ({ company, headline, sourceUrl })
+
+  it('alternates round-robin between the two lists instead of exhausting one first', () => {
+    const sectorList = [sig('Acme', 'Acme raises Series B'), sig('Globex', 'Globex expands to Dubai')]
+    const crossIndustryList = [sig('Initech', 'Initech names new CFO'), sig('Umbrella', 'Umbrella hires Head of Product')]
+    const out = interleaveSignalLists([sectorList, crossIndustryList])
+    expect(out.map(s => s.company)).toEqual(['Acme', 'Initech', 'Globex', 'Umbrella'])
+  })
+
+  it('when one list is longer, still includes the shorter list\'s entries near the front rather than only after the longer list is exhausted', () => {
+    const sectorList = [sig('A', 'A funding'), sig('B', 'B funding'), sig('C', 'C funding'), sig('D', 'D funding')]
+    const crossIndustryList = [sig('E', 'E leadership change')]
+    const out = interleaveSignalLists([sectorList, crossIndustryList])
+    // E must land in the first 2 slots, not be pushed to the back by A-D
+    expect(out.slice(0, 2).map(s => s.company)).toContain('E')
+  })
+
+  it('dedupes the same real-world fact appearing in both lists, keeping only the first occurrence', () => {
+    const sectorList = [sig('Acme', 'Acme raises Series B', 'https://techcrunch.com/acme-b')]
+    const crossIndustryList = [sig('Acme', 'Acme raises Series B', 'https://techcrunch.com/acme-b'), sig('Initech', 'Initech names new CFO')]
+    const out = interleaveSignalLists([sectorList, crossIndustryList])
+    expect(out.filter(s => s.company === 'Acme')).toHaveLength(1)
+    expect(out.map(s => s.company)).toEqual(['Acme', 'Initech'])
+  })
+
+  it('drops entries missing a company or headline rather than throwing', () => {
+    const sectorList = [sig('Acme', 'Acme raises Series B'), { company: 'NoHeadline' }]
+    const crossIndustryList = [{ headline: 'No company here' }, sig('Initech', 'Initech names new CFO')]
+    const out = interleaveSignalLists([sectorList, crossIndustryList])
+    expect(out.map(s => s.company)).toEqual(['Acme', 'Initech'])
+  })
+
+  it('handles the cross-industry call returning nothing (e.g. customer picked no functions) by passing the sector list through unchanged', () => {
+    const sectorList = [sig('Acme', 'Acme raises Series B'), sig('Globex', 'Globex expands to Dubai')]
+    const out = interleaveSignalLists([sectorList, []])
+    expect(out.map(s => s.company)).toEqual(['Acme', 'Globex'])
+  })
+
+  it('handles both lists being empty', () => {
+    expect(interleaveSignalLists([[], []])).toEqual([])
+  })
+
+  it('handles a null/undefined entry in the lists array (defensive against a failed call resolving to null)', () => {
+    const sectorList = [sig('Acme', 'Acme raises Series B')]
+    const out = interleaveSignalLists([sectorList, null])
+    expect(out.map(s => s.company)).toEqual(['Acme'])
   })
 })
