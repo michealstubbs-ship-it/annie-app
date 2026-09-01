@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import * as XLSX from 'xlsx'
-import { fileBufferToRows, parseCSV, findColumn, rowsToContacts } from './linkedinImportParse.js'
+import { fileBufferToRows, parseCSV, findColumn, findHeaderRowIndex, rowsToContacts } from './linkedinImportParse.js'
 
 // 2026-09-01: written after two rounds of real customer reports — the first
 // (a saved .xlsx wouldn't upload) fixed only .xlsx; Michael's very next
@@ -161,5 +161,52 @@ describe('rowsToContacts', () => {
     expect(rowsToContacts(rows)).toEqual([{
       name: 'Jane Doe', company: 'Acme Corp', title: '', linkedin_url: '', email: '', connectedOn: '',
     }])
+  })
+})
+
+// 2026-09-01: found against a REAL customer export, not a hypothetical.
+// LinkedIn's actual Connections.csv download leads with a "Notes:"
+// disclaimer block (a "Notes:" row, a long quoted privacy-settings
+// explanation, then a blank row) before the real header row — every earlier
+// test fixture in this file, including the "any file format" work shipped
+// earlier the same day, only ever tested a file whose row 0 was already the
+// header, so this exact real shape parsed to zero contacts in production:
+// findColumn found nothing in ["Notes:","","",...], every column index came
+// back -1, and rowsToContacts silently produced an empty array from a file
+// that actually had thousands of real, well-formed contacts three rows down.
+describe('findHeaderRowIndex / rowsToContacts — LinkedIn\'s real "Notes:" preamble block', () => {
+  const realShapeRows = [
+    ['Notes:', '', '', '', '', '', ''],
+    ['When exporting your connection data, you may notice that some of the email addresses are missing.', '', '', '', '', '', ''],
+    ['', '', '', '', '', '', ''],
+    ['First Name', 'Last Name', 'URL', 'Email Address', 'Company', 'Position', 'Connected On'],
+    ['Sharifah', 'Al Shiban', 'https://www.linkedin.com/in/sharifah-al-shiban-870363189', '', 'Public Investment Fund (PIF) Projects', 'Strategy & Business Planning', '31-Aug-26'],
+    ['Mustafa', 'Sadek', 'https://www.linkedin.com/in/mustafasadek', '', 'The Modern CTO Circle', 'Founder', '31-Aug-26'],
+  ]
+
+  it('findHeaderRowIndex skips the Notes/explanation/blank rows and lands on the real header', () => {
+    expect(findHeaderRowIndex(realShapeRows)).toBe(3)
+  })
+
+  it('findHeaderRowIndex returns 0 (previous, still-correct behavior) when the header really is row 0', () => {
+    const rows = [['First Name', 'Last Name', 'Company'], ['Jane', 'Doe', 'Acme Corp']]
+    expect(findHeaderRowIndex(rows)).toBe(0)
+  })
+
+  it('rowsToContacts correctly extracts every real contact from behind the preamble, not zero', () => {
+    const contacts = rowsToContacts(realShapeRows)
+    expect(contacts).toEqual([
+      { name: 'Sharifah Al Shiban', company: 'Public Investment Fund (PIF) Projects', title: 'Strategy & Business Planning', linkedin_url: 'https://www.linkedin.com/in/sharifah-al-shiban-870363189', email: '', connectedOn: '31-Aug-26' },
+      { name: 'Mustafa Sadek', company: 'The Modern CTO Circle', title: 'Founder', linkedin_url: 'https://www.linkedin.com/in/mustafasadek', email: '', connectedOn: '31-Aug-26' },
+    ])
+  })
+
+  it('end-to-end: a real CSV file with the Notes: preamble, read through fileBufferToRows, produces real contacts', () => {
+    const csvText = 'Notes:,,,,,,\r\n"Some privacy explanation text",,,,,,\r\n,,,,,,\r\nFirst Name,Last Name,URL,Email Address,Company,Position,Connected On\r\nJane,Doe,https://www.linkedin.com/in/jane,,Acme Corp,Founder,05-Aug-26\r\n'
+    const rows = fileBufferToRows(toArrayBuffer(csvText))
+    const contacts = rowsToContacts(rows)
+    expect(contacts).toEqual([
+      { name: 'Jane Doe', company: 'Acme Corp', title: 'Founder', linkedin_url: 'https://www.linkedin.com/in/jane', email: '', connectedOn: '05-Aug-26' },
+    ])
   })
 })

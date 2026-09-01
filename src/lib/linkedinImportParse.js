@@ -98,11 +98,35 @@ export function findColumn(headers, candidates) {
   return -1
 }
 
+// 2026-09-01, real customer file: LinkedIn's actual Connections.csv export
+// leads with a "Notes:" disclaimer block — a "Notes:" row, a long quoted
+// privacy-settings explanation, then a blank row — BEFORE the real header
+// row. Every earlier build/test fixture (including the "any file format"
+// SheetJS work shipped earlier the same day) assumed rows[0] was always the
+// header, so this exact real-world file parsed to zero contacts: findColumn
+// against ["Notes:","","","","","",""] matches nothing, every column index
+// comes back -1, every row's name ends up empty, and the "no rows" error
+// fires — even though the file has thousands of real, well-formed contacts
+// two rows below where we were looking. Scan the first several rows for the
+// one that actually looks like a header (has a "first name" cell) instead of
+// assuming row 0; falls back to 0 (previous behavior) if nothing is found,
+// so a file with no recognizable header still hits the same downstream
+// "no rows" guard rather than crashing on a bad index.
+export function findHeaderRowIndex(rows) {
+  const limit = Math.min(rows.length, 10)
+  for (let i = 0; i < limit; i++) {
+    if (findColumn(rows[i], ['first name']) !== -1) return i
+  }
+  return 0
+}
+
 // Turns parsed rows (headers + data rows, from fileBufferToRows regardless
 // of the original file format) into the contact shape the rest of the
 // import flow uses.
 export function rowsToContacts(rows) {
-  const headers = rows[0]
+  const headerRowIdx = findHeaderRowIndex(rows)
+  const headers = rows[headerRowIdx]
+  rows = rows.slice(headerRowIdx)
   const firstIdx = findColumn(headers, ['first name'])
   const lastIdx = findColumn(headers, ['last name'])
   const companyIdx = findColumn(headers, ['company'])
