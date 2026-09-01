@@ -409,6 +409,50 @@ export function normalizeCompanyKey(company) {
   return normalizeCompanyName(company) || (company || '').trim().toLowerCase()
 }
 
+// 2026-09-01, real incident found live on Michael's own account: the same
+// Fasset $68M Series C round got written as TWO separate signals —
+// "Dubai fintech raises $68M Series C, hits $1B valuation" (khaleejtimes.com)
+// and "Series C $68M raises fintech to unicorn status" (fasset.com) — same
+// real event, two different real articles about it. normalizeKey's own
+// sourceUrl-based key is exactly right for the DP World incident it was
+// built for (same article, re-paraphrased headline) but structurally can't
+// catch this one: two different source URLs produce two different keys no
+// matter how the dedup logic slices the headline. This got much more likely
+// the day the cross-industry-by-function pass shipped (2026-09-01) — two
+// genuinely independent AI web searches per customer per run now, each free
+// to rediscover the same real news via a different outlet.
+//
+// Scoped to signalType "funding" only, not every type: this is the one
+// category where a real event has an unambiguous, extractable fingerprint
+// independent of which article reported it — the funding round letter and
+// the dollar amount. A leadership change or expansion doesn't have an
+// equally reliable fact to extract from free-form AI prose without a much
+// higher risk of false-merging two genuinely different events, so this
+// deliberately doesn't try to generalize past the one case actually
+// observed. Returns null (never a false match) unless BOTH a round and an
+// amount are confidently found in the given text.
+export function extractFundingSignature(text) {
+  if (!text) return null
+  const roundMatch = text.match(/\bseries\s*([a-e])\b/i) || text.match(/\b(seed)\b/i) || text.match(/\b(pre-seed)\b/i)
+  const amountMatch = text.match(/\$\s?(\d+(?:\.\d+)?)\s*([mMbB])\b/)
+  if (!roundMatch || !amountMatch) return null
+  const round = roundMatch[1].toLowerCase()
+  const amount = `${amountMatch[1]}${amountMatch[2].toLowerCase()}`
+  return `${round}:${amount}`
+}
+
+// Fuzzy dedup key for a funding signal, or null when this entry isn't a
+// funding signal or doesn't carry a confidently-extractable round+amount
+// (see extractFundingSignature's own header). Checked from BOTH the
+// headline and why-it-matters text since either one might carry the actual
+// figures depending on how the AI phrased the headline.
+export function fundingFuzzyKey(company, signalType, headline, whyItMatters) {
+  if (signalType !== 'funding') return null
+  const sig = extractFundingSignature(headline) || extractFundingSignature(whyItMatters)
+  if (!sig) return null
+  return `${normalizeCompanyKey(company)}::funding::${sig}`
+}
+
 // Implements the "replace, don't supplement" product decision for Live
 // Jobs: when Annie found actual, specific open roles (live_job entries) at a
 // company, the generic "this company is hiring" narrative signal for that

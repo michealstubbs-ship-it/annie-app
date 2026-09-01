@@ -10,7 +10,7 @@ import {
   FUNCTION_SUBDISCIPLINES, buildFunctionBreadthHint,
   THEIRSTACK_SENIORITIES,
   mapLocationsToAdzunaCountries, SIGNAL_TYPES, reserveApolloCredits, releaseApolloCredits,
-  normalizeCompanyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
+  normalizeCompanyKey, extractFundingSignature, fundingFuzzyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs, discoverHotCompanies,
@@ -799,6 +799,61 @@ describe('normalizeCompanyKey', () => {
 
   it('treats genuinely different companies as different keys', () => {
     expect(normalizeCompanyKey('Acme Ltd')).not.toBe(normalizeCompanyKey('Zenith Group'))
+  })
+})
+
+// 2026-09-01, real incident: the same Fasset $68M Series C round got written
+// as two separate signals because two different articles (khaleejtimes.com,
+// fasset.com's own blog) covered it — normalizeKey's sourceUrl-based key is
+// exactly right for a re-paraphrased headline of the SAME article, but can't
+// catch two genuinely different articles about the same real event. See
+// fundingFuzzyKey's own header for why this is scoped to funding only.
+describe('extractFundingSignature', () => {
+  it('extracts a round letter and dollar amount when both are confidently present', () => {
+    expect(extractFundingSignature('Dubai fintech raises $68M Series C, hits $1B valuation')).toBe('c:68m')
+    expect(extractFundingSignature('Series C $68M raises fintech to unicorn status')).toBe('c:68m')
+  })
+
+  it('returns null when only one of round/amount is present', () => {
+    expect(extractFundingSignature('Fasset hits $1B valuation')).toBeNull()
+    expect(extractFundingSignature('Fasset closes a new funding round')).toBeNull()
+  })
+
+  it('returns null for empty/missing text', () => {
+    expect(extractFundingSignature('')).toBeNull()
+    expect(extractFundingSignature(null)).toBeNull()
+  })
+
+  it('distinguishes different rounds and different amounts', () => {
+    expect(extractFundingSignature('Raises $51M Series B')).not.toBe(extractFundingSignature('Raises $68M Series C'))
+  })
+})
+
+describe('fundingFuzzyKey', () => {
+  it('produces the same key for the same company+round+amount regardless of headline wording', () => {
+    const a = fundingFuzzyKey('Fasset', 'funding', 'Dubai fintech raises $68M Series C, hits $1B valuation')
+    const b = fundingFuzzyKey('Fasset', 'funding', 'Series C $68M raises fintech to unicorn status')
+    expect(a).toBe(b)
+    expect(a).not.toBeNull()
+  })
+
+  it('falls back to whyItMatters when the headline itself has no figures', () => {
+    const key = fundingFuzzyKey('Fasset', 'funding', 'Fasset hits unicorn status', 'The $68M Series C round values the company at $1B.')
+    expect(key).not.toBeNull()
+  })
+
+  it('is null for a non-funding signal type, even with the same figures', () => {
+    expect(fundingFuzzyKey('Fasset', 'leadership_change', 'Fasset raises $68M Series C')).toBeNull()
+  })
+
+  it('is null when no round+amount can be confidently extracted', () => {
+    expect(fundingFuzzyKey('Fasset', 'funding', 'Fasset closes a new funding round')).toBeNull()
+  })
+
+  it('keeps genuinely different rounds for the same company as different keys', () => {
+    const seriesB = fundingFuzzyKey('Fasset', 'funding', 'Fasset raises $51M Series B for global expansion')
+    const seriesC = fundingFuzzyKey('Fasset', 'funding', 'Dubai fintech raises $68M Series C, hits $1B valuation')
+    expect(seriesB).not.toBe(seriesC)
   })
 })
 

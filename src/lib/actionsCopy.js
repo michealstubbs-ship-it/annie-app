@@ -8,7 +8,12 @@ const CATEGORY_LABEL = {
   new_client: 'new client',
 }
 
-function describeItem(item) {
+// Exported (2026-09-01): this is exactly the data that drives the AI's
+// enrichment output for a given item, so it doubles as the content
+// signature for useTodaysActions.js's copy cache (see copyCache.js) — if
+// this object is unchanged since the last load, the AI would write the same
+// copy, so there's no reason to pay for the call again.
+export function describeItem(item) {
   const base = { category: item.category, signals: item.signals }
   if (item.category === 'dormant') {
     return { ...base, name: item.contact.name, company: item.contact.company, title: item.contact.title }
@@ -68,12 +73,21 @@ Only return the JSON array, nothing else.`
 // pill" instead of a visibly broken card. Every pairing now carries an id
 // the model must echo back, so useTodaysActions.js can match by id instead
 // of position.
+// Exported (2026-09-01): same reasoning as describeItem above — this is
+// exactly the data that drives a given pairing's pitch, and useTodaysActions.js's
+// copy cache uses it as that pairing's content signature. Takes the SAME
+// { signal: { headline, industry }, candidate } shape the prompt already
+// built per-pairing, so there's exactly one place this reshaping happens.
+export function describePitchTarget({ signal, candidate }) {
+  return { signalHeadline: signal.headline, signalIndustry: signal.industry, candidate: { role: candidate.role, company: candidate.company, industry: candidate.industry, status: candidate.status, notes: candidate.notes || '' } }
+}
+
 export function buildCandidatePitchPrompt(targets) {
   return `You are Annie, a BD intelligence engine for recruitment firms.
 For each pairing below, write ONE short, specific-sounding sentence on why this real candidate could be a fit for this signal — grounded ONLY in the fields given (their role, current company, industry, pipeline status, and any notes on file). Do not invent an employer, a deal value, a specific achievement, or any other fact not present in the notes field. If notes is empty, write a plain, generic fit sentence based only on role and industry overlap with the signal — never pad it out with an invented specific.
 
 Pairings (each has an "id" — echo that same id back on its matching output object, unchanged; you do not need to preserve order, every id just needs to appear exactly once):
-${JSON.stringify(targets.map(({ signal, candidate }, i) => ({ id: i, signalHeadline: signal.headline, signalIndustry: signal.industry, candidate: { role: candidate.role, company: candidate.company, industry: candidate.industry, status: candidate.status, notes: candidate.notes || '' } })))}
+${JSON.stringify(targets.map((t, i) => ({ id: i, ...describePitchTarget(t) })))}
 
 Return a JSON array, one object per pairing: { "id": <the pairing's id>, "pitch": "..." }. Only return the JSON array, nothing else.`
 }

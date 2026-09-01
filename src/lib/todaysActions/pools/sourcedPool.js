@@ -83,19 +83,36 @@ export function scoreSourced(s) {
 // Brand-new companies, not yet in the CRM, found by the background scan.
 // This just reads what the scan already found, no duplicate research, no
 // duplicate cost.
+//
+// 2026-09-01 defense-in-depth, same real report as relationshipPool.js's
+// buildRelationshipPool comment (Fasset showing 3 times) — this pool has the
+// identical missing-collapse gap: nothing here ever grouped multiple
+// intelligence_signals rows about the same brand-new company into one card.
+// The real fix is not writing the duplicates in the first place (see
+// scanShared.js's fundingFuzzyKey), but this pool has no legitimate reason
+// to ever show more than one action for the same company regardless of how
+// many rows exist about it — collapsed here to the single best
+// (highest-scoring) one per company as a second, independent backstop.
 export function buildSourcedPool(intelligenceSignals, contacts) {
   const knownCompanies = new Set(contacts.map(c => norm(c.company)).filter(Boolean))
 
-  return (intelligenceSignals || [])
-    .filter(s => isEligibleSourced(s, knownCompanies))
-    .map(s => {
-      const { score, urgency } = scoreSourced(s)
-      return {
-        category: 'sourced',
-        score,
-        urgency,
-        signal: s,
-        signals: {},
-      }
-    })
+  const eligible = (intelligenceSignals || []).filter(s => isEligibleSourced(s, knownCompanies))
+
+  const bestPerCompany = new Map()
+  for (const s of eligible) {
+    const key = norm(s.company_name)
+    const { score, urgency } = scoreSourced(s)
+    const existing = bestPerCompany.get(key)
+    if (!existing || score > existing.score) {
+      bestPerCompany.set(key, { s, score, urgency })
+    }
+  }
+
+  return [...bestPerCompany.values()].map(({ s, score, urgency }) => ({
+    category: 'sourced',
+    score,
+    urgency,
+    signal: s,
+    signals: {},
+  }))
 }

@@ -47,7 +47,7 @@ import { reportServerError } from './lib/reportError.js'
 import { reserveAnthropicTokens } from './lib/aiUsage.js'
 import { getEntitlements, SCAN_TIER_CONFIG, resolveResourceCaps } from './lib/entitlements.js'
 import {
-  SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, extractJson, looksTruncatedByTokenLimit,
+  SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, fundingFuzzyKey, extractJson, looksTruncatedByTokenLimit,
   discoverAdzunaJobs, discoverTheirStackJobs, fetchWithRetry, alertIfConfigured,
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
   buildRegionalSourceHint,
@@ -82,8 +82,19 @@ const MAX_SIGNALS_PER_RUN = 5
 // Interleaves round-robin instead, deduping by the same real-fact key
 // (company + headline + sourceUrl) mergeSignals in scan-now-background.js
 // already uses for the same reason there.
+//
+// 2026-09-01, same-day real incident: the normalizeKey check above alone
+// isn't enough now that two independent AI calls run per customer per run —
+// each one is free to rediscover the SAME real funding round via a
+// different article (a real, confirmed case: Fasset's $68M Series C, found
+// via khaleejtimes.com by one pass and fasset.com's own blog by the other).
+// Different source URLs mean normalizeKey produces two different keys, so
+// this second, fuzzy check (fundingFuzzyKey, scanShared.js) catches it by
+// the extractable round+amount instead — see that function's own header for
+// why it's scoped to funding signals only.
 export function interleaveSignalLists(lists) {
   const seen = new Set()
+  const seenFuzzy = new Set()
   const out = []
   for (let i = 0; lists.some(list => i < (list?.length || 0)); i++) {
     for (const list of lists) {
@@ -92,7 +103,10 @@ export function interleaveSignalLists(lists) {
       if (!s?.company || !s?.headline) continue
       const key = normalizeKey(s.company, s.headline, s.sourceUrl)
       if (seen.has(key)) continue
+      const fuzzy = fundingFuzzyKey(s.company, s.signalType, s.headline, s.whyItMatters)
+      if (fuzzy && seenFuzzy.has(fuzzy)) continue
       seen.add(key)
+      if (fuzzy) seenFuzzy.add(fuzzy)
       out.push(s)
     }
   }
@@ -319,12 +333,26 @@ async function fetchRecentCompanies(supabase, userId) {
 // Every dedup_key this customer already has on file, so newly-found signals
 // can be filtered down to genuinely new ones before any Apollo credit gets
 // spent enriching them.
+//
+// 2026-09-01: also returns fuzzyKeys (fundingFuzzyKey, scanShared.js), built
+// from these same rows' company/signal_type/headline/why_it_matters — the
+// same real gap interleaveSignalLists' own comment describes, just one run
+// later: a funding round this customer already has on file, rediscovered on
+// a LATER scan via a different article, used to write a second row instead
+// of matching as the same real event.
 async function fetchExistingDedupKeys(supabase, userId) {
   const { data: existingRows } = await supabase
     .from('intelligence_signals')
-    .select('dedup_key')
+    .select('dedup_key, company_name, signal_type, headline, why_it_matters')
     .eq('user_id', userId)
-  return new Set((existingRows || []).map(r => r.dedup_key))
+  const dedupKeys = new Set()
+  const fuzzyKeys = new Set()
+  for (const r of existingRows || []) {
+    if (r.dedup_key) dedupKeys.add(r.dedup_key)
+    const fuzzy = fundingFuzzyKey(r.company_name, r.signal_type, r.headline, r.why_it_matters)
+    if (fuzzy) fuzzyKeys.add(fuzzy)
+  }
+  return { dedupKeys, fuzzyKeys }
 }
 
 // Runs the full scan for one customer: recent-history lookups, the AI call,
@@ -359,7 +387,7 @@ async function scanOneCustomer(ob, ctx) {
   // falls straight through to the exact same discovery this function has
   // always run, with the partial pool hit merged in as a free bonus —
   // never a reason this customer gets less than today.
-  const existingKeys = await fetchExistingDedupKeys(supabase, ob.user_id)
+  const { dedupKeys: existingKeys, fuzzyKeys: existingFuzzyKeys } = await fetchExistingDedupKeys(supabase, ob.user_id)
   const poolMatches = await fetchSignalPoolMatches(supabase, ob, existingKeys, MAX_SIGNALS_PER_RUN)
   let poolPersonalized = []
   if (poolMatches.length) {
@@ -454,8 +482,15 @@ async function scanOneCustomer(ob, ctx) {
       return 0
     }
 
+    // 2026-09-01: the fuzzy check catches a funding round this customer
+    // already has on file, rediscovered via a different article — see
+    // fetchExistingDedupKeys' own comment for the real incident this closes.
     newSignals = found
       .filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
+      .filter(s => {
+        const fuzzy = fundingFuzzyKey(s.company, s.signalType, s.headline, s.whyItMatters)
+        return !(fuzzy && existingFuzzyKeys.has(fuzzy))
+      })
       .slice(0, MAX_SIGNALS_PER_RUN)
   }
 

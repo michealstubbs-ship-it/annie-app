@@ -68,4 +68,41 @@ describe('buildRelationshipPool', () => {
     const signals = [{ id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type, found_at: daysAgoIso(1) }]
     expect(buildRelationshipPool(signals, contacts)).toHaveLength(1)
   })
+
+  // 2026-09-01, real report: Michael added Mohammed to the CRM and got three
+  // near-identical "Fasset unicorn" relationship cards — three separate
+  // intelligence_signals rows about the same real event. This is the
+  // defense-in-depth backstop (scanShared.js's fundingFuzzyKey is the actual
+  // write-time fix) — this pool should never show more than one card per
+  // company no matter how many eligible signal rows exist about it.
+  describe('collapses multiple signals about the same company to one, keeping the best one', () => {
+    it('collapses two signals for the same company into a single card', () => {
+      const signals = [
+        { id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'funding', found_at: daysAgoIso(1) },
+        { id: 's2', company_name: 'Acme Ltd', status: 'new', signal_type: 'funding', found_at: daysAgoIso(2) },
+      ]
+      const pool = buildRelationshipPool(signals, contacts)
+      expect(pool).toHaveLength(1)
+    })
+
+    it('keeps the higher-scoring signal when collapsing (fresher/leadership beats older/plain)', () => {
+      const signals = [
+        { id: 'older', company_name: 'Acme Ltd', status: 'new', signal_type: 'funding', found_at: daysAgoIso(10) },
+        { id: 'leadership', company_name: 'Acme Ltd', status: 'new', signal_type: 'leadership_change', found_at: daysAgoIso(1) },
+      ]
+      const pool = buildRelationshipPool(signals, contacts)
+      expect(pool).toHaveLength(1)
+      expect(pool[0].signal.id).toBe('leadership')
+    })
+
+    it('does not collapse signals about genuinely different companies', () => {
+      const twoCompanyContacts = [{ id: 1, company: 'Acme Ltd', status: 'warm' }, { id: 2, company: 'Globex', status: 'warm' }]
+      const signals = [
+        { id: 's1', company_name: 'Acme Ltd', status: 'new', signal_type: 'funding', found_at: daysAgoIso(1) },
+        { id: 's2', company_name: 'Globex', status: 'new', signal_type: 'funding', found_at: daysAgoIso(1) },
+      ]
+      const pool = buildRelationshipPool(signals, twoCompanyContacts)
+      expect(pool).toHaveLength(2)
+    })
+  })
 })

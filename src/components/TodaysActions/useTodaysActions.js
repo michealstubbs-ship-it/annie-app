@@ -2,9 +2,9 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import {
   buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool, buildSourcedPool,
-  selectDailyItems, resolveTodaysActions, markActionDone,
+  selectDailyItems, resolveTodaysActions, markActionDone, actionKey, loadCopyCache, saveCopyCache,
 } from '../../lib/todaysActions/index.js'
-import { buildEnrichmentPrompt, buildCandidatePitchPrompt, fallbackHeadline, fallbackDetail } from '../../lib/actionsCopy'
+import { buildEnrichmentPrompt, buildCandidatePitchPrompt, fallbackHeadline, fallbackDetail, describeItem, describePitchTarget } from '../../lib/actionsCopy'
 import { callChat } from '../../lib/callChat'
 import { withTimeout } from '../../lib/withTimeout'
 import { extractJson } from '../../lib/jsonExtract'
@@ -64,19 +64,52 @@ async function runBatchesWithConcurrencyCap(batches, worker) {
   return settled
 }
 
+// 2026-09-01: the copy cache (copyCache.js) needs the same stable identity
+// actionKey.js already defines, but that function expects the fully
+// reassembled action shape from Step 3 below — which doesn't exist yet at
+// the point copy is generated (Step 2), since it's built FROM that copy.
+// This extracts the same signalId/dealId/contactId/keyContext fields Step 3
+// derives from a raw pool item, so the cache key computed here and the
+// actionKey computed later for the same real item are always identical
+// strings, without needing that reassembly to happen early.
+function poolItemActionKey(item) {
+  return actionKey({
+    category: item.category,
+    signalId: item.category === 'relationship' ? item.signal?.id : null,
+    dealId: item.deal?.id || null,
+    contactId: item.contact?.id || null,
+    keyContext: item.contact?.last_contacted || item.contact?.created_at || item.deal?.updated_at || '',
+  })
+}
+
+// Sourced items don't go through poolItemActionKey (their headline/detail
+// are written by the scan, not this hook) — only their candidate pitch is
+// generated here. Namespaced separately so it can never collide with a
+// relationship item's own enrichment cache entry, even though both key off
+// the same underlying signal id.
+function pitchCacheKey(item) {
+  return item.signal?.id ? `pitch:signal:${item.signal.id}` : null
+}
+
 // All of Today's Actions' data: what's currently visible, loading/error
 // state, and the two mutations (mark done, add a verified contact to the
 // CRM). Every card-open/copy-button/approach-chip bit of UI-only state
 // stays in the components that render — this hook only ever holds real
 // data and the calls that change it.
 //
-// The core difference from the old generate()/mergeActions design: nothing
-// here ever caches a rendered card's content. Every call to refresh()
-// recomputes the pools from live contacts/deals/intelligence_signals, and
+// The core difference from the old generate()/mergeActions design: refresh()
+// always recomputes the pools from live contacts/deals/intelligence_signals
+// — there's no snapshot of WHICH items to show that can go stale, and
 // resolveTodaysActions (src/lib/todaysActions/resolve.js) does nothing more
-// than ask "has the user already marked this done" — there's no snapshot
-// to go stale, and no separate re-check of eligibility that could ever
-// disagree with the pools that produced the list in the first place.
+// than ask "has the user already marked this done", never a separate
+// re-check of eligibility that could disagree with the pools that produced
+// the list in the first place. What IS cached (2026-09-01, see copyCache.js)
+// is the AI-WRITTEN COPY for an unchanged item — the pools/selection/done
+// state above are always live, only the wording the AI generated for a given
+// item is reused when nothing about that item's own content has changed.
+// This is what made "Today's Actions takes too long to load" fixable without
+// reintroducing any of the old design's staleness problems: a real, current
+// list of items with cached copy where nothing changed, not a cached list.
 export function useTodaysActions({ user, profile }) {
   const [actions, setActions] = useState([])
   const [loading, setLoading] = useState(false)
@@ -129,7 +162,7 @@ export function useTodaysActions({ user, profile }) {
     else setLoading(true)
     setError('')
     try {
-      const [{ data: contacts }, { data: deals }, { data: intelSignals }, { data: freshOnboarding }, candidates] = await Promise.all([
+      const [{ data: contacts }, { data: deals }, { data: intelSignals }, { data: freshOnboarding }, candidates, copyCache] = await Promise.all([
         // 2026-08-24: contacts/deals are the shared CRM — team-scoped by
         // RLS, no client-side user_id filter on top of it, so Today's
         // Actions can match a signal against any teammate's contact, the
@@ -148,6 +181,9 @@ export function useTodaysActions({ user, profile }) {
         // does, computed once here, baked into each resolved action below
         // (see pipelineMatches).
         listCandidatesForMatching(user.id),
+        // 2026-09-01: the AI-copy cache (copyCache.js) — see its own header
+        // and poolItemActionKey/pitchCacheKey above for the full reasoning.
+        loadCopyCache(supabase, user.id),
       ])
 
       if (cancelledRef.current) return
@@ -173,10 +209,27 @@ export function useTodaysActions({ user, profile }) {
       // by the scan that found them, no second AI call needed for those.
       const crmItems = selected.filter(i => i.category !== 'sourced')
       const enrichedByItem = new Map()
+      const newCacheEntries = {}
+      // 2026-09-01: an item only needs a fresh AI call when it's uncached or
+      // its content signature (describeItem — exactly the fields the prompt
+      // is built from) has changed since the last load. Everything else is
+      // rendered straight from copyCache without ever touching the network.
+      const crmMisses = []
+      for (const item of crmItems) {
+        const key = poolItemActionKey(item)
+        const sig = JSON.stringify(describeItem(item))
+        const cached = key ? copyCache[key] : null
+        if (cached && cached.sig === sig && cached.enriched) {
+          enrichedByItem.set(item, cached.enriched)
+        } else {
+          crmMisses.push({ item, key, sig })
+        }
+      }
       let enrichmentFailed = false
-      if (crmItems.length) {
-        const batches = chunk(crmItems, AI_BATCH_SIZE)
-        const settled = await runBatchesWithConcurrencyCap(batches, async (batchItems) => {
+      if (crmMisses.length) {
+        const batches = chunk(crmMisses, AI_BATCH_SIZE)
+        const settled = await runBatchesWithConcurrencyCap(batches, async (missBatch) => {
+          const batchItems = missBatch.map(m => m.item)
           const prompt = buildEnrichmentPrompt(batchItems, ob, profile)
           // 2026-08-30: callChat (NOT callChatStream). Measured against the
           // deployed chat function with an identical prompt and maxTokens,
@@ -204,7 +257,8 @@ export function useTodaysActions({ user, profile }) {
         })
         let anyBatchSucceeded = false
         settled.forEach((result, i) => {
-          const batchItems = batches[i]
+          const missBatch = batches[i]
+          const batchItems = missBatch.map(m => m.item)
           if (result.status === 'fulfilled') {
             anyBatchSucceeded = true
             // 2026-08-30 audit fix: this used to trust that the model's
@@ -230,7 +284,14 @@ export function useTodaysActions({ user, profile }) {
                 batchSize: batchItems.length, entriesReturned: result.value.length, matchedById: byId.size,
               })
             }
-            batchItems.forEach((item, j) => enrichedByItem.set(item, byId.get(j) || null))
+            missBatch.forEach(({ item, key, sig }, j) => {
+              const enriched = byId.get(j) || null
+              enrichedByItem.set(item, enriched)
+              // 2026-09-01: only a real, successful entry is worth caching —
+              // a dropped id (enriched === null here) should keep retrying on
+              // the next load, not get permanently stuck on the fallback copy.
+              if (enriched && key) newCacheEntries[key] = { sig, enriched, cachedAt: new Date().toISOString() }
+            })
           } else {
             // 2026-08-29 audit fix: this used to swallow the failure into
             // `null` for every item with nothing logged anywhere — the only
@@ -245,9 +306,11 @@ export function useTodaysActions({ user, profile }) {
             batchItems.forEach(item => enrichedByItem.set(item, null))
           }
         })
-        // Only true when EVERY batch failed — a partial failure means most
-        // cards still got real copy, so the degraded "couldn't load details"
-        // fallback text below is reserved for the genuinely-all-down case.
+        // Only true when there was real AI work to do and every batch of it
+        // failed — a partial failure means most cards still got real copy,
+        // and an all-cache-hit round never had any batches to begin with, so
+        // neither of those should show the degraded "couldn't load details"
+        // fallback reserved for the genuinely-all-down case.
         enrichmentFailed = !anyBatchSucceeded
       }
 
@@ -273,19 +336,38 @@ export function useTodaysActions({ user, profile }) {
       // Rendered later as a visibly-labeled "Annie's read" pill, never
       // presented as a stored fact.
       const pitchTargets = sourcedItems
-        .map(item => ({ item, topMatch: matchesBySignal.get(item.signal)?.[0] }))
+        .map(item => ({
+          item,
+          topMatch: matchesBySignal.get(item.signal)?.[0],
+          signal: { headline: item.signal.headline, industry: item.signal.company_industry },
+        }))
         .filter(({ topMatch }) => topMatch)
+        .map(t => ({ ...t, candidate: t.topMatch }))
       const pitchByItem = new Map()
-      if (pitchTargets.length) {
+      // 2026-09-01: same cache-or-call split as the CRM enrichment above —
+      // a pitch only needs regenerating when the pairing's own signature
+      // (describePitchTarget) has actually changed since the last load.
+      const pitchMisses = []
+      for (const target of pitchTargets) {
+        const key = pitchCacheKey(target.item)
+        const sig = JSON.stringify(describePitchTarget(target))
+        const cached = key ? copyCache[key] : null
+        if (cached && cached.sig === sig && cached.pitch) {
+          pitchByItem.set(target.item, cached.pitch)
+        } else {
+          pitchMisses.push({ ...target, key, sig })
+        }
+      }
+      if (pitchMisses.length) {
         // Same scaling exposure as the enrichment call above (grows with how
         // many sourced signals have a top pipeline match), same fix: fixed-
         // size batches instead of one call for every target.
-        const batches = chunk(pitchTargets, AI_BATCH_SIZE)
+        const batches = chunk(pitchMisses, AI_BATCH_SIZE)
         const settled = await runBatchesWithConcurrencyCap(batches, async (batchTargets) => {
           const { text } = await withTimeout(
             callChat({
               messages: [{ role: 'user', content: 'Write the pitch for each pairing.' }],
-              systemOverride: buildCandidatePitchPrompt(batchTargets.map(({ item, topMatch }) => ({ signal: { headline: item.signal.headline, industry: item.signal.company_industry }, candidate: topMatch }))),
+              systemOverride: buildCandidatePitchPrompt(batchTargets),
               maxTokens: 1200,
               model: 'claude-haiku-4-5-20251001',
             }),
@@ -306,7 +388,13 @@ export function useTodaysActions({ user, profile }) {
             for (const entry of result.value) {
               if (entry && typeof entry.id === 'number') byId.set(entry.id, entry)
             }
-            batchTargets.forEach(({ item }, j) => pitchByItem.set(item, stripAiArtifacts(byId.get(j)?.pitch) || ''))
+            batchTargets.forEach(({ item, key, sig }, j) => {
+              const pitch = stripAiArtifacts(byId.get(j)?.pitch) || ''
+              pitchByItem.set(item, pitch)
+              // 2026-09-01: only cache a pitch that actually came back —
+              // never a permanently-stuck-empty pill for a dropped id.
+              if (pitch && key) newCacheEntries[key] = { sig, pitch, cachedAt: new Date().toISOString() }
+            })
           } else {
             // A failed/malformed pitch batch just means no pill this time for
             // that batch's items — never worth failing the whole Today's
@@ -398,6 +486,20 @@ export function useTodaysActions({ user, profile }) {
       const visible = await resolveTodaysActions({ supabase, userId: user.id, freshActions: combined })
       setActions(visible)
       setGenerated(true)
+
+      // 2026-09-01: write the copy cache last, after the visible list is
+      // already up — never on the critical path for what the user sees.
+      // keepKeys is this round's own real keys (both the CRM enrichment ones
+      // and the sourced-item pitch ones) so an entry for an item that fell
+      // out of selection this round (done, aged out, record gone) is pruned
+      // rather than kept forever.
+      const keepKeys = new Set([
+        ...crmItems.map(poolItemActionKey).filter(Boolean),
+        ...pitchTargets.map(t => pitchCacheKey(t.item)).filter(Boolean),
+      ])
+      saveCopyCache(supabase, user.id, copyCache, newCacheEntries, keepKeys).catch(err => {
+        reportClientError("Today's Actions: copy cache write failed", err)
+      })
     } catch (err) {
       setError(err.message || 'Something went wrong. Please try again.')
     } finally {
@@ -446,7 +548,14 @@ export function useTodaysActions({ user, profile }) {
       title: contact.title || null,
       linkedin_url: contact.linkedin_url || null,
       email: contact.email || null,
-      status: 'warm',
+      // 2026-09-01 audit fix, Michael's own report: this used to hardcode
+      // 'warm' regardless of whether there's ever been any actual contact
+      // with this person. Adding someone to the CRM isn't a relationship —
+      // it's Annie surfacing a name. 'cold' (STATUSES[2] in
+      // ContactFormModal.jsx: hot/warm/cold/client/inactive) is the honest
+      // starting point; it only becomes warm once a real interaction (a
+      // note, a meeting, an outreach reply) actually happens.
+      status: 'cold',
       tags: ['from-todays-actions'],
     }, user.id)
     setCrmAdded(prev => ({ ...prev, [crmKey]: true }))

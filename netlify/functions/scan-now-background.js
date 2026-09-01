@@ -32,7 +32,7 @@ import { getAuthedUser } from './lib/auth.js'
 import { reserveAnthropicTokens } from './lib/aiUsage.js'
 import { getEntitlements, SCAN_TIER_CONFIG, resolveResourceCaps } from './lib/entitlements.js'
 import {
-  SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, splitToKeywords, extractJson, looksTruncatedByTokenLimit,
+  SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, fundingFuzzyKey, splitToKeywords, extractJson, looksTruncatedByTokenLimit,
   discoverHotCompanies, discoverAdzunaJobs, discoverTheirStackJobs, fetchWithRetry, mapLocationsToAdzunaCountries,
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
   buildRegionalSourceHint,
@@ -139,13 +139,28 @@ function chunkSectors(sectors, maxGroups) {
 // (a hard fact, unlike the AI's own headline wording — see normalizeKey's
 // header) so the same real event found via two different searches doesn't
 // get written twice, even if the two calls phrased its headline differently.
+//
+// 2026-09-01: normalizeKey alone can't catch the same real event reported
+// via two DIFFERENT source URLs (two different articles about the same
+// funding round) — a real, confirmed case now that this file already runs
+// several parallel sector-group calls per customer per run, each free to
+// rediscover the same news independently. fundingFuzzyKey (scanShared.js)
+// catches that by the extractable round+amount instead — see its own
+// header for why this is scoped to funding signals only, and
+// intelligence-scan-background.js's interleaveSignalLists for the same fix
+// applied there.
 function mergeSignals(lists) {
   const seen = new Map()
+  const seenFuzzy = new Set()
   for (const list of lists) {
     for (const s of list || []) {
       if (!s?.company || !s?.headline) continue
       const key = normalizeKey(s.company, s.headline, s.sourceUrl)
-      if (!seen.has(key)) seen.set(key, s)
+      if (seen.has(key)) continue
+      const fuzzy = fundingFuzzyKey(s.company, s.signalType, s.headline, s.whyItMatters)
+      if (fuzzy && seenFuzzy.has(fuzzy)) continue
+      seen.set(key, s)
+      if (fuzzy) seenFuzzy.add(fuzzy)
     }
   }
   return [...seen.values()]
@@ -636,14 +651,29 @@ async function enrichAndWriteSignals(capped, ctx) {
   // just get discarded as a duplicate on write anyway.
   const { data: existingRows } = await supabase
     .from('intelligence_signals')
-    .select('dedup_key')
+    .select('dedup_key, company_name, signal_type, headline, why_it_matters')
     .eq('user_id', userId)
-  const existingKeys = new Set((existingRows || []).map(r => r.dedup_key))
+  const existingKeys = new Set()
+  // 2026-09-01: same fuzzy-key fix as mergeSignals above, applied against
+  // this customer's PRIOR runs too, not just this run's own parallel calls —
+  // catches a funding round already on file, rediscovered via a different
+  // article on a later scan. See fundingFuzzyKey's own header (scanShared.js).
+  const existingFuzzyKeys = new Set()
+  for (const r of existingRows || []) {
+    if (r.dedup_key) existingKeys.add(r.dedup_key)
+    const fuzzy = fundingFuzzyKey(r.company_name, r.signal_type, r.headline, r.why_it_matters)
+    if (fuzzy) existingFuzzyKeys.add(fuzzy)
+  }
 
   // Row-building itself (enrichCompany → verifyContact per entry, plus
   // Companies House/source-URL checks) lives once in scanShared.js, shared
   // with intelligence-scan.js — see buildEnrichedSignalRows's own comment.
-  const newEntries = capped.filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
+  const newEntries = capped
+    .filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
+    .filter(s => {
+      const fuzzy = fundingFuzzyKey(s.company, s.signalType, s.headline, s.whyItMatters)
+      return !(fuzzy && existingFuzzyKeys.has(fuzzy))
+    })
   // locationHints lets enrichCompany prefer an Apollo org whose country
   // matches this customer's monitored markets when the company name alone
   // is ambiguous (e.g. "Stitch") and Apollo has no single exact-name match

@@ -40,6 +40,16 @@ export function scoreRelationship(s) {
 // the same shared intelligence_signals table the Intelligence Feed and the
 // scheduled scan write to, filtered to companies Annie already knows.
 // Brand-new companies go to sourcedPool.js instead.
+//
+// 2026-09-01 defense-in-depth, real report: Michael added a contact to the
+// CRM and got three near-identical "Fasset unicorn" relationship cards
+// instead of one — three separate intelligence_signals rows about the same
+// real event (see scanShared.js's normalizeKey/fundingFuzzyKey comments for
+// the actual write-time fix). The real fix is not writing the duplicates in
+// the first place, but this pool has no legitimate reason to ever show a
+// recruiter more than one action for the same company regardless of how
+// many signal rows exist about it — collapsed here to the single best
+// (highest-scoring) one per company as a second, independent backstop.
 export function buildRelationshipPool(intelligenceSignals, contacts) {
   const contactsByCompany = new Map()
   for (const c of contacts) {
@@ -47,22 +57,30 @@ export function buildRelationshipPool(intelligenceSignals, contacts) {
     if (key) contactsByCompany.set(key, c)
   }
 
-  return (intelligenceSignals || [])
+  const eligible = (intelligenceSignals || [])
     .map(s => ({ s, linkedContact: contactsByCompany.get(norm(s.company_name)) }))
     .filter(({ s, linkedContact }) => isEligibleRelationship(s, linkedContact))
-    .map(({ s, linkedContact }) => {
-      const { score, urgency, daysFound } = scoreRelationship(s)
-      return {
-        category: 'relationship',
-        score,
-        urgency,
-        signal: s,
-        contact: linkedContact,
-        signals: {
-          'Signal': s.headline,
-          'Company': s.company_name,
-          'Detected': `${daysFound} day${daysFound === 1 ? '' : 's'} ago`,
-        },
-      }
-    })
+
+  const bestPerCompany = new Map()
+  for (const { s, linkedContact } of eligible) {
+    const key = norm(s.company_name)
+    const { score, urgency, daysFound } = scoreRelationship(s)
+    const existing = bestPerCompany.get(key)
+    if (!existing || score > existing.score) {
+      bestPerCompany.set(key, { s, linkedContact, score, urgency, daysFound })
+    }
+  }
+
+  return [...bestPerCompany.values()].map(({ s, linkedContact, score, urgency, daysFound }) => ({
+    category: 'relationship',
+    score,
+    urgency,
+    signal: s,
+    contact: linkedContact,
+    signals: {
+      'Signal': s.headline,
+      'Company': s.company_name,
+      'Detected': `${daysFound} day${daysFound === 1 ? '' : 's'} ago`,
+    },
+  }))
 }

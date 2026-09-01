@@ -112,3 +112,34 @@ describe('buildSourcedPool — age cutoffs and scoring', () => {
     expect(buildSourcedPool([baseSignal({ status: 'actioned' })], [])).toEqual([])
   })
 })
+
+// 2026-09-01, same real report as relationshipPool.test.js's equivalent
+// block (Fasset showing 3 times) — this pool has the identical missing-
+// collapse gap for brand-new (not-yet-CRM) companies.
+describe('buildSourcedPool — collapses multiple signals about the same company to one, keeping the best one', () => {
+  it('collapses two signals for the same company into a single card', () => {
+    const signals = [
+      baseSignal({ id: 's1', found_at: daysAgoIso(1) }),
+      baseSignal({ id: 's2', found_at: daysAgoIso(2) }),
+    ]
+    expect(buildSourcedPool(signals, [])).toHaveLength(1)
+  })
+
+  it('keeps the higher-scoring signal when collapsing (contact-verified beats unverified)', () => {
+    const signals = [
+      baseSignal({ id: 'unverified', contact_verified: false, found_at: daysAgoIso(1) }),
+      baseSignal({ id: 'verified', contact_verified: true, found_at: daysAgoIso(1) }),
+    ]
+    const pool = buildSourcedPool(signals, [])
+    expect(pool).toHaveLength(1)
+    expect(pool[0].signal.id).toBe('verified')
+  })
+
+  it('does not collapse signals about genuinely different companies', () => {
+    const signals = [
+      baseSignal({ id: 's1', company_name: 'Unknown Co' }),
+      baseSignal({ id: 's2', company_name: 'Other Co' }),
+    ]
+    expect(buildSourcedPool(signals, [])).toHaveLength(2)
+  })
+})

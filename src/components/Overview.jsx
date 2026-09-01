@@ -153,7 +153,11 @@ export default function Overview() {
   // includes follow_up_date/follow_up_reason, same due-today-or-overdue
   // rule bd_tasks already uses just below.
   const [contactFollowUps, setContactFollowUps] = useState([])
-  const [contactsCount, setContactsCount] = useState(null) // null = not checked yet, avoids a flash of the reminder
+  // 2026-09-01: renamed from contactsCount — this only ever counts contacts
+  // tagged 'linkedin-import' now (see the query's own comment below), not
+  // every contact, so the old name was actively misleading about what it
+  // gates.
+  const [linkedinImportedCount, setLinkedinImportedCount] = useState(null) // null = not checked yet, avoids a flash of the reminder
   const [scanOutcome, setScanOutcome] = useState(null) // set once scan-status.js reports the scan is actually done, tells us WHY there's nothing (or something) to show
   const [chainProgress, setChainProgress] = useState(null) // live counts while a chained scan is still running — updated on every poll tick via useScanStatusPoll's onTick
   const [retrying, setRetrying] = useState(false)
@@ -285,7 +289,7 @@ export default function Overview() {
       { data: signalCountRows },
       { data: meetingRows },
       { data: taskRows },
-      { count: contactsCountResult },
+      { count: linkedinImportedCountResult },
       tierResult,
     ] = await Promise.all([
       // jobs/candidates/meetings/bd_tasks/contacts are the shared CRM —
@@ -310,11 +314,21 @@ export default function Overview() {
       supabase.from('intelligence_signals').select('id').eq('user_id', user.id).gte('found_at', sevenDaysAgo),
       supabase.from('meetings').select('id, title, meeting_type, meeting_date').gte('meeting_date', todayStart).lte('meeting_date', todayEnd).order('meeting_date', { ascending: true }),
       supabase.from('bd_tasks').select('id, title, due_date').eq('status', 'open').lte('due_date', todayDateStr).order('due_date', { ascending: true }).limit(5),
-      // head:true — just the count, no rows. Zero contacts is the signal that LinkedIn
-      // import hasn't happened yet (whether skipped or never started), independent of
-      // profiles.linkedin_import_completed which gets set true on skip too. This banner
-      // self-clears the moment a real import lands, no extra state to keep in sync.
-      supabase.from('contacts').select('id', { count: 'exact', head: true }),
+      // 2026-09-01 audit fix, real report: Michael added a contact manually
+      // (from Today's Actions, well before ever running the LinkedIn import)
+      // and the banner vanished anyway. Root cause: this used to count ALL
+      // contacts regardless of source, on the assumption that contacts only
+      // ever come from the LinkedIn import — no longer true now that
+      // Contacts, Companies, and Today's Actions can all create one
+      // directly. LinkedInImport.jsx already tags every contact it inserts
+      // with tags: ['linkedin-import'] (see that file's own insert), so
+      // this now counts only THOSE, which is what actually answers "has a
+      // real import happened" regardless of how many other contacts exist.
+      // Still deliberately independent of profiles.linkedin_import_completed
+      // (see that flag's own note — it's also set true on a skip, and the
+      // banner is meant to keep nudging until a real import lands, not just
+      // until the user has seen the screen once).
+      supabase.from('contacts').select('id', { count: 'exact', head: true }).contains('tags', ['linkedin-import']),
       fetchTier(),
     ])
 
@@ -371,7 +385,7 @@ export default function Overview() {
         .sort((a, b) => a.follow_up_date.localeCompare(b.follow_up_date))
         .slice(0, 5)
     )
-    setContactsCount(contactsCountResult ?? 0)
+    setLinkedinImportedCount(linkedinImportedCountResult ?? 0)
     setTier(tierResult)
     } catch (err) {
       if (loadTokenRef.current !== token) return
@@ -524,7 +538,7 @@ export default function Overview() {
         </div>
       )}
 
-      {!loading && contactsCount === 0 && (
+      {!loading && linkedinImportedCount === 0 && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-5 py-4 mb-5 flex items-center gap-3.5">
           <div className="w-9 h-9 rounded-full bg-white flex items-center justify-center flex-shrink-0">
             <IconUsers className="w-[18px] h-[18px] text-amber-600" />

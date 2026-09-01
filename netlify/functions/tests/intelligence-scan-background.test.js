@@ -151,6 +151,41 @@ describe('interleaveSignalLists (2026-09-01: cross-industry-by-function second c
     expect(out.map(s => s.company)).toEqual(['Acme', 'Initech'])
   })
 
+  // 2026-09-01, real incident: the sector-scoped and cross-industry-by-
+  // function calls each independently found Fasset's $68M Series C via a
+  // DIFFERENT article — different sourceUrl means normalizeKey alone can't
+  // catch it, since it's genuinely the same real event, not the same URL.
+  it('dedupes the same funding round found via two different source URLs (different articles, same real event)', () => {
+    const sectorList = [{
+      company: 'Fasset', signalType: 'funding',
+      headline: 'Dubai fintech raises $68M Series C, hits $1B valuation',
+      sourceUrl: 'https://www.khaleejtimes.com/fasset-series-c',
+    }]
+    const crossIndustryList = [{
+      company: 'Fasset', signalType: 'funding',
+      headline: 'Series C $68M raises fintech to unicorn status',
+      sourceUrl: 'https://fasset.com/blog/fasset-raises-68m-series-c',
+    }, sig('Initech', 'Initech names new CFO')]
+    const out = interleaveSignalLists([sectorList, crossIndustryList])
+    expect(out.filter(s => s.company === 'Fasset')).toHaveLength(1)
+    expect(out.map(s => s.company)).toEqual(['Fasset', 'Initech'])
+  })
+
+  it('does NOT merge two genuinely different funding rounds for the same company (Series B vs Series C)', () => {
+    const sectorList = [{
+      company: 'Fasset', signalType: 'funding',
+      headline: 'Fasset raises $51M Series B for global expansion',
+      sourceUrl: 'https://www.fintechfutures.com/fasset-51m-series-b',
+    }]
+    const crossIndustryList = [{
+      company: 'Fasset', signalType: 'funding',
+      headline: 'Dubai fintech raises $68M Series C, hits $1B valuation',
+      sourceUrl: 'https://www.khaleejtimes.com/fasset-series-c',
+    }]
+    const out = interleaveSignalLists([sectorList, crossIndustryList])
+    expect(out).toHaveLength(2)
+  })
+
   it('handles the cross-industry call returning nothing (e.g. customer picked no functions) by passing the sector list through unchanged', () => {
     const sectorList = [sig('Acme', 'Acme raises Series B'), sig('Globex', 'Globex expands to Dubai')]
     const out = interleaveSignalLists([sectorList, []])
