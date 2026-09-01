@@ -18,6 +18,7 @@ import {
   writeToSignalPool, fetchSignalPoolMatches, personalizePoolHits,
   logMarketCoverage, getMarketCoverageReport,
   getCustomerWatchlistCompanies, buildCustomerWatchlistHint,
+  buildLiveJobBoardHint,
 } from './scanShared.js'
 
 // Full behavioural coverage for extractJson now lives in
@@ -2363,5 +2364,18 @@ describe('buildCustomerWatchlistHint', () => {
     expect(hint).toContain('Beta Industries')
     expect(hint).toContain('competitors')
     expect(hint).toContain('In addition to the sector/location/function-driven search above')
+  })
+})
+
+describe('buildLiveJobBoardHint — UAE federal jobs board (2026-09-01)', () => {
+  it('names federaljobs.gov.ae alongside the existing UAE government portals for a UAE/GCC customer', () => {
+    const hint = buildLiveJobBoardHint(['UAE / GCC'], [])
+    expect(hint).toContain('federaljobs.gov.ae')
+    expect(hint).toContain('MOHRE Careers')
+  })
+
+  it('never mentions federaljobs.gov.ae for a customer who did not select UAE / GCC as a market', () => {
+    const hint = buildLiveJobBoardHint(['United Kingdom', 'United States'], [])
+    expect(hint).not.toContain('federaljobs.gov.ae')
   })
 })

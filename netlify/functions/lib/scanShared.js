@@ -2081,7 +2081,16 @@ export const LIVE_JOB_BOARD_DIRECTORY = {
       'Financial Services': 'eFinancialCareers',
       'Consumer & Retail': 'Hosco, Caterer Middle East (hospitality roles)',
     },
-    govPortal: 'MOHRE Careers / Dubai Careers / Tamm — official UAE government job portals; many public-sector openings never appear on a general board at all.',
+    // 2026-09-01 (Michael): added federaljobs.gov.ae, the real public UAE
+    // Federal Government jobs board (verified live, not scrape-only, before
+    // adding). Deliberately did NOT add Mawaheb, Nafis, or the FAHR
+    // "Estiqtab" initiative here — all three are genuine UAE Emiratisation
+    // programs, but none of them confirmed as a public, browsable vacancy
+    // listing an AI web search could actually find results on (Mawaheb is a
+    // placement/training hub, Nafis is primarily an employer subsidy/match
+    // system, Estiqtab is an internal FAHR initiative) — add them once that's
+    // confirmed rather than naming a source that quietly returns nothing.
+    govPortal: 'MOHRE Careers / Dubai Careers / Tamm / federaljobs.gov.ae — official UAE government job portals; many public-sector openings never appear on a general board at all.',
   },
   Europe: {
     // Otta was acquired by and rebranded into Welcome to the Jungle in
