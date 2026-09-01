@@ -18,11 +18,12 @@ import {
   MARKET_OPTIONS, SENIORITY_OPTIONS, normalizeCompany, keywordMatches,
   passesTitleFilters, passesSectorMarket, matchesFilters,
 } from '../lib/linkedinImportMatch'
-// 2026-09-01: file parsing (CSV text parsing, header detection, and now real
-// .xlsx/.xls support) also moved out to linkedinImportParse.js for the same
-// testability reason — see that file's own header for the real customer
-// report (Excel-saved export) that prompted the .xlsx support.
-import { parseCSV, rowsToContacts, isSpreadsheetFile, sheetToCsvText } from '../lib/linkedinImportParse'
+// 2026-09-01: file parsing also moved out to linkedinImportParse.js for the
+// same testability reason — see that file's own header for why every upload
+// now goes through one universal SheetJS-backed reader (fileBufferToRows)
+// regardless of file extension or delimiter, rather than a CSV-only /
+// xlsx-only branch.
+import { fileBufferToRows, rowsToContacts } from '../lib/linkedinImportParse'
 
 const DEFAULT_SECTORS = ['Financial Services', 'Technology', 'Real Estate']
 const DEFAULT_MARKETS = ['UAE / GCC', 'United Kingdom']
@@ -69,7 +70,7 @@ function ExportWalkthrough() {
                 </div>
               )}
               {step.n === 3 && <p className="text-[11px] text-gray-400 mt-1">LinkedIn removed the option to request just your connections on their own, so this bundles in more than you need, but it's the only way to get them now. Only Connections.csv matters here.</p>}
-              {step.n === 4 && <p className="text-[11px] text-gray-400 mt-1">This is the slow part: LinkedIn can take anywhere from a few hours up to 24 hours to email it. Skip below for now, use Annie in the meantime, and come back to Settings → Import LinkedIn contacts once it lands in your inbox. If it opens in Excel and you save it from there, that's fine too — Annie reads both the original .csv and an .xlsx saved from it.</p>}
+              {step.n === 4 && <p className="text-[11px] text-gray-400 mt-1">This is the slow part: LinkedIn can take anywhere from a few hours up to 24 hours to email it. Skip below for now, use Annie in the meantime, and come back to Settings → Import LinkedIn contacts once it lands in your inbox. However it ends up saved — the original .csv, or a version saved from opening it in Excel or Google Sheets (.xlsx, .xls, .ods) — Annie can read it.</p>}
             </div>
           </div>
         ))}
@@ -149,25 +150,23 @@ export default function LinkedInImport({ embedded = false }) {
   const filtered = rawContacts ? rawContacts.filter(c => matchesFilters(c, filterState)) : []
   const enrichedCount = Object.values(companyData).filter(c => c?.matched).length
 
-  // 2026-09-01: LinkedIn's export zip contains Connections.csv, but Windows
-  // commonly opens a .csv directly in Excel — a customer who then saves it
-  // (Ctrl+S, or Save As without noticing Excel's "keep as CSV?" prompt) can
-  // end up with a real binary .xlsx workbook instead, which the old
-  // text-only reader turned into garbage with no useful error. Both file
-  // types are now genuinely read: an .xlsx/.xls goes through SheetJS first
-  // (sheetToCsvText) to become the same plain CSV text a real .csv already
-  // is, then both paths share the exact same parseCSV/rowsToContacts logic.
+  // 2026-09-01: customers save LinkedIn's Connections.csv export in all
+  // sorts of ways depending on their OS, locale, and spreadsheet app — a
+  // semicolon-delimited CSV (the Excel default on most European locales), a
+  // tab-delimited .txt, a legacy .xls, an .ods, a BOM-prefixed "CSV UTF-8"
+  // export, or the original plain .csv. Rather than branch on file
+  // extension, every upload now goes through one universal reader
+  // (fileBufferToRows, see linkedinImportParse.js's own header for what was
+  // actually tested) regardless of what it's named or how it's formatted.
   function handleFile(e) {
     const file = e.target.files?.[0]
     if (!file) return
     setError('')
     setFileName(file.name)
-    const isExcel = isSpreadsheetFile(file.name)
     const reader = new FileReader()
     reader.onload = async () => {
       try {
-        const text = isExcel ? sheetToCsvText(reader.result) : String(reader.result)
-        const rows = parseCSV(text)
+        const rows = fileBufferToRows(reader.result)
         if (rows.length < 2) throw new Error('empty')
         const contacts = rowsToContacts(rows)
         if (!contacts.length) throw new Error('no rows')
@@ -176,12 +175,11 @@ export default function LinkedInImport({ embedded = false }) {
         setShowReview(true)
       } catch (err) {
         console.error('[LinkedInImport] handleFile failed:', err)
-        setError("Couldn't read that file. Upload the Connections.csv from inside LinkedIn's export zip (a .csv or an .xlsx saved from it both work) — a different file, or one that's been reformatted, won't parse.")
+        setError("Couldn't read that file. Upload the Connections.csv (or a spreadsheet saved from it) from inside LinkedIn's export zip — Annie reads .csv, .xlsx, .xls and .ods, but the file still needs to actually contain your connections' data.")
         setRawContacts(null)
       }
     }
-    if (isExcel) reader.readAsArrayBuffer(file)
-    else reader.readAsText(file)
+    reader.readAsArrayBuffer(file)
   }
 
   // Only enrich companies that already passed the cheap title-based filters, this
@@ -594,8 +592,8 @@ export default function LinkedInImport({ embedded = false }) {
 
           {!rawContacts ? (
             <div className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center">
-              <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleFile} className="hidden" />
-              <button onClick={() => fileInputRef.current?.click()} className="btn-primary">Upload Connections.csv (or .xlsx)</button>
+              <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls,.ods,.txt,.tsv" onChange={handleFile} className="hidden" />
+              <button onClick={() => fileInputRef.current?.click()} className="btn-primary">Upload Connections.csv</button>
               {fileName && <p className="text-xs text-gray-400 mt-2">{fileName}</p>}
             </div>
           ) : (

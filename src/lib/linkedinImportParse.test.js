@@ -1,33 +1,96 @@
 import { describe, it, expect } from 'vitest'
 import * as XLSX from 'xlsx'
-import { parseCSV, findColumn, rowsToContacts, isSpreadsheetFile, sheetToCsvText } from './linkedinImportParse.js'
+import { fileBufferToRows, parseCSV, findColumn, rowsToContacts } from './linkedinImportParse.js'
 
-// 2026-09-01: added after a real customer report — Michael tried uploading
-// the file LinkedIn's export actually produced after it opened in Excel and
-// got saved from there, and the importer rejected it with a generic
-// "Couldn't read that file." Root cause: a real .xlsx is a binary/zip
-// workbook, and the importer only ever read the upload as plain text. These
-// tests build a REAL .xlsx workbook in memory (via the same SheetJS library
-// the app now uses to read one) and push it through the exact function the
-// app calls, rather than only asserting against a hand-written CSV string.
+// 2026-09-01: written after two rounds of real customer reports — the first
+// (a saved .xlsx wouldn't upload) fixed only .xlsx; Michael's very next
+// message made clear customers save this file in many different ways, so
+// the fix became one universal reader (fileBufferToRows) rather than a
+// per-extension branch. These tests build REAL files in memory in each of
+// the realistic formats (via the same SheetJS library the app uses to read
+// them) and push them through the exact function the app calls, rather than
+// only asserting against a hand-written CSV string.
 
-describe('isSpreadsheetFile', () => {
-  it('recognizes .xlsx and .xls, case-insensitively', () => {
-    expect(isSpreadsheetFile('Connections.xlsx')).toBe(true)
-    expect(isSpreadsheetFile('Connections.XLS')).toBe(true)
+function toArrayBuffer(text) {
+  return new TextEncoder().encode(text).buffer
+}
+
+describe('fileBufferToRows — plain delimited text, any of the realistic delimiters', () => {
+  it('reads a standard comma-delimited CSV (the original LinkedIn export format)', () => {
+    const rows = fileBufferToRows(toArrayBuffer('First Name,Last Name,Company\nJane,Doe,Acme Corp\n'))
+    expect(rows).toEqual([['First Name', 'Last Name', 'Company'], ['Jane', 'Doe', 'Acme Corp']])
   })
 
-  it('does not treat a real .csv as a spreadsheet file', () => {
-    expect(isSpreadsheetFile('Connections.csv')).toBe(false)
+  it('reads a semicolon-delimited CSV (Excel\'s default export on most European Windows locales, where comma is the decimal separator)', () => {
+    const rows = fileBufferToRows(toArrayBuffer('First Name;Last Name;Company\nJane;Doe;Acme Corp\n'))
+    expect(rows).toEqual([['First Name', 'Last Name', 'Company'], ['Jane', 'Doe', 'Acme Corp']])
   })
 
-  it('handles a missing/empty filename without throwing', () => {
-    expect(isSpreadsheetFile('')).toBe(false)
-    expect(isSpreadsheetFile(undefined)).toBe(false)
+  it('reads a tab-delimited .txt (Excel "Save As > Text (Tab delimited)")', () => {
+    const rows = fileBufferToRows(toArrayBuffer('First Name\tLast Name\tCompany\nJane\tDoe\tAcme Corp\n'))
+    expect(rows).toEqual([['First Name', 'Last Name', 'Company'], ['Jane', 'Doe', 'Acme Corp']])
+  })
+
+  it('reads a quoted field containing the delimiter itself (e.g. a company name with a comma in it)', () => {
+    const rows = fileBufferToRows(toArrayBuffer('Company\n"Cushman & Wakefield, Dubai"\n'))
+    expect(rows).toEqual([['Company'], ['Cushman & Wakefield, Dubai']])
+  })
+
+  it('reads a BOM-prefixed UTF-8 CSV (Excel\'s own "CSV UTF-8" export always adds a leading byte-order mark)', () => {
+    const bomText = '﻿' + 'First Name,Last Name,Company\nJane,Doe,Acme Corp\n'
+    const rows = fileBufferToRows(toArrayBuffer(bomText))
+    // The BOM attaches to the first header cell's text, but findColumn's
+    // substring match still finds 'first name' inside it — proven in the
+    // rowsToContacts test below, not just asserted here.
+    expect(rows[1]).toEqual(['Jane', 'Doe', 'Acme Corp'])
   })
 })
 
-describe('parseCSV', () => {
+describe('fileBufferToRows — real binary spreadsheet formats, built and read via the actual SheetJS library', () => {
+  const sheetData = [
+    ['First Name', 'Last Name', 'URL', 'Email Address', 'Company', 'Position', 'Connected On'],
+    ['Jarrett', 'Bunnin', 'https://www.linkedin.com/in/jarrett', '', 'Cushman & Wakefield', 'Manager - Strategy', '05-Aug-26'],
+  ]
+
+  function buildWorkbookBuffer(bookType) {
+    const worksheet = XLSX.utils.aoa_to_sheet(sheetData)
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1')
+    return XLSX.write(workbook, { type: 'array', bookType })
+  }
+
+  it('reads a real .xlsx workbook (the exact failure Michael first reported — saved from Excel after opening the CSV export)', () => {
+    const rows = fileBufferToRows(buildWorkbookBuffer('xlsx'))
+    expect(rows[1]).toEqual(['Jarrett', 'Bunnin', 'https://www.linkedin.com/in/jarrett', '', 'Cushman & Wakefield', 'Manager - Strategy', '05-Aug-26'])
+  })
+
+  it('reads a legacy .xls (Excel 97-2003 binary format)', () => {
+    const rows = fileBufferToRows(buildWorkbookBuffer('xls'))
+    expect(rows[1]).toEqual(['Jarrett', 'Bunnin', 'https://www.linkedin.com/in/jarrett', '', 'Cushman & Wakefield', 'Manager - Strategy', '05-Aug-26'])
+  })
+
+  it('reads an .ods (LibreOffice / Google Sheets "Download as OpenDocument")', () => {
+    const rows = fileBufferToRows(buildWorkbookBuffer('ods'))
+    expect(rows[1]).toEqual(['Jarrett', 'Bunnin', 'https://www.linkedin.com/in/jarrett', '', 'Cushman & Wakefield', 'Manager - Strategy', '05-Aug-26'])
+  })
+})
+
+describe('fileBufferToRows — edge cases', () => {
+  it('a non-tabular file (e.g. plain prose saved with an .xlsx-like extension) reads as a single short row, not an unusable throw', () => {
+    // SheetJS is deliberately lenient rather than throwing on this — the
+    // real safety net is the row-count/contact-count checks in
+    // LinkedInImport.jsx's handleFile, exercised in the next test.
+    const rows = fileBufferToRows(toArrayBuffer('this is not a real spreadsheet file, just plain text'))
+    expect(rows.length).toBeLessThan(2)
+  })
+
+  it('drops blank rows', () => {
+    const rows = fileBufferToRows(toArrayBuffer('A,B\n\nx,y\n'))
+    expect(rows).toEqual([['A', 'B'], ['x', 'y']])
+  })
+})
+
+describe('parseCSV (kept as a small, independently tested pure CSV parser, no longer on the main upload path)', () => {
   it('parses a simple comma-separated file with a header row', () => {
     const text = 'First Name,Last Name,Company\nJane,Doe,Acme Corp\n'
     expect(parseCSV(text)).toEqual([
@@ -36,7 +99,7 @@ describe('parseCSV', () => {
     ])
   })
 
-  it('handles a quoted field containing a comma (e.g. "Cushman & Wakefield, Dubai")', () => {
+  it('handles a quoted field containing a comma', () => {
     const text = 'Company\n"Cushman & Wakefield, Dubai"\n'
     expect(parseCSV(text)).toEqual([['Company'], ['Cushman & Wakefield, Dubai']])
   })
@@ -44,11 +107,6 @@ describe('parseCSV', () => {
   it('handles an escaped double-quote inside a quoted field', () => {
     const text = 'Title\n"VP, ""Global"" Strategy"\n'
     expect(parseCSV(text)).toEqual([['Title'], ['VP, "Global" Strategy']])
-  })
-
-  it('drops blank rows', () => {
-    const text = 'A,B\n\nx,y\n'
-    expect(parseCSV(text)).toEqual([['A', 'B'], ['x', 'y']])
   })
 })
 
@@ -66,6 +124,10 @@ describe('findColumn', () => {
 
   it('returns -1 when no candidate matches', () => {
     expect(findColumn(headers, ['phone number'])).toBe(-1)
+  })
+
+  it('still finds a header behind a leading BOM character (Excel\'s "CSV UTF-8" export)', () => {
+    expect(findColumn(['﻿First Name', 'Last Name'], ['first name'])).toBe(0)
   })
 })
 
@@ -92,40 +154,12 @@ describe('rowsToContacts', () => {
     ]
     expect(rowsToContacts(rows)).toEqual([])
   })
-})
 
-describe('sheetToCsvText — real .xlsx round-trip (the actual reported failure)', () => {
-  it('converts a real in-memory .xlsx workbook (built the same way Excel would save one) back into parseable CSV text', () => {
-    // Build a genuine workbook the same shape as LinkedIn's Connections.csv,
-    // exactly what a customer gets after opening the export in Excel and
-    // saving it — this is real binary xlsx data, not a CSV string.
-    const worksheetData = [
-      ['First Name', 'Last Name', 'URL', 'Email Address', 'Company', 'Position', 'Connected On'],
-      ['Jarrett', 'Bunnin', 'https://www.linkedin.com/in/jarrett', '', 'Cushman & Wakefield', 'Manager - Strategy', '05-Aug-26'],
-      ['Ash', 'Sharma', 'https://www.linkedin.com/in/ash', '', 'McKinsey & Company', 'Aerospace and Defense', '05-Aug-26'],
-    ]
-    const worksheet = XLSX.utils.aoa_to_sheet(worksheetData)
-    const workbook = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1')
-    const arrayBuffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' })
-
-    const csvText = sheetToCsvText(arrayBuffer)
-    const rows = parseCSV(csvText)
-    const contacts = rowsToContacts(rows)
-
-    expect(contacts).toHaveLength(2)
-    expect(contacts[0]).toMatchObject({ name: 'Jarrett Bunnin', company: 'Cushman & Wakefield', title: 'Manager - Strategy' })
-    expect(contacts[1]).toMatchObject({ name: 'Ash Sharma', company: 'McKinsey & Company', title: 'Aerospace and Defense' })
-  })
-
-  it('a non-workbook file (e.g. plain text renamed to .xlsx) does not throw inside sheetToCsvText itself — SheetJS is lenient and reads it as a one-cell sheet — but it never produces usable contacts, so the app-level "couldn\'t read that file" guard (rows.length < 2 in LinkedInImport.jsx) still catches it', () => {
-    const notAWorkbook = new TextEncoder().encode('this is not a real xlsx file, just plain text').buffer
-    const csvText = sheetToCsvText(notAWorkbook)
-    const rows = parseCSV(csvText)
-    // Exactly the condition LinkedInImport.jsx's handleFile checks
-    // ("if (rows.length < 2) throw new Error('empty')") before ever
-    // reaching rowsToContacts — confirming the real safety net is here,
-    // one level up, not inside sheetToCsvText.
-    expect(rows.length).toBeLessThan(2)
+  it('works end-to-end off a real BOM-prefixed CSV read through fileBufferToRows', () => {
+    const bomText = '﻿' + 'First Name,Last Name,Company\nJane,Doe,Acme Corp\n'
+    const rows = fileBufferToRows(toArrayBuffer(bomText))
+    expect(rowsToContacts(rows)).toEqual([{
+      name: 'Jane Doe', company: 'Acme Corp', title: '', linkedin_url: '', email: '', connectedOn: '',
+    }])
   })
 })
