@@ -587,6 +587,61 @@ export function buildJobTitleQueries(functions, max = 4) {
   return out
 }
 
+// 2026-09-01, Michael: FUNCTION_JOB_TITLES above only gives 4 senior titles
+// per function — enough to query a job-title API, but too thin for the AI
+// web-search pass to actually understand a function's real breadth (e.g.
+// "Finance & Accounting" covers FP&A, Treasury, and Tax just as much as it
+// covers a CFO; "Technology, Data & Engineering" covers Cybersecurity, Data
+// & Analytics, and Product just as much as Software Engineering) — a search
+// that only ever reasons about the 4 C-suite-level titles misses everything
+// under them. Mirrors src/lib/functionTaxonomy.js's own subSectors labels
+// for each of the same 20 parent functions — same "duplicated here as
+// literals, not imported" reasoning as FUNCTION_JOB_TITLES above (these
+// Netlify functions stay self-contained, no reach into src/). If
+// functionTaxonomy.js's sub-labels change, update here too.
+export const FUNCTION_SUBDISCIPLINES = {
+  'Strategy & Corporate Development': ['Corporate Strategy', 'M&A & Corporate Development', 'Chief of Staff', 'Business Planning & Transformation'],
+  'Policy & Government Affairs': ['Public Policy', 'Government Relations', 'Regulatory Affairs', 'Public Affairs & Advocacy'],
+  'HSE, Sustainability & Quality': ['Health & Safety', 'Environmental Management', 'Sustainability & ESG', 'Quality Assurance & Control'],
+  'Construction & Built Environment': ['Civil & Structural Engineering', 'Project & Programme Management', 'Architecture & Design', 'MEP Engineering', 'Site Management & Quantity Surveying'],
+  'Healthcare & Clinical': ['Clinical & Medical', 'Nursing', 'Allied Health', 'Healthcare Administration', 'Pharma & Life Sciences'],
+  'Finance & Accounting': ['Financial Planning & Analysis (FP&A)', 'Accounting & Controllership', 'Treasury', 'Tax'],
+  'HR & People': ['Talent Acquisition', 'HR Business Partnering', 'Compensation & Benefits', 'Learning & Development', 'People Operations'],
+  'Legal & Compliance': ['In-house Counsel', 'Compliance', 'Regulatory', 'Contracts'],
+  'Sales & Business Development': ['Sales', 'Business Development', 'Account Management', 'Partnerships & Alliances'],
+  'Marketing, Communications & Creative': ['Brand & Marketing', 'Digital Marketing', 'PR & Communications', 'Content & Creative'],
+  'Operations & Supply Chain': ['Operations Management', 'Supply Chain', 'Logistics', 'Procurement & Sourcing'],
+  'Technology, Data & Engineering': ['Software Engineering', 'IT Infrastructure', 'Cybersecurity', 'Product Management', 'Data & Analytics'],
+  'Investment & Asset Management': ['Portfolio Management', 'Private Equity & Venture Capital', 'Investment Research & Analysis', 'Wealth Management'],
+  'Risk & Audit': ['Risk Management', 'Internal Audit', 'Credit Risk', 'Financial Crime & AML'],
+  'Manufacturing & Production': ['Production Management', 'Manufacturing Engineering', 'Plant Management'],
+  'Real Estate, Facilities & Hospitality': ['Property & Real Estate Management', 'Facilities Management', 'Hospitality & Hotel Management', 'Events'],
+  'General Management / Executive Leadership': ['C-Suite', 'Managing Director / General Manager', 'Board & Non-Executive'],
+  'Administration & Office Support': ['Executive & Personal Assistant', 'Office Management'],
+  'Customer Service & Success': ['Customer Success', 'Customer Support', 'Client Services'],
+  'Education & Training': ['Teaching & Academia', 'Corporate Training', 'Instructional Design'],
+}
+
+// Turns the customer's selected functions into a plain-language breadth hint
+// for the AI web-search prompt — "X includes: sub, sub, sub" per function —
+// so a search for "Finance & Accounting" signals doesn't collapse into only
+// CFO-level headlines when Tax, Treasury, and FP&A moves are just as real a
+// BD opportunity. General for any customer's own selected functions, not
+// hardcoded to any one account's — every function in FUNCTION_SUBDISCIPLINES
+// resolves the same way.
+export function buildFunctionBreadthHint(functions) {
+  const seen = new Set()
+  const lines = []
+  for (const value of functions || []) {
+    const parent = functionParentLabel(value)
+    if (!parent || seen.has(parent)) continue
+    seen.add(parent)
+    const subs = FUNCTION_SUBDISCIPLINES[parent]
+    if (subs?.length) lines.push(`${parent} includes (but is not limited to): ${subs.join(', ')}`)
+  }
+  return lines.join('\n')
+}
+
 // Validates a model-reported eventDate is plausible before it's trusted:
 // not in the future (a hallucinated or misread date), and not so far in the
 // past that it can't genuinely be what a "signals from the last N days"

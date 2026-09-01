@@ -7,6 +7,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   extractJson, normalizeKey, toEventIso, resolveSignalType, splitToKeywords, buildSearchKeywords,
   buildJobTitleQueries, functionParentLabel, FUNCTION_JOB_TITLES, GENERIC_LEADERSHIP_TITLES,
+  FUNCTION_SUBDISCIPLINES, buildFunctionBreadthHint,
   THEIRSTACK_SENIORITIES,
   mapLocationsToAdzunaCountries, SIGNAL_TYPES, reserveApolloCredits, releaseApolloCredits,
   normalizeCompanyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
@@ -257,6 +258,56 @@ describe('buildJobTitleQueries (the 2026-08-31 live-jobs fix)', () => {
       expect(titles.length).toBeGreaterThanOrEqual(3)
       expect(titles).not.toContain(label)
     }
+  })
+})
+
+describe('buildFunctionBreadthHint (2026-09-01: cross-industry-by-function search)', () => {
+  it('every FUNCTION_JOB_TITLES parent also has a sub-discipline breakdown', () => {
+    for (const label of Object.keys(FUNCTION_JOB_TITLES)) {
+      expect(FUNCTION_SUBDISCIPLINES[label]?.length).toBeGreaterThanOrEqual(2)
+    }
+  })
+
+  it('names real sub-disciplines a function covers beyond its most senior title', () => {
+    const hint = buildFunctionBreadthHint(['Finance & Accounting'])
+    expect(hint).toContain('Finance & Accounting includes')
+    expect(hint).toContain('Tax')
+    expect(hint).toContain('Treasury')
+    // The breadth hint exists specifically so a search doesn't collapse to
+    // only the C-suite title — CFO itself isn't a sub-discipline entry.
+    expect(hint).not.toContain('Chief Financial Officer')
+  })
+
+  it('covers Technology beyond Software Engineering (Michael\'s own example: Data, AI/Cyber)', () => {
+    const hint = buildFunctionBreadthHint(['Technology, Data & Engineering'])
+    expect(hint).toContain('Cybersecurity')
+    expect(hint).toContain('Data & Analytics')
+  })
+
+  it('is general for any account\'s own chosen functions, not hardcoded to one set', () => {
+    const hint = buildFunctionBreadthHint(['Legal & Compliance', 'HR & People'])
+    expect(hint).toContain('Legal & Compliance includes')
+    expect(hint).toContain('HR & People includes')
+    expect(hint).not.toContain('Finance & Accounting')
+  })
+
+  it('resolves a "Parent > Sub" selection to its parent, same as buildJobTitleQueries', () => {
+    const hint = buildFunctionBreadthHint(['Finance & Accounting > Treasury'])
+    expect(hint).toContain('Finance & Accounting includes')
+  })
+
+  it('dedupes when the same parent appears twice via different sub-selections', () => {
+    const hint = buildFunctionBreadthHint(['Finance & Accounting > Treasury', 'Finance & Accounting > Tax'])
+    expect(hint.match(/Finance & Accounting includes/g)).toHaveLength(1)
+  })
+
+  it('returns an empty string for no functions rather than throwing', () => {
+    expect(buildFunctionBreadthHint([])).toBe('')
+    expect(buildFunctionBreadthHint(null)).toBe('')
+  })
+
+  it('skips an unmapped/renamed function label rather than throwing', () => {
+    expect(buildFunctionBreadthHint(['Not A Real Function'])).toBe('')
   })
 })
 
