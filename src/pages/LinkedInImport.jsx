@@ -2,36 +2,27 @@ import React, { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
-import { SECTOR_TAXONOMY, FLAT_SECTOR_OPTIONS } from '../lib/sectorTaxonomy'
-import { FUNCTION_TAXONOMY, FLAT_FUNCTION_OPTIONS } from '../lib/functionTaxonomy'
+import { SECTOR_TAXONOMY } from '../lib/sectorTaxonomy'
+import { FUNCTION_TAXONOMY } from '../lib/functionTaxonomy'
 import SectorPicker from '../components/SectorPicker'
 import { withTimeout, TIMEOUT_MESSAGE } from '../lib/withTimeout'
 import { trackEvent } from '../lib/analytics'
 import ErrorBanner from '../components/ErrorBanner'
 import { SIGNAL_TYPE_META } from '../lib/signalTypes'
-
-// Sector and market keywords serve two purposes: (1) matched against a company's real
-// Apollo industry/country data when we have it, confidently excluding a confirmed
-// mismatch, and (2) matched against company NAME text as a fallback for companies
-// Apollo has no data on, where a match is weak evidence so absence of a match is never
-// treated as a mismatch (see softGroupMatch below). Sectors themselves live in
-// sectorTaxonomy.js, shared with onboarding so the two can never drift apart again.
-const MARKET_OPTIONS = [
-  { label: 'UAE / GCC', keywords: ['dubai', 'abu dhabi', 'sharjah', 'uae', 'united arab emirates', 'emirates', 'gulf', 'gcc', 'qatar', 'doha', 'saudi arabia', 'saudi', 'ksa', 'riyadh', 'jeddah', 'bahrain', 'kuwait', 'oman', 'difc', 'adgm'] },
-  { label: 'United Kingdom', keywords: ['uk', 'london', 'britain', 'united kingdom', 'england', 'scotland', 'manchester', 'edinburgh'] },
-  { label: 'United States', keywords: ['usa', 'united states', 'america', 'new york', 'california', 'chicago', 'boston', 'texas'] },
-  { label: 'Europe', keywords: ['europe', 'france', 'germany', 'netherlands', 'switzerland', 'spain', 'italy', 'ireland', 'portugal', 'belgium', 'sweden', 'denmark', 'norway', 'poland', 'austria', 'paris', 'berlin', 'frankfurt', 'amsterdam', 'zurich', 'geneva', 'madrid', 'milan', 'dublin'] },
-  { label: 'Asia Pacific', keywords: ['singapore', 'hong kong', 'japan', 'australia', 'china', 'south korea', 'indonesia', 'malaysia', 'thailand', 'vietnam', 'philippines', 'india', 'tokyo', 'sydney', 'shanghai', 'apac'] },
-  { label: 'Global', keywords: [] },
-]
-// Functions themselves live in functionTaxonomy.js, shared with onboarding, same
-// reasoning as sectors above.
-const SENIORITY_OPTIONS = [
-  { label: 'Any level', keywords: [] },
-  { label: 'Manager+', keywords: ['manager', 'lead', 'head'] },
-  { label: 'Director / VP+', keywords: ['director', 'vp', 'vice president', 'head of'] },
-  { label: 'C-Suite / Partner / MD', keywords: ['ceo', 'cfo', 'coo', 'cto', 'chro', 'cmo', 'chief', 'partner', 'managing director', 'president', 'founder', 'md'] },
-]
+// 2026-09-01: the matching logic itself (keyword matching, function/seniority/
+// sector/market filters) moved to linkedinImportMatch.js so it's directly
+// unit-testable rather than living only as closures inside this component —
+// see that file's own header for why. MARKET_OPTIONS/SENIORITY_OPTIONS moved
+// with it since the matching functions are built against them.
+import {
+  MARKET_OPTIONS, SENIORITY_OPTIONS, normalizeCompany, keywordMatches,
+  passesTitleFilters, passesSectorMarket, matchesFilters,
+} from '../lib/linkedinImportMatch'
+// 2026-09-01: file parsing (CSV text parsing, header detection, and now real
+// .xlsx/.xls support) also moved out to linkedinImportParse.js for the same
+// testability reason — see that file's own header for the real customer
+// report (Excel-saved export) that prompted the .xlsx support.
+import { parseCSV, rowsToContacts, isSpreadsheetFile, sheetToCsvText } from '../lib/linkedinImportParse'
 
 const DEFAULT_SECTORS = ['Financial Services', 'Technology', 'Real Estate']
 const DEFAULT_MARKETS = ['UAE / GCC', 'United Kingdom']
@@ -49,37 +40,6 @@ const DEFAULT_SENIORITY = ['Manager+', 'Director / VP+', 'C-Suite / Partner / MD
 // types, and picks up new ones automatically instead of silently going
 // stale again.
 const SIGNAL_TYPES = Object.values(SIGNAL_TYPE_META).map(m => m.label)
-
-function parseCSV(text) {
-  const rows = []
-  let row = [], field = '', inQuotes = false
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i]
-    if (inQuotes) {
-      if (c === '"') {
-        if (text[i + 1] === '"') { field += '"'; i++ }
-        else inQuotes = false
-      } else field += c
-    } else {
-      if (c === '"') inQuotes = true
-      else if (c === ',') { row.push(field); field = '' }
-      else if (c === '\n') { row.push(field); rows.push(row); row = []; field = '' }
-      else if (c === '\r') { /* skip */ }
-      else field += c
-    }
-  }
-  if (field.length || row.length) { row.push(field); rows.push(row) }
-  return rows.filter(r => r.some(v => v && v.trim()))
-}
-
-function findColumn(headers, candidates) {
-  const lower = headers.map(h => h.toLowerCase().trim())
-  for (const c of candidates) {
-    const idx = lower.findIndex(h => h.includes(c))
-    if (idx !== -1) return idx
-  }
-  return -1
-}
 
 function ExportWalkthrough() {
   return (
@@ -109,7 +69,7 @@ function ExportWalkthrough() {
                 </div>
               )}
               {step.n === 3 && <p className="text-[11px] text-gray-400 mt-1">LinkedIn removed the option to request just your connections on their own, so this bundles in more than you need, but it's the only way to get them now. Only Connections.csv matters here.</p>}
-              {step.n === 4 && <p className="text-[11px] text-gray-400 mt-1">This is the slow part: LinkedIn can take anywhere from a few hours up to 24 hours to email it. Skip below for now, use Annie in the meantime, and come back to Settings → Import LinkedIn contacts once it lands in your inbox.</p>}
+              {step.n === 4 && <p className="text-[11px] text-gray-400 mt-1">This is the slow part: LinkedIn can take anywhere from a few hours up to 24 hours to email it. Skip below for now, use Annie in the meantime, and come back to Settings → Import LinkedIn contacts once it lands in your inbox. If it opens in Excel and you save it from there, that's fine too — Annie reads both the original .csv and an .xlsx saved from it.</p>}
             </div>
           </div>
         ))}
@@ -160,10 +120,6 @@ export default function LinkedInImport({ embedded = false }) {
     setArr(prev => prev.includes(value) ? prev.filter(v => v !== value) : [...prev, value])
   }
 
-  function normalizeCompany(name) {
-    return (name || '').trim().toLowerCase()
-  }
-
   // 2026-08-26 audit fix: Supabase caps a single `.select()` at 1000 rows
   // by default with no error or warning — a query against a table that's
   // grown past that silently returns a partial result. Used here (instead
@@ -185,151 +141,47 @@ export default function LinkedInImport({ embedded = false }) {
     return rows
   }
 
-  // 2026-08-26 audit fix: every keyword check on this page used plain
-  // `.includes()` against raw title/company text — a substring match with
-  // no word-boundary check at all. Several real taxonomy keywords are
-  // short (functionTaxonomy.js has 'hr', 'pr', 'tax'; sectorTaxonomy.js has
-  // 'ey', 'gas', 'oil') and matched INSIDE unrelated words: 'hr' matches
-  // "Ba-hr-ain", 'ey' (Ernst & Young's own abbreviation) matches "Turk-ey"
-  // or "attorn-ey", 'gas' matches "Ve-gas". A contact at a Bahrain-based
-  // firm could get pulled into an "HR & People" function filter they have
-  // nothing to do with, or a real Ernst & Young contact could get missed
-  // entirely if a keyword collision elsewhere in the same matching pass
-  // produces a false exclusion. Fixed with a boundary check that treats a
-  // keyword's own leading/trailing punctuation as already self-bounding
-  // (so 'fp&a' or 'm&a' still match correctly right up against a following
-  // space) while still requiring a real word boundary on any side that
-  // starts/ends with a letter or digit — this is deliberately NOT a regex
-  // \b check, since \b behaves inconsistently right at a keyword's own
-  // trailing punctuation (e.g. 'strategy&' followed by a space has no \b
-  // between the two non-word characters, which would silently stop
-  // matching a case it should catch).
-  function keywordMatches(text, keyword) {
-    if (!keyword) return false
-    const isWordChar = (ch) => !!ch && /[a-z0-9]/i.test(ch)
-    let from = 0
-    while (true) {
-      const idx = text.indexOf(keyword, from)
-      if (idx === -1) return false
-      const before = text[idx - 1]
-      const after = text[idx + keyword.length]
-      const startOk = !isWordChar(keyword[0]) || !isWordChar(before)
-      const endOk = !isWordChar(keyword[keyword.length - 1]) || !isWordChar(after)
-      if (startOk && endOk) return true
-      from = idx + 1
-    }
-  }
+  // Current filter state bundled once per render, so every call site below
+  // reads the same explicit snapshot rather than each matching function
+  // closing over component state independently (see linkedinImportMatch.js).
+  const filterState = { functions, seniority, years, sectors, markets, companyData }
 
-  // These two are cheap and reliable, straight off the CSV's title text, no API call needed.
-  function passesTitleFilters(contact) {
-    const titleText = `${contact.title} ${contact.company}`.toLowerCase()
-
-    if (functions.length) {
-      const selectedFns = FLAT_FUNCTION_OPTIONS.filter(f => functions.includes(f.label))
-      if (!selectedFns.some(f => f.keywords.some(k => keywordMatches(titleText, k)))) return false
-    }
-
-    if (seniority.length && !seniority.includes('Any level')) {
-      const selectedSen = SENIORITY_OPTIONS.filter(s => seniority.includes(s.label))
-      if (!selectedSen.some(s => s.keywords.some(k => keywordMatches(titleText, k)))) return false
-    }
-
-    if (contact.connectedOn) {
-      const parsed = Date.parse(contact.connectedOn)
-      if (!isNaN(parsed)) {
-        const yearsAgo = (Date.now() - parsed) / (1000 * 60 * 60 * 24 * 365)
-        if (yearsAgo > years) return false
-      }
-    }
-
-    return true
-  }
-
-  // Company name alone is a weak signal, most names don't spell out sector or
-  // geography. So this only excludes a contact when their company name confidently
-  // signals a group OTHER than the ones selected. No signal at all is not treated as
-  // a mismatch, the contact is kept rather than wrongly dropped. Used when Apollo has
-  // no enrichment data for that company.
-  function softGroupMatch(companyText, options, selectedLabels) {
-    if (!selectedLabels.length || selectedLabels.includes('Global')) return true
-    const signaled = options.filter(o => o.keywords.length && o.keywords.some(k => keywordMatches(companyText, k)))
-    if (!signaled.length) return true // no evidence either way, don't exclude
-    return signaled.some(o => selectedLabels.includes(o.label))
-  }
-
-  // With real Apollo data, a confirmed industry/location that doesn't match any
-  // selected option is a confident exclusion, not a guess.
-  function realGroupMatch(dataText, options, selectedLabels) {
-    if (!selectedLabels.length || selectedLabels.includes('Global')) return true
-    const selected = options.filter(o => selectedLabels.includes(o.label))
-    return selected.some(o => o.keywords.some(k => keywordMatches(dataText, k)))
-  }
-
-  function passesSectorMarket(contact) {
-    const companyText = `${contact.company}`.toLowerCase()
-    const enrichment = companyData[normalizeCompany(contact.company)]
-
-    if (enrichment?.matched && enrichment.industry) {
-      if (!realGroupMatch(enrichment.industry.toLowerCase(), FLAT_SECTOR_OPTIONS, sectors)) return false
-    } else if (!softGroupMatch(companyText, FLAT_SECTOR_OPTIONS, sectors)) {
-      return false
-    }
-
-    if (enrichment?.matched && (enrichment.city || enrichment.state || enrichment.country)) {
-      const locText = `${enrichment.city || ''} ${enrichment.state || ''} ${enrichment.country || ''}`.toLowerCase()
-      if (!realGroupMatch(locText, MARKET_OPTIONS, markets)) return false
-    } else if (!softGroupMatch(companyText, MARKET_OPTIONS, markets)) {
-      return false
-    }
-
-    return true
-  }
-
-  function matchesFilters(contact) {
-    return passesTitleFilters(contact) && passesSectorMarket(contact)
-  }
-
-  const filtered = rawContacts ? rawContacts.filter(matchesFilters) : []
+  const filtered = rawContacts ? rawContacts.filter(c => matchesFilters(c, filterState)) : []
   const enrichedCount = Object.values(companyData).filter(c => c?.matched).length
 
+  // 2026-09-01: LinkedIn's export zip contains Connections.csv, but Windows
+  // commonly opens a .csv directly in Excel — a customer who then saves it
+  // (Ctrl+S, or Save As without noticing Excel's "keep as CSV?" prompt) can
+  // end up with a real binary .xlsx workbook instead, which the old
+  // text-only reader turned into garbage with no useful error. Both file
+  // types are now genuinely read: an .xlsx/.xls goes through SheetJS first
+  // (sheetToCsvText) to become the same plain CSV text a real .csv already
+  // is, then both paths share the exact same parseCSV/rowsToContacts logic.
   function handleFile(e) {
     const file = e.target.files?.[0]
     if (!file) return
     setError('')
     setFileName(file.name)
+    const isExcel = isSpreadsheetFile(file.name)
     const reader = new FileReader()
     reader.onload = async () => {
       try {
-        const rows = parseCSV(String(reader.result))
+        const text = isExcel ? sheetToCsvText(reader.result) : String(reader.result)
+        const rows = parseCSV(text)
         if (rows.length < 2) throw new Error('empty')
-        const headers = rows[0]
-        const firstIdx = findColumn(headers, ['first name'])
-        const lastIdx = findColumn(headers, ['last name'])
-        const companyIdx = findColumn(headers, ['company'])
-        const titleIdx = findColumn(headers, ['position', 'title'])
-        const urlIdx = findColumn(headers, ['url'])
-        const emailIdx = findColumn(headers, ['email'])
-        const dateIdx = findColumn(headers, ['connected on'])
-
-        const contacts = rows.slice(1).map(r => ({
-          name: [r[firstIdx], r[lastIdx]].filter(Boolean).join(' ').trim(),
-          company: companyIdx !== -1 ? (r[companyIdx] || '').trim() : '',
-          title: titleIdx !== -1 ? (r[titleIdx] || '').trim() : '',
-          linkedin_url: urlIdx !== -1 ? (r[urlIdx] || '').trim() : '',
-          email: emailIdx !== -1 ? (r[emailIdx] || '').trim() : '',
-          connectedOn: dateIdx !== -1 ? (r[dateIdx] || '').trim() : '',
-        })).filter(c => c.name)
-
+        const contacts = rowsToContacts(rows)
         if (!contacts.length) throw new Error('no rows')
         setRawContacts(contacts)
         await runEnrichment(contacts)
         setShowReview(true)
-      } catch {
-        setError("Couldn't read that file. Make sure it's the Connections.csv export from LinkedIn.")
+      } catch (err) {
+        console.error('[LinkedInImport] handleFile failed:', err)
+        setError("Couldn't read that file. Upload the Connections.csv from inside LinkedIn's export zip (a .csv or an .xlsx saved from it both work) — a different file, or one that's been reformatted, won't parse.")
         setRawContacts(null)
       }
     }
-    reader.readAsText(file)
+    if (isExcel) reader.readAsArrayBuffer(file)
+    else reader.readAsText(file)
   }
 
   // Only enrich companies that already passed the cheap title-based filters, this
@@ -337,7 +189,7 @@ export default function LinkedInImport({ embedded = false }) {
   // export. Companies are looked up against Annie's shared cache first, so most
   // repeat companies across customers cost nothing.
   async function runEnrichment(contacts) {
-    const candidates = contacts.filter(passesTitleFilters)
+    const candidates = contacts.filter(c => passesTitleFilters(c, filterState))
     // 2026-08-26 audit fix: same raw-string Set issue already fixed for
     // company creation below — dedupe by normalized name so two contacts
     // at a slightly-differently-cased spelling of one company don't send
@@ -742,8 +594,8 @@ export default function LinkedInImport({ embedded = false }) {
 
           {!rawContacts ? (
             <div className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center">
-              <input ref={fileInputRef} type="file" accept=".csv" onChange={handleFile} className="hidden" />
-              <button onClick={() => fileInputRef.current?.click()} className="btn-primary">Upload Connections.csv</button>
+              <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleFile} className="hidden" />
+              <button onClick={() => fileInputRef.current?.click()} className="btn-primary">Upload Connections.csv (or .xlsx)</button>
               {fileName && <p className="text-xs text-gray-400 mt-2">{fileName}</p>}
             </div>
           ) : (
