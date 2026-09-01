@@ -190,6 +190,56 @@ describe('normalizeCompany — 2026-09-01 audit fix: same company, different leg
   })
 })
 
+// 2026-09-01: written after Michael's direct question — "would Annie find a
+// CFO, Chief Strategy Officer, CTO in Real Estate?" — after he saw two
+// SIMILAR-LOOKING pickers: the SECTOR taxonomy's "Real Estate" (an industry —
+// Development, Investment & Asset Management, Property Management, Proptech)
+// and the FUNCTION taxonomy's "Real Estate, Facilities & Hospitality" (a job
+// discipline — property/facilities/hospitality management roles only). These
+// are two independent, ANDed filters, not one combined list: Sector narrows
+// by the COMPANY's industry, Function narrows by the CANDIDATE's own role,
+// and a search can combine any sector with any function. Selecting only the
+// Real Estate FUNCTION category would in fact miss a CFO/CTO/CSO — it's not
+// meant to cover them, the same way "Finance & Accounting" isn't meant to
+// cover a facilities manager. The fix here is real (see functionTaxonomy.js's
+// own 2026-09-01 header) for a different, related gap this surfaced: a
+// spelled-out "Chief Financial Officer"/"Chief Operating Officer" title
+// matched no function category at all, in any sector, before that fix.
+describe('Real Estate sector + C-suite functions — the exact scenario Michael asked about', () => {
+  const filtersFor = (functions) => ({ functions, seniority: ['Any level'], years: 50, sectors: ['Real Estate'], markets: ['Global'], companyData: {} })
+
+  it('a CFO at a Real Estate developer is found when Function = Finance & Accounting (not the Real Estate function category)', () => {
+    const contact = { title: 'Chief Financial Officer', company: 'Acme Properties Development', connectedOn: '' }
+    expect(matchesFilters(contact, filtersFor(['Finance & Accounting']))).toBe(true)
+  })
+
+  it('a CTO at a Real Estate developer is found when Function = Technology, Data & Engineering', () => {
+    const contact = { title: 'Chief Technology Officer', company: 'Acme Properties Development', connectedOn: '' }
+    expect(matchesFilters(contact, filtersFor(['Technology, Data & Engineering']))).toBe(true)
+  })
+
+  it('a Chief Strategy Officer at a Real Estate developer is found when Function = Strategy & Corporate Development', () => {
+    const contact = { title: 'Chief Strategy Officer', company: 'Acme Properties Development', connectedOn: '' }
+    expect(matchesFilters(contact, filtersFor(['Strategy & Corporate Development']))).toBe(true)
+  })
+
+  it('the same CFO is correctly MISSED if only the Real Estate FUNCTION category is selected — it is not meant to cover finance leadership', () => {
+    const contact = { title: 'Chief Financial Officer', company: 'Acme Properties Development', connectedOn: '' }
+    expect(matchesFilters(contact, filtersFor(['Real Estate, Facilities & Hospitality']))).toBe(false)
+  })
+
+  it('a property manager at the same company IS found via the Real Estate function category', () => {
+    const contact = { title: 'Head of Property Management', company: 'Acme Properties Development', connectedOn: '' }
+    expect(matchesFilters(contact, filtersFor(['Real Estate, Facilities & Hospitality']))).toBe(true)
+  })
+
+  it('selecting BOTH the Real Estate function and Finance & Accounting at once catches both the property manager and the CFO (multi-select OR)', () => {
+    const both = filtersFor(['Real Estate, Facilities & Hospitality', 'Finance & Accounting'])
+    expect(matchesFilters({ title: 'Head of Property Management', company: 'Acme Properties Development', connectedOn: '' }, both)).toBe(true)
+    expect(matchesFilters({ title: 'Chief Financial Officer', company: 'Acme Properties Development', connectedOn: '' }, both)).toBe(true)
+  })
+})
+
 describe('matchesFilters — the full combined gate, multiple sectors AND multiple functions at once', () => {
   it('a VP of People at a Fintech company passes when both Financial Services and HR & People are selected', () => {
     const contact = { title: 'VP of People', company: 'Acme Fintech Payments', connectedOn: '' }

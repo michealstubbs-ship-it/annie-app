@@ -13,7 +13,7 @@ import {
   normalizeCompanyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
-  mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs,
+  mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs, discoverHotCompanies,
   looksTruncatedByTokenLimit, getLearnedSources, recordLearnedDiscoveries, isJunkLearnedSourceValue,
   normalizeLearnedLocation,
   writeToSignalPool, fetchSignalPoolMatches, personalizePoolHits,
@@ -632,6 +632,60 @@ describe('discoverTheirStackJobs', () => {
       expect(rpc).not.toHaveBeenCalledWith('theirstack_release_credits', expect.anything())
       vi.unstubAllGlobals()
     })
+  })
+})
+
+// 2026-09-01 audit fix: found while checking how Sector and Function actually
+// scope the live market — this call's own q_organization_job_titles used to
+// be built from splitToKeywords(functions), the exact category error the
+// 2026-08-31 fix (buildJobTitleQueries) already found and fixed for
+// discoverAdzunaJobs/discoverTheirStackJobs above, just missed here. Apollo's
+// own API docs are explicit that field wants real title strings ("sales
+// manager"), not label fragments ("Real Estate, Facilities"). No prior test
+// coverage existed for this function at all.
+describe('discoverHotCompanies — Apollo pre-pass company discovery (2026-09-01 job-title fix)', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('sends real senior job titles (via buildJobTitleQueries), not raw function-label fragments, as q_organization_job_titles', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ organizations: [] }) })
+    vi.stubGlobal('fetch', fetchSpy)
+    await discoverHotCompanies('key123', { sectors: ['Real Estate'], functions: ['Finance & Accounting'], locations: [] }, undefined)
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
+    expect(body.q_organization_job_titles).toEqual(buildJobTitleQueries(['Finance & Accounting']))
+    expect(body.q_organization_job_titles).toContain('Chief Financial Officer')
+    // Never a bare label fragment like the old splitToKeywords output.
+    expect(body.q_organization_job_titles).not.toContain('Finance & Accounting')
+    expect(body.q_organization_job_titles).not.toContain('Finance')
+  })
+
+  it('still sends loose keyword fragments for q_organization_keyword_tags (sectors) — that side was always correct', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ organizations: [] }) })
+    vi.stubGlobal('fetch', fetchSpy)
+    await discoverHotCompanies('key123', { sectors: ['Real Estate, Facilities & Hospitality'], functions: [], locations: [] }, undefined)
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
+    expect(body.q_organization_keyword_tags).toEqual(['Real Estate, Facilities', 'Hospitality'])
+  })
+
+  it('falls back to GENERIC_LEADERSHIP_TITLES when the customer picked no functions, same as the sibling Adzuna/TheirStack calls, rather than omitting the filter', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ organizations: [] }) })
+    vi.stubGlobal('fetch', fetchSpy)
+    await discoverHotCompanies('key123', { sectors: ['Real Estate'], functions: [], locations: [] }, undefined)
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
+    expect(body.q_organization_job_titles).toEqual(GENERIC_LEADERSHIP_TITLES)
+  })
+
+  it('maps organizations from the response into the plain shape the rest of the scan expects', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ organizations: [{ name: 'Acme Developments', industry: 'Real Estate', estimated_num_employees: 500 }] }),
+    }))
+    const leads = await discoverHotCompanies('key123', { sectors: ['Real Estate'], functions: ['Finance & Accounting'], locations: [] }, undefined)
+    expect(leads).toEqual([{ name: 'Acme Developments', industry: 'Real Estate', employees: 500 }])
+  })
+
+  it('fails soft (empty array) on a non-ok response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401 }))
+    expect(await discoverHotCompanies('bad-key', { sectors: [], functions: [], locations: [] }, undefined)).toEqual([])
   })
 })
 

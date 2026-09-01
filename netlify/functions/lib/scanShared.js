@@ -500,8 +500,7 @@ export function buildSearchKeywords(sectors, functions, max = 6) {
 // So this maps a customer's FUNCTIONS (the discipline they place into) to
 // the job titles a senior opening in that discipline is actually advertised
 // under. Keyed on functionTaxonomy.js's own parent labels — deliberately
-// duplicated here as literals rather than imported, for the same reason
-// discoverHotCompanies keeps its own splitToKeywords: these Netlify
+// duplicated here as literals rather than imported, since these Netlify
 // functions stay self-contained and don't reach into src/ (untested bundler
 // risk). If a parent label is renamed in the taxonomy, add the new spelling
 // here; an unmapped function degrades to the generic leadership titles
@@ -998,8 +997,21 @@ export async function discoverHotCompanies(apolloKey, { sectors, functions, loca
     const sectorKeywords = (sectors || []).flatMap(splitToKeywords)
     if (sectorKeywords.length) body.q_organization_keyword_tags = sectorKeywords.slice(0, 20)
 
-    const titleKeywords = (functions || []).flatMap(splitToKeywords)
-    if (titleKeywords.length) body.q_organization_job_titles = titleKeywords.slice(0, 20)
+    // 2026-09-01 audit fix: this used to be splitToKeywords(functions) too —
+    // the exact same category error the 2026-08-31 fix above (buildJobTitleQueries)
+    // already found and corrected for Adzuna/TheirStack, just missed here. Apollo's
+    // own docs are explicit that q_organization_job_titles wants real job title
+    // strings ("sales manager", "research analyst"), not label fragments — feeding
+    // it "Real Estate, Facilities" or "Finance" (what splitToKeywords produces from
+    // a function label) doesn't match any real posting, silently weakening or
+    // zeroing out this call's own filter on every scan. q_organization_keyword_tags
+    // just above is the right home for label fragments (Apollo's own docs: keyword
+    // tags like "mining" ARE meant to be loose industry/subject words) — that one
+    // was always correct. Reuses buildJobTitleQueries, the exact function that
+    // already fixed this for the two sibling calls, rather than a second
+    // implementation of the same fix.
+    const titleKeywords = buildJobTitleQueries(functions)
+    if (titleKeywords.length) body.q_organization_job_titles = titleKeywords
 
     if (locations?.length) body.organization_locations = locations.slice(0, 10)
 
