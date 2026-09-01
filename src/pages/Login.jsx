@@ -165,11 +165,11 @@ export default function Login() {
               <>
                 <div>
                   <label className="label" htmlFor="login-full-name">Full name</label>
-                  <input id="login-full-name" className="input" type="text" placeholder="Michael Stubbs" value={form.fullName} onChange={e => update('fullName', e.target.value)} required />
+                  <input id="login-full-name" className="input" type="text" placeholder="Jane Smith" value={form.fullName} onChange={e => update('fullName', e.target.value)} required />
                 </div>
                 <div>
                   <label className="label" htmlFor="login-firm-name">Firm name</label>
-                  <input id="login-firm-name" className="input" type="text" placeholder="Vantage Search Group" value={form.firmName} onChange={e => update('firmName', e.target.value)} required />
+                  <input id="login-firm-name" className="input" type="text" placeholder="Your Firm" value={form.firmName} onChange={e => update('firmName', e.target.value)} required />
                 </div>
               </>
             )}

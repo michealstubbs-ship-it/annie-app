@@ -302,7 +302,7 @@ export default function Onboarding() {
             <p className="text-gray-500 text-sm mb-6">Annie uses this to personalise everything for you.</p>
             <div>
               <label className="label" htmlFor="onboarding-firm-name">Firm name</label>
-              <input id="onboarding-firm-name" className="input" placeholder="e.g. Vantage Search Group" value={form.firmName} onChange={e => update('firmName', e.target.value)} />
+              <input id="onboarding-firm-name" className="input" placeholder="e.g. Acme Search Partners" value={form.firmName} onChange={e => update('firmName', e.target.value)} />
             </div>
             <div className="mt-4">
               <label className="label" htmlFor="onboarding-linkedin-url">Your LinkedIn profile URL <span className="text-gray-400 font-normal">(optional)</span></label>
