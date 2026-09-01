@@ -2365,6 +2365,32 @@ export const TARGET_FIRM_DIRECTORY = {
       },
     },
   },
+  // 2026-09-01 (Michael): new sector, all three markets. Like Technology, no
+  // regulator licenses a retailer, so this leans on real published industry
+  // rankings as the discoveryHint authority — unlike Technology though,
+  // recruiting into major retailers isn't the same kind of oversaturated
+  // target FAANG is for tech, so anchors here follow the same
+  // biggest-genuine-players pattern as Financial Services/Real Estate
+  // rather than deliberately avoiding the obvious names.
+  'Consumer & Retail': {
+    byLocation: {
+      'United Kingdom': {
+        // Verified: the UK's largest retailers by sales.
+        anchors: ['Tesco', "Sainsbury's", 'John Lewis Partnership', 'Marks & Spencer'],
+        discoveryHint: "Beyond these, Retail Week's own rankings (retail-week.com/retail-rankings, including the annual Retail 100 and Top Ecommerce Retailers lists) are the real authority on who else is active, big and rising — a genuine, independently published, regularly updated ranking, not a static list. Check it directly for companies worth a proactive careers-page check.",
+      },
+      'UAE / GCC': {
+        // Verified: the UAE's largest retail/consumer conglomerates.
+        anchors: ['Majid Al Futtaim', 'Chalhoub Group', 'Landmark Group'],
+        discoveryHint: "Beyond these three conglomerates and the individual retail brands they own, this customer's own regional trade press already named above (Hotelier Middle East, plus Zawya/Arabian Business/Gulf Business generally) is the real authority on rising consumer/retail names — no single dedicated retail ranking site was confirmed for this market the way Retail Week/NRF cover the UK/US, so lean on that press coverage directly, then check each firm's own careers page the same way.",
+      },
+      'United States': {
+        // Verified: the largest US retailers by revenue, per NRF's own ranking.
+        anchors: ['Walmart', 'Amazon', 'Costco', 'Target', 'The Home Depot'],
+        discoveryHint: "Beyond these, the National Retail Federation's own Top 100 Retailers ranking (nrf.com/research-insights/top-retailers) is the real authority — and NRF separately publishes a \"Hot 25 Retailers\" list specifically for the fastest-growing, most-watched names, exactly the \"ones to watch\" tier worth surfacing here. Check both directly for companies worth a proactive careers-page check.",
+      },
+    },
+  },
 }
 
 // Composes the proactive firm-tier check-list for the prompt, mirroring

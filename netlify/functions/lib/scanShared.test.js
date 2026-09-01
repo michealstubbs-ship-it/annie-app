@@ -2528,3 +2528,32 @@ describe('buildTargetFirmHint — Technology (2026-09-01)', () => {
     expect(ukOnly).not.toContain('Salesforce')
   })
 })
+
+describe('buildTargetFirmHint — Consumer & Retail (2026-09-01)', () => {
+  it('shows UK retailers and Retail Week for a UK customer', () => {
+    const hint = buildTargetFirmHint(['Consumer & Retail'], null, ['United Kingdom'])
+    expect(hint).toContain('Tesco')
+    expect(hint).toContain('retail-week.com')
+  })
+
+  it('shows UAE retail conglomerates and points at the general regional press, not a fabricated ranking site', () => {
+    const hint = buildTargetFirmHint(['Consumer & Retail'], null, ['UAE / GCC'])
+    expect(hint).toContain('Majid Al Futtaim')
+    expect(hint).toContain('Chalhoub Group')
+    expect(hint).not.toContain('retail-week.com')
+    expect(hint).not.toContain('nrf.com')
+  })
+
+  it('shows US retailers, NRF Top 100, and the Hot 25 "ones to watch" list for a US customer', () => {
+    const hint = buildTargetFirmHint(['Consumer & Retail'], null, ['United States'])
+    expect(hint).toContain('Walmart')
+    expect(hint).toContain('nrf.com')
+    expect(hint).toContain('Hot 25')
+  })
+
+  it('never mixes UK, UAE and US retail anchors together for a customer who only selected one of those markets', () => {
+    const usOnly = buildTargetFirmHint(['Consumer & Retail'], null, ['United States'])
+    expect(usOnly).not.toContain('Tesco')
+    expect(usOnly).not.toContain('Majid Al Futtaim')
+  })
+})
