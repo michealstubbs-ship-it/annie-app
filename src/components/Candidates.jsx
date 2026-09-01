@@ -207,7 +207,11 @@ export default function Candidates() {
 
   function renderCard(c) {
     return (
-      <div key={c.id} className={`card p-4 border-l-4 ${STAGE_COLOR[c.status]?.split(' ')[0]?.replace('bg-', 'border-') || 'border-gray-200'}`}>
+      // 2026-09-01: click-to-expand — the card opens the same Edit form
+      // (Michael: this pattern "should apply across all tabs"); the row of
+      // links/buttons below stops the click from bubbling so those keep
+      // their own distinct actions.
+      <div key={c.id} onClick={() => openEdit(c)} className={`card p-4 border-l-4 cursor-pointer ${STAGE_COLOR[c.status]?.split(' ')[0]?.replace('bg-', 'border-') || 'border-gray-200'}`}>
         <div className="flex items-start gap-3">
           <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 ${STAGE_COLOR[c.status] || 'bg-gray-100 text-gray-500'}`}>
             {initials(c.name)}
@@ -230,7 +234,7 @@ export default function Candidates() {
             {c.notes && <p className="text-xs text-gray-600 mt-1.5 line-clamp-2">{c.notes}</p>}
             {c.jobs?.title && <p className="text-[11px] text-gold font-semibold mt-1">💼 {c.jobs.title}{c.jobs.companies?.name ? ` @ ${c.jobs.companies.name}` : ''}</p>}
 
-            <div className="flex items-center gap-2 flex-wrap mt-2.5">
+            <div className="flex items-center gap-2 flex-wrap mt-2.5" onClick={e => e.stopPropagation()}>
               {c.location && <span className="text-[10px] bg-page-bg text-gray-500 px-2 py-1 rounded-md">📍 {c.location}</span>}
               {c.industry && <span className="text-[10px] bg-page-bg text-gray-500 px-2 py-1 rounded-md">🏢 {c.industry}</span>}
               {c.linkedin_url && (

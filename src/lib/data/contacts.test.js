@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
 
-import { listContacts, listContactsWithCompany, createContact, updateContact, deleteContact, listContactsMinimal, listContactsForMatching } from './contacts.js'
+import { listContacts, listContactsWithCompany, createContact, updateContact, deleteContact, listContactsMinimal, listContactsForMatching, getContact } from './contacts.js'
 
 // A minimal chainable query builder — every method returns `this` so any
 // call order these functions use resolves, and awaiting it resolves to
@@ -133,5 +133,25 @@ describe('listContactsForMatching', () => {
     builder = makeBuilder({ data: null, error: { message: 'db down' } })
     fromMock.mockReturnValue(builder)
     await expect(listContactsForMatching('user_1')).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+// 2026-09-01: ContactDetailModal's own fetch — added alongside the
+// click-to-expand contact detail view (notes log + follow-up reminder).
+describe('getContact', () => {
+  it('fetches the single full record by id', async () => {
+    builder = makeBuilder({ data: { id: 'c1', name: 'Jo' }, error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await getContact('c1')
+    expect(fromMock).toHaveBeenCalledWith('contacts')
+    expect(builder.select).toHaveBeenCalledWith('*')
+    expect(builder.eq).toHaveBeenCalledWith('id', 'c1')
+    expect(result).toEqual({ id: 'c1', name: 'Jo' })
+  })
+
+  it('throws on a real Supabase error rather than returning undefined', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'not found' } })
+    fromMock.mockReturnValue(builder)
+    await expect(getContact('missing')).rejects.toEqual({ message: 'not found' })
   })
 })

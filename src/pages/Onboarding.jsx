@@ -314,16 +314,16 @@ export default function Onboarding() {
         {step === 2 && (
           <div>
             <h2 className="text-2xl font-bold text-navy mb-1">Which sectors do you recruit in?</h2>
-            <p className="text-gray-500 text-sm mb-6">Select all that apply, click "Narrow down" on any of them to pick specific sub-sectors instead of the whole category. This drives everything Annie researches for you.</p>
-            <SectorPicker taxonomy={SECTOR_TAXONOMY} value={form.sectors} onChange={v => update('sectors', v)} />
+            <p className="text-gray-500 text-sm mb-6">Click "Narrow down" on any of them to pick specific sub-sectors instead of the whole category. This drives everything Annie researches for you.</p>
+            <SectorPicker taxonomy={SECTOR_TAXONOMY} value={form.sectors} onChange={v => update('sectors', v)} maxSelections={3} itemLabel="industries" />
           </div>
         )}
 
         {step === 3 && (
           <div>
             <h2 className="text-2xl font-bold text-navy mb-1">Which functions do you place people into?</h2>
-            <p className="text-gray-500 text-sm mb-6">This is the discipline a candidate works in (Finance, HSE, Construction, Healthcare, etc.), separate from the sector their employer sits in. Select all that apply, narrow down where useful.</p>
-            <SectorPicker taxonomy={FUNCTION_TAXONOMY} value={form.functions} onChange={v => update('functions', v)} />
+            <p className="text-gray-500 text-sm mb-6">This is the discipline a candidate works in (Finance, HSE, Construction, Healthcare, etc.), separate from the sector their employer sits in. Narrow down where useful.</p>
+            <SectorPicker taxonomy={FUNCTION_TAXONOMY} value={form.functions} onChange={v => update('functions', v)} maxSelections={2} itemLabel="functions" />
           </div>
         )}
 

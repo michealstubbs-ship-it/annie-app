@@ -244,7 +244,11 @@ export default function Pipeline() {
       ) : (
         <div className="space-y-3">
           {deals.map(d => (
-            <div key={d.id} className="card p-4 hover:shadow-md transition-shadow">
+            // 2026-09-01: click-to-expand — the whole card opens the same
+            // Edit form Michael already has (Edit/Delete no longer the only
+            // way in), matching the pattern applied across Contacts/
+            // Companies/Candidates this same pass.
+            <div key={d.id} className="card p-4 hover:shadow-md transition-shadow cursor-pointer" onClick={() => openEdit(d)}>
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -260,7 +264,7 @@ export default function Pipeline() {
                   {/* 2026-08-29 audit fix: same Delete-styled-like-a-routine-
                       action issue fixed on Invoices.jsx, applied here for
                       consistency. */}
-                  <div className="flex items-center gap-2 justify-end mt-2">
+                  <div className="flex items-center gap-2 justify-end mt-2" onClick={e => e.stopPropagation()}>
                     <button onClick={() => openEdit(d)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
                     <div className="pl-2 ml-1 border-l border-gray-200">
                       <button onClick={() => setConfirmDeleteId(d.id)} className="text-xs text-red-500 font-semibold hover:underline">Delete</button>

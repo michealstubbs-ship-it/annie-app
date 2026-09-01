@@ -3,11 +3,13 @@ import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { listMeetingsWithContacts, createMeeting, updateMeeting, deleteMeeting } from '../lib/data/meetings'
 import { listContactsMinimal } from '../lib/data/contacts'
+import { createContactNote } from '../lib/data/contactNotes'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
+import ContactSearchSelect from './ContactSearchSelect'
 
 const TYPE_LABEL = { call: 'Call', video: 'Video', in_person: 'In person' }
 const TYPE_ICON = { call: '📞', video: '💻', in_person: '🤝' }
@@ -30,6 +32,11 @@ export default function Meetings() {
   const [showModal, setShowModal] = useState(false)
   const [form, setForm] = useState(EMPTY)
   const [editId, setEditId] = useState(null)
+  // 2026-09-01: the meeting's own Outcome/Next steps as they were BEFORE
+  // this edit — save() diffs against these so re-saving a meeting whose
+  // outcome/next_steps didn't actually change doesn't append a duplicate
+  // identical note to the contact every time (e.g. just fixing the date).
+  const [editingOriginal, setEditingOriginal] = useState({ outcome: '', next_steps: '' })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [listError, setListError] = useState('')
@@ -67,7 +74,7 @@ export default function Meetings() {
     return { upcoming, past }
   }, [meetings])
 
-  function openAdd() { setForm({ ...EMPTY, meeting_date: toLocalInput(new Date().toISOString()) }); setEditId(null); setError(''); setShowModal(true) }
+  function openAdd() { setForm({ ...EMPTY, meeting_date: toLocalInput(new Date().toISOString()) }); setEditId(null); setEditingOriginal({ outcome: '', next_steps: '' }); setError(''); setShowModal(true) }
   function openEdit(m) {
     setForm({
       title: m.title || '', meeting_type: m.meeting_type || 'call', meeting_date: toLocalInput(m.meeting_date),
@@ -75,8 +82,34 @@ export default function Meetings() {
       follow_up_date: m.follow_up_date || '', notes: m.notes || '',
     })
     setEditId(m.id)
+    setEditingOriginal({ outcome: m.outcome || '', next_steps: m.next_steps || '' })
     setError('')
     setShowModal(true)
+  }
+
+  // 2026-09-01, Michael: "Same with outcome and next steps, that should be
+  // the same as point 2 [the contact notes log], saves as a note next to
+  // that contact." Only fires when the meeting is linked to a contact AND
+  // outcome/next_steps actually changed from what was there before this
+  // save — editing an unrelated field (the date, say) and re-saving
+  // shouldn't append a duplicate note every time.
+  async function logMeetingNoteIfChanged(contactId, outcome, nextSteps) {
+    if (!contactId) return
+    const outcomeChanged = outcome.trim() !== editingOriginal.outcome.trim()
+    const nextStepsChanged = nextSteps.trim() !== editingOriginal.next_steps.trim()
+    if (!outcomeChanged && !nextStepsChanged) return
+    const parts = []
+    if (outcome.trim()) parts.push(`Meeting outcome: ${outcome.trim()}`)
+    if (nextSteps.trim()) parts.push(`Next steps: ${nextSteps.trim()}`)
+    if (!parts.length) return
+    try {
+      await createContactNote(contactId, user.id, parts.join('\n'))
+    } catch (err) {
+      // Non-fatal — the meeting itself already saved successfully; losing
+      // the auto-logged note shouldn't be reported as the save having
+      // failed.
+      console.error('[Meetings] could not log meeting note to contact:', err.message)
+    }
   }
 
   async function save() {
@@ -103,6 +136,7 @@ export default function Meetings() {
         const { error: err } = await createMeeting(row, user.id)
         if (err) throw err
       }
+      await logMeetingNoteIfChanged(form.contact_id, form.outcome, form.next_steps)
       await load()
       setShowModal(false)
     } catch (err) {
@@ -213,10 +247,7 @@ export default function Meetings() {
                 </div>
                 <div>
                   <label className="label" htmlFor="meeting-contact">Contact</label>
-                  <select id="meeting-contact" className="input" value={form.contact_id} onChange={e => setForm(p => ({ ...p, contact_id: e.target.value }))}>
-                    <option value="">Not linked to a contact</option>
-                    {contacts.map(c => <option key={c.id} value={c.id}>{c.name}{c.company ? ` (${c.company})` : ''}</option>)}
-                  </select>
+                  <ContactSearchSelect id="meeting-contact" contacts={contacts} value={form.contact_id} onChange={id => setForm(p => ({ ...p, contact_id: id }))} />
                 </div>
                 <div>
                   <label className="label" htmlFor="meeting-outcome">Outcome</label>

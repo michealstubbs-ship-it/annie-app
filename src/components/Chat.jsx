@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { useLocation, Link } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { callChat, callChatStream } from '../lib/callChat'
@@ -35,10 +35,6 @@ export default function Chat() {
   const [onboarding, setOnboarding] = useState(null)
   const [watchlist, setWatchlist] = useState([])
   const [crmSnapshot, setCrmSnapshot] = useState(null)
-  // Monthly Ask Annie allowance, as reported by chat.js on every reply.
-  // Stays null on Growth/Team, which are uncapped and must never be shown a
-  // countdown that implies otherwise.
-  const [chatUsage, setChatUsage] = useState(null)
   const bottomRef = useRef(null)
 
   useEffect(() => { loadHistory(); loadOnboarding(); loadWatchlist(); loadCrmSnapshot() }, [user])
@@ -127,6 +123,18 @@ export default function Chat() {
         return
       }
 
+      // 2026-09-01 audit fix, real customer report ("Annie is not having a
+      // proper chat... that's not a natural conversation and its
+      // confusing"): this system prompt had no voice/formatting
+      // instructions at all before this, so the model defaulted to its
+      // normal helpful-assistant style — bold section headers, bulleted
+      // lists ("**Prospect outreach?**") — for what's meant to feel like
+      // texting a colleague. SupportWidget.jsx (which Michael confirmed
+      // reads fine) already has exactly this kind of section; the
+      // "=== VOICE ===" block below mirrors it, adapted for a BD assistant
+      // rather than a support bot — numbered steps are allowed here since
+      // drafting outreach genuinely is often a strict sequence, unlike
+      // support's stricter "plain text" rule.
       const systemPrompt = `You are Annie, an expert BD intelligence assistant for ${profile?.full_name || 'a recruiter'} at ${profile?.firm_name || 'their recruitment firm'}.
 Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
 Functions this recruiter places candidates into: ${onboarding?.functions?.join(', ') || 'All functions, no specific focus given'}.
@@ -136,7 +144,18 @@ ${onboarding?.writing_style ? `\nWhen drafting any message, email, or LinkedIn c
 ${buildWatchlistChatHint(watchlist)}
 ${buildCrmSnapshotChatHint(crmSnapshot)}
 You help with: BD strategy, outreach messages, market intelligence, interview prep, candidate pitches, objection handling, and anything recruitment business development related.
-Be specific, actionable and concise. No waffle.`
+Be specific, actionable and concise. No waffle.
+
+=== VOICE ===
+Write like a sharp, switched-on colleague typing quickly, not a business document.
+- Short sentences, usually one to three. Longer only for an actual draft (an email, a LinkedIn message) you're asked to write out in full.
+- Answer first, context after. Never open with a preamble or restate the question back.
+- Plain text by default. No bold section headers, no bullet lists of options — write it as sentences. Numbered steps are fine ONLY for a real sequence someone follows in order (e.g. a 3-step outreach plan), never as a menu of unrelated ideas.
+- One clarifying question at a time, never a numbered list of several at once — ask the single most useful one, get the answer, then ask the next if you still need it.
+- Contractions always — "you'll", "that's", "I've".
+- Never say "Great question!", "I'd be happy to help", "What's on your mind?", or close with "Let me know if you have any other questions!" or similar boilerplate.
+- No em dashes — use a comma or a full stop instead.
+- No emoji unless the recruiter used one first.`
 
       // 27 Aug 2026: only pay search's extra cost/latency when the question
       // actually needs current information — see chatWebSearch.js's header.
@@ -158,10 +177,10 @@ Be specific, actionable and concise. No waffle.`
         maxSearchUses: 3,
       }
 
-      let text, citations, usage
+      let text, citations
       const streamStartedAt = Date.now()
       try {
-        ;({ text, citations, usage } = await callChatStream({
+        ;({ text, citations } = await callChatStream({
           ...chatPayload,
           onDelta: (_chunk, fullTextSoFar) => {
             setMessages(prev => {
@@ -215,7 +234,7 @@ Be specific, actionable and concise. No waffle.`
           next[assistantIndex] = { role: 'assistant', content: '', streaming: true }
           return next
         })
-        ;({ text, citations, usage } = await callChat(chatPayload))
+        ;({ text, citations } = await callChat(chatPayload))
       }
 
       setMessages(prev => {
@@ -228,10 +247,6 @@ Be specific, actionable and concise. No waffle.`
         return next
       })
       await supabase.from('chat_messages').insert({ user_id: user.id, role: 'assistant', content: text })
-      // The count chat.js returned was taken BEFORE this message was stored,
-      // so add the one just sent to keep the figure the recruiter sees
-      // consistent with what they've actually used.
-      if (usage) setChatUsage({ ...usage, used: usage.used + 1, remaining: Math.max(0, usage.limit - usage.used - 1) })
       trackEvent('ask_annie_message_sent')
     } catch (err) {
       // 2026-08-26 audit fix: this used to always show a generic "something
@@ -239,7 +254,7 @@ Be specific, actionable and concise. No waffle.`
       // throws new Error(err.error || 'Request failed') for every non-ok
       // response, and chat.js's own error bodies are already written to be
       // shown to the user verbatim — most importantly its 402 for hitting
-      // the monthly Ask Annie cap ("You've used all 500 Ask Annie messages
+      // the monthly Ask Annie cap ("You've used all 100 Ask Annie messages
       // included this month. Upgrade to Growth for unlimited messages."),
       // which a Starter user hitting their limit was previously never told
       // at all. Only fall back to the generic copy for the cases where
@@ -297,23 +312,6 @@ Be specific, actionable and concise. No waffle.`
         <h1 className="text-3xl font-bold text-navy">Ask Annie</h1>
         <p className="text-gray-500 mt-1">Your personal BD intelligence assistant</p>
       </div>
-
-      {/* 2026-09-01: a capped plan gets a visible countdown from 80% of its
-          allowance. Before this, a Starter recruiter's only signal was the
-          402 itself — they found out they'd run out mid-way through prepping
-          for a call, with no warning it was coming. Shown only on capped
-          plans (chatUsage is null on Growth/Team), and only in the last
-          fifth, so it stays out of the way the rest of the month. */}
-      {chatUsage && chatUsage.used >= chatUsage.limit * 0.8 && (
-        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-gold/40 bg-gold/10 px-4 py-3 text-sm">
-          <span className="text-navy">
-            You've used <strong>{chatUsage.used}</strong> of your <strong>{chatUsage.limit}</strong> Ask Annie messages this month.
-          </span>
-          <Link to="/dashboard/billing" className="font-semibold text-navy underline underline-offset-2 hover:text-gold">
-            Upgrade for unlimited
-          </Link>
-        </div>
-      )}
 
       {messages.length === 0 && (
         <div className="mb-4 grid grid-cols-2 gap-2">

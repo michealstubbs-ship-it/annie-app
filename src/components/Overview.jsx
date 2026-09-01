@@ -147,6 +147,12 @@ export default function Overview() {
   const [newSignalsCount, setNewSignalsCount] = useState(0)
   const [meetings, setMeetings] = useState([])
   const [tasks, setTasks] = useState([])
+  // 2026-09-01, Michael: a contact follow-up reminder (ContactDetailModal)
+  // "should turn up on today's schedule on the overview." Derived from
+  // fullContacts below rather than a new query — that select('*') already
+  // includes follow_up_date/follow_up_reason, same due-today-or-overdue
+  // rule bd_tasks already uses just below.
+  const [contactFollowUps, setContactFollowUps] = useState([])
   const [contactsCount, setContactsCount] = useState(null) // null = not checked yet, avoids a flash of the reminder
   const [scanOutcome, setScanOutcome] = useState(null) // set once scan-status.js reports the scan is actually done, tells us WHY there's nothing (or something) to show
   const [chainProgress, setChainProgress] = useState(null) // live counts while a chained scan is still running — updated on every poll tick via useScanStatusPoll's onTick
@@ -359,6 +365,12 @@ export default function Overview() {
     setNewSignalsCount(signalCountRows?.length || 0)
     setMeetings(meetingRows || [])
     setTasks(taskRows || [])
+    setContactFollowUps(
+      (fullContacts || [])
+        .filter(c => c.follow_up_date && c.follow_up_date <= todayDateStr)
+        .sort((a, b) => a.follow_up_date.localeCompare(b.follow_up_date))
+        .slice(0, 5)
+    )
     setContactsCount(contactsCountResult ?? 0)
     setTier(tierResult)
     } catch (err) {
@@ -402,7 +414,7 @@ export default function Overview() {
   // — a customer with real actions, meetings or signals already showing
   // doesn't need to be told about the scan that ran hours ago, that would
   // just be noise competing with what's actually there for them today.
-  const dashboardIsQuiet = urgentCount === 0 && totalActions === 0 && meetings.length === 0 && tasks.length === 0 && signals.length === 0
+  const dashboardIsQuiet = urgentCount === 0 && totalActions === 0 && meetings.length === 0 && tasks.length === 0 && contactFollowUps.length === 0 && signals.length === 0
 
   const briefing = useMemo(() => {
     const parts = []
@@ -410,11 +422,12 @@ export default function Overview() {
     else if (totalActions > 0) parts.push(`${totalActions} thing${totalActions === 1 ? '' : 's'} worth a look today`)
     if (meetings.length > 0) parts.push(`${meetings.length} meeting${meetings.length === 1 ? '' : 's'} today`)
     if (tasks.length > 0) parts.push(`${tasks.length} task${tasks.length === 1 ? '' : 's'} due`)
+    if (contactFollowUps.length > 0) parts.push(`${contactFollowUps.length} follow-up${contactFollowUps.length === 1 ? '' : 's'} due`)
     if (parts.length) return parts.join(', ') + '.'
     if (researching) return "Annie is researching your market right now, first results usually land within a few minutes."
     if (dashboardIsQuiet && scanCopy) return scanCopy.headline
     return 'Nothing urgent right now. Good time to work through your pipeline.'
-  }, [urgentCount, totalActions, meetings.length, tasks.length, researching, dashboardIsQuiet, scanCopy])
+  }, [urgentCount, totalActions, meetings.length, tasks.length, contactFollowUps.length, researching, dashboardIsQuiet, scanCopy])
 
   // 2026-09-01 (Michael): give a real, tier-specific time estimate instead
   // of a vague "several minutes" for everyone — Starter's scan ceiling is 10
@@ -671,7 +684,7 @@ export default function Overview() {
               <IconCalendar className="w-4 h-4 text-gold" />
               <p className="text-[15px] font-bold text-navy">Today's schedule</p>
             </div>
-            {meetings.length === 0 && tasks.length === 0 ? (
+            {meetings.length === 0 && tasks.length === 0 && contactFollowUps.length === 0 ? (
               <p className="text-sm text-gray-400">Nothing on the calendar today.</p>
             ) : (
               <>
@@ -686,6 +699,17 @@ export default function Overview() {
                     <p className="text-[13px] font-medium text-gray-800">Task &middot; {t.title}</p>
                     <Tag kind={t.due_date < startOfToday().toISOString().slice(0, 10) ? 'urgent' : 'quiet'}>
                       {t.due_date < startOfToday().toISOString().slice(0, 10) ? 'overdue' : 'due today'}
+                    </Tag>
+                  </div>
+                ))}
+                {contactFollowUps.map((c, i) => (
+                  <div key={'f' + c.id} className={`flex items-center justify-between gap-3 py-2.5 ${(meetings.length + tasks.length + i) > 0 ? 'border-t border-gray-50' : ''}`}>
+                    <div className="min-w-0">
+                      <p className="text-[13px] font-medium text-gray-800 truncate">Follow up &middot; {c.name}{c.company ? ` (${c.company})` : ''}</p>
+                      {c.follow_up_reason && <p className="text-[11.5px] text-gray-400 mt-0.5 truncate">{c.follow_up_reason}</p>}
+                    </div>
+                    <Tag kind={c.follow_up_date < startOfToday().toISOString().slice(0, 10) ? 'urgent' : 'quiet'}>
+                      {c.follow_up_date < startOfToday().toISOString().slice(0, 10) ? 'overdue' : 'due today'}
                     </Tag>
                   </div>
                 ))}

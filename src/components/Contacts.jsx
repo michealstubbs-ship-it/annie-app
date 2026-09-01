@@ -5,6 +5,7 @@ import { listContacts, deleteContact } from '../lib/data/contacts'
 import { CONTACT_STATUSES, CONTACT_STATUS_LABELS, searchContacts, filterContactsByStatus, sortContacts, groupContactsByStatus } from '../lib/contactsView'
 import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
+import ContactDetailModal from './ContactDetailModal'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
@@ -46,6 +47,9 @@ export default function Contacts() {
   const [editContact, setEditContact] = useState(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [listError, setListError] = useState('')
+  // 2026-09-01: click-to-expand — clicking a contact opens this detail view
+  // (notes log + follow-up) instead of Edit being the only way in.
+  const [detailContactId, setDetailContactId] = useState(null)
 
   useEffect(() => { loadContacts() }, [user])
   useEffect(() => { if (location.state?.autoOpenAdd) openAdd() }, [location.state])
@@ -96,9 +100,9 @@ export default function Contacts() {
 
   function renderRow(c) {
     return (
-      <tr key={c.id} className="hover:bg-gray-50 transition-colors">
+      <tr key={c.id} className="hover:bg-gray-50 transition-colors cursor-pointer" onClick={() => setDetailContactId(c.id)}>
         <td className="px-4 py-3">
-          <div className="font-semibold text-navy text-sm">{c.name}</div>
+          <div className="font-semibold text-navy text-sm hover:underline">{c.name}</div>
           {c.email && <div className="text-xs text-gray-400">{c.email}</div>}
         </td>
         <td className="px-4 py-3 text-sm text-gray-600">{c.company || '-'}</td>
@@ -114,7 +118,7 @@ export default function Contacts() {
               red that undersold how irreversible it is — same
               mis-click-adjacency issue just fixed on Invoices.jsx,
               applied here for consistency across the CRM. */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
             <button onClick={() => openEdit(c)} className="text-xs text-gold-ink font-semibold hover:underline">Edit</button>
             <div className="pl-2 ml-1 border-l border-gray-200">
               <button onClick={() => setConfirmDeleteId(c.id)} className="text-xs text-red-500 font-semibold hover:underline">Delete</button>
@@ -255,6 +259,13 @@ export default function Contacts() {
         editContact={editContact}
         onClose={() => setShowModal(false)}
         onSaved={() => loadContacts()}
+      />
+
+      <ContactDetailModal
+        contactId={detailContactId}
+        open={!!detailContactId}
+        onClose={() => setDetailContactId(null)}
+        onChanged={() => loadContacts()}
       />
 
       <ConfirmDialog

@@ -36,6 +36,17 @@ export async function listContactsWithCompany(userId) {
   return data || []
 }
 
+// ContactDetailModal's own fetch — the full record for whichever contact
+// was clicked, independent of whatever partial shape the caller already
+// had (Companies.jsx's in-company contact list only carries
+// `id, name, title, email, status, company_id`, not enough to render a
+// real detail view or notes/follow-up fields).
+export async function getContact(id) {
+  const { data, error } = await supabase.from('contacts').select('*').eq('id', id).single()
+  if (error) throw error
+  return data
+}
+
 export function createContact(row, userId) {
   return supabase.from('contacts').insert({ ...row, user_id: userId }).select().single()
 }

@@ -10,6 +10,28 @@ import React, { useEffect, useRef } from 'react'
 export default function Modal({ open, onClose, title, children, maxWidth = 'max-w-md' }) {
   const panelRef = useRef(null)
   const previouslyFocused = useRef(null)
+  // 2026-09-01 audit fix, real customer report ("it lets me type one letter
+  // then goes off, then I have to click back in"): every caller passes
+  // onClose as an inline arrow function (`onClose={() => setShowModal(false)}`),
+  // a new function identity on every render of the PARENT — and typing into
+  // any field in the form re-renders that parent (the keystroke's own
+  // setState). With onClose in this effect's dependency array, that meant
+  // the whole setup effect below re-ran on every single keystroke anywhere
+  // in the modal, including its `firstField?.focus()` line — which
+  // unconditionally steals focus back to the modal's FIRST focusable
+  // field. Typing in that exact first field masked the bug (re-focusing an
+  // already-focused element is a no-op), which is why this went unnoticed —
+  // but typing into anything else (Meetings' Outcome/Next steps, a middle
+  // field in any Add/Edit form) yanked focus away after every character.
+  // A ref keeps the effect's own logic reading the latest onClose without
+  // needing it in the dependency array, so this setup now runs exactly
+  // once per open/close transition, not once per keystroke — which also
+  // fixes a second, quieter bug in the same effect: `previouslyFocused`
+  // was being re-captured on every keystroke too, so "restore focus to
+  // whatever opened the modal" on close was actually restoring focus to
+  // whatever field was focused right before closing, not the real trigger.
+  const onCloseRef = useRef(onClose)
+  useEffect(() => { onCloseRef.current = onClose })
 
   useEffect(() => {
     if (!open) return
@@ -18,7 +40,7 @@ export default function Modal({ open, onClose, title, children, maxWidth = 'max-
 
     function handleKeyDown(e) {
       if (e.key === 'Escape') {
-        onClose?.()
+        onCloseRef.current?.()
         return
       }
       // Basic focus trap: Tab/Shift+Tab cycles within the dialog instead of
@@ -50,7 +72,7 @@ export default function Modal({ open, onClose, title, children, maxWidth = 'max-
       // Restore focus to whatever opened the modal, standard dialog behaviour.
       previouslyFocused.current?.focus?.()
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 

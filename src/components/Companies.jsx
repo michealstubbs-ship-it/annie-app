@@ -8,6 +8,7 @@ import { listJobsMinimal } from '../lib/data/jobs'
 import { listIndustries, searchCompanies, filterCompaniesByIndustry, sortCompanies } from '../lib/companiesView'
 import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
+import ContactDetailModal from './ContactDetailModal'
 import JobFormModal from './JobFormModal'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
@@ -51,6 +52,9 @@ export default function Companies() {
   const [showJobModal, setShowJobModal] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [delError, setDelError] = useState('')
+  // 2026-09-01: click-to-expand — a company's own contact list rows were
+  // fully inert before this (no click action at all, not even Edit).
+  const [detailContactId, setDetailContactId] = useState(null)
 
   useEffect(() => { load() }, [user])
   useEffect(() => { if (location.state?.autoOpenAdd) openAddCo() }, [location.state])
@@ -318,13 +322,17 @@ export default function Companies() {
                   ) : (
                     <div className="space-y-2">
                       {contactsFor(selected.id).map(c => (
-                        <div key={c.id} className="flex items-center justify-between p-3 rounded-lg border border-gray-100">
+                        <button
+                          key={c.id}
+                          onClick={() => setDetailContactId(c.id)}
+                          className="w-full flex items-center justify-between p-3 rounded-lg border border-gray-100 hover:border-gold text-left transition-colors"
+                        >
                           <div>
                             <div className="font-semibold text-navy text-sm">{c.name}</div>
                             <div className="text-xs text-gray-500">{c.title || ''}{c.title && c.email ? ' · ' : ''}{c.email || ''}</div>
                           </div>
                           <span className={`text-xs font-semibold px-2 py-1 rounded-full ${STATUS_COLOR[c.status] || 'bg-gray-100 text-gray-500'}`}>{c.status}</span>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -360,6 +368,12 @@ export default function Companies() {
         lockedCompanyName={selected?.name}
         onClose={() => setShowContactModal(false)}
         onSaved={() => load()}
+      />
+      <ContactDetailModal
+        contactId={detailContactId}
+        open={!!detailContactId}
+        onClose={() => setDetailContactId(null)}
+        onChanged={() => load()}
       />
       <JobFormModal
         open={showJobModal}
