@@ -3,7 +3,7 @@ import { describeChatFailure, describeStaleTab } from './chatErrorMessage.js'
 
 describe('describeChatFailure', () => {
   it('passes a real server-sent error message through unchanged, with no reload suggestion', () => {
-    const err = new Error("You've used all 100 Ask Annie messages included this month. Upgrade to Growth for unlimited messages.")
+    const err = new Error("You've used all 500 Ask Annie messages included this month. Upgrade to Growth for unlimited messages.")
     const result = describeChatFailure(err)
     expect(result.text).toBe(err.message)
     expect(result.reloadSuggested).toBe(false)

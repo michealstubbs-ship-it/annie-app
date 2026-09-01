@@ -58,6 +58,24 @@ async function fetchWithNetworkRetry(url, options, attempts = 2, delayMs = 400) 
 // Anthropic budget. Centralised here so every call site (Ask Annie, the
 // support widget, Today's Actions, the writing-style analyser) gets this
 // automatically instead of each one needing to remember it.
+// Reads the used/limit pair chat.js attaches to every successful reply.
+// Returns null on an unlimited plan (the headers are deliberately omitted
+// there, so a Growth user never sees a countdown implying a limit exists)
+// and on any response where the values aren't two real numbers.
+function readChatUsage(resp) {
+  // Defensive on purpose: this must never be the thing that breaks a reply.
+  // A usage counter is a nicety; the answer is the product. Anything that
+  // isn't a well-formed pair of numbers — headers absent entirely, a proxy
+  // that stripped them, an older deploy that doesn't send them yet — simply
+  // means "no counter to show".
+  const headers = resp?.headers
+  if (typeof headers?.get !== 'function') return null
+  const used = Number(headers.get('X-Annie-Chat-Used'))
+  const limit = Number(headers.get('X-Annie-Chat-Limit'))
+  if (!Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) return null
+  return { used, limit, remaining: Math.max(0, limit - used) }
+}
+
 export async function callChat({ messages, systemOverride, maxTokens, model, webSearch, maxSearchUses } = {}) {
   const { data: { session } } = await withTimeout(supabase.auth.getSession(), SESSION_TIMEOUT_MS, 'callChat-session')
   const token = session?.access_token
@@ -85,7 +103,17 @@ export async function callChat({ messages, systemOverride, maxTokens, model, web
     throw new Error(err.error || 'Request failed')
   }
 
-  return resp.json() // { text, citations }
+  // 2026-09-01: chat.js now returns the caller's monthly Ask Annie usage in
+  // response headers so Chat.jsx can warn a Starter recruiter BEFORE they hit
+  // the ceiling. Additive on purpose — `usage` is undefined on an unlimited
+  // plan and every existing caller that only destructures { text, citations }
+  // is unaffected.
+  const body = await resp.json() // { text, citations }
+  const usage = readChatUsage(resp)
+  // Spread only when there is something to report, so the returned shape is
+  // byte-for-byte what it was before on an unlimited plan — no existing
+  // caller (or its tests) sees a new key appear out of nowhere.
+  return usage ? { ...body, usage } : body
 }
 
 // chat.js now streams its reply as NDJSON (one {"type":"delta",...} line per
@@ -153,5 +181,6 @@ export async function callChatStream({ messages, systemOverride, maxTokens, mode
   }
   if (buffer) handleLine(buffer) // stream can end without a trailing newline
 
-  return { text, citations }
+  const usage = readChatUsage(resp)
+  return usage ? { text, citations, usage } : { text, citations }
 }

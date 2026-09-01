@@ -44,6 +44,56 @@ describe('callChat', () => {
     expect(result).toEqual({ text: 'hello', citations: [] })
   })
 
+  // 2026-09-01: chat.js reports the caller's monthly Ask Annie usage in
+  // response headers so Chat.jsx can warn a Starter recruiter before they hit
+  // the ceiling rather than letting them walk into a 402 mid-call-prep.
+  describe('monthly usage headers', () => {
+    it('returns the used/limit/remaining triple when the server sends the headers', async () => {
+      getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok_abc' } } })
+      vi.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        headers: new Headers({ 'X-Annie-Chat-Used': '412', 'X-Annie-Chat-Limit': '500' }),
+        json: async () => ({ text: 'hello', citations: [] }),
+      })
+
+      const result = await callChat({ messages: [{ role: 'user', content: 'hi' }] })
+
+      expect(result.usage).toEqual({ used: 412, limit: 500, remaining: 88 })
+    })
+
+    it('omits usage entirely on an unlimited plan, so the shape is unchanged', async () => {
+      // Growth/Team deliberately get no headers — a recruiter on an uncapped
+      // plan should never see a countdown implying a limit exists.
+      getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok_abc' } } })
+      vi.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ text: 'hello', citations: [] }),
+      })
+
+      const result = await callChat({ messages: [{ role: 'user', content: 'hi' }] })
+
+      expect(result).toEqual({ text: 'hello', citations: [] })
+      expect('usage' in result).toBe(false)
+    })
+
+    it('never lets a malformed or missing header break the reply', async () => {
+      // A usage counter is a nicety; the answer is the product. A proxy that
+      // strips headers, or an older deploy that does not send them yet, must
+      // degrade to "no counter" rather than throwing.
+      getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok_abc' } } })
+      vi.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        headers: new Headers({ 'X-Annie-Chat-Used': 'not-a-number', 'X-Annie-Chat-Limit': '0' }),
+        json: async () => ({ text: 'hello', citations: [] }),
+      })
+
+      const result = await callChat({ messages: [{ role: 'user', content: 'hi' }] })
+
+      expect(result).toEqual({ text: 'hello', citations: [] })
+    })
+  })
+
   it('throws the server-provided error message when the response is not ok', async () => {
     getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok_abc' } } })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'rate limited' }) }))

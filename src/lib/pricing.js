@@ -23,7 +23,7 @@ export const TIERS = [
     blurb: 'For a solo recruiter or a single desk.',
     monthly: 79,
     yearly: 69,
-    features: ['Full CRM, pipeline & contacts', 'Recurring BD signal scan', "Today's Actions", 'Ask Annie (up to 100 messages/mo)', 'LinkedIn import'],
+    features: ['Full CRM, pipeline & contacts', 'Recurring BD signal scan', "Today's Actions", 'Ask Annie (up to 500 messages/mo)', 'LinkedIn import'],
   },
   {
     key: 'growth',

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, Link } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { callChat, callChatStream } from '../lib/callChat'
@@ -35,6 +35,10 @@ export default function Chat() {
   const [onboarding, setOnboarding] = useState(null)
   const [watchlist, setWatchlist] = useState([])
   const [crmSnapshot, setCrmSnapshot] = useState(null)
+  // Monthly Ask Annie allowance, as reported by chat.js on every reply.
+  // Stays null on Growth/Team, which are uncapped and must never be shown a
+  // countdown that implies otherwise.
+  const [chatUsage, setChatUsage] = useState(null)
   const bottomRef = useRef(null)
 
   useEffect(() => { loadHistory(); loadOnboarding(); loadWatchlist(); loadCrmSnapshot() }, [user])
@@ -154,10 +158,10 @@ Be specific, actionable and concise. No waffle.`
         maxSearchUses: 3,
       }
 
-      let text, citations
+      let text, citations, usage
       const streamStartedAt = Date.now()
       try {
-        ;({ text, citations } = await callChatStream({
+        ;({ text, citations, usage } = await callChatStream({
           ...chatPayload,
           onDelta: (_chunk, fullTextSoFar) => {
             setMessages(prev => {
@@ -211,7 +215,7 @@ Be specific, actionable and concise. No waffle.`
           next[assistantIndex] = { role: 'assistant', content: '', streaming: true }
           return next
         })
-        ;({ text, citations } = await callChat(chatPayload))
+        ;({ text, citations, usage } = await callChat(chatPayload))
       }
 
       setMessages(prev => {
@@ -224,6 +228,10 @@ Be specific, actionable and concise. No waffle.`
         return next
       })
       await supabase.from('chat_messages').insert({ user_id: user.id, role: 'assistant', content: text })
+      // The count chat.js returned was taken BEFORE this message was stored,
+      // so add the one just sent to keep the figure the recruiter sees
+      // consistent with what they've actually used.
+      if (usage) setChatUsage({ ...usage, used: usage.used + 1, remaining: Math.max(0, usage.limit - usage.used - 1) })
       trackEvent('ask_annie_message_sent')
     } catch (err) {
       // 2026-08-26 audit fix: this used to always show a generic "something
@@ -231,7 +239,7 @@ Be specific, actionable and concise. No waffle.`
       // throws new Error(err.error || 'Request failed') for every non-ok
       // response, and chat.js's own error bodies are already written to be
       // shown to the user verbatim — most importantly its 402 for hitting
-      // the monthly Ask Annie cap ("You've used all 100 Ask Annie messages
+      // the monthly Ask Annie cap ("You've used all 500 Ask Annie messages
       // included this month. Upgrade to Growth for unlimited messages."),
       // which a Starter user hitting their limit was previously never told
       // at all. Only fall back to the generic copy for the cases where
@@ -289,6 +297,23 @@ Be specific, actionable and concise. No waffle.`
         <h1 className="text-3xl font-bold text-navy">Ask Annie</h1>
         <p className="text-gray-500 mt-1">Your personal BD intelligence assistant</p>
       </div>
+
+      {/* 2026-09-01: a capped plan gets a visible countdown from 80% of its
+          allowance. Before this, a Starter recruiter's only signal was the
+          402 itself — they found out they'd run out mid-way through prepping
+          for a call, with no warning it was coming. Shown only on capped
+          plans (chatUsage is null on Growth/Team), and only in the last
+          fifth, so it stays out of the way the rest of the month. */}
+      {chatUsage && chatUsage.used >= chatUsage.limit * 0.8 && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-gold/40 bg-gold/10 px-4 py-3 text-sm">
+          <span className="text-navy">
+            You've used <strong>{chatUsage.used}</strong> of your <strong>{chatUsage.limit}</strong> Ask Annie messages this month.
+          </span>
+          <Link to="/dashboard/billing" className="font-semibold text-navy underline underline-offset-2 hover:text-gold">
+            Upgrade for unlimited
+          </Link>
+        </div>
+      )}
 
       {messages.length === 0 && (
         <div className="mb-4 grid grid-cols-2 gap-2">

@@ -29,8 +29,30 @@ import { parseIntEnv } from './env.js'
 // invites exactly the bug this would have been: someone wiring it up later
 // on the strength of its name alone, re-introducing a restriction the
 // product deliberately doesn't have.
+// 2026-09-01, Michael, after measuring the real numbers rather than guessing.
+// Starter's Ask Annie allowance was 100/month. Measured against a real desk
+// on production: one Ask Annie message costs ~518 input + ~485 output tokens,
+// which at Haiku 4.5's $1/M in / $5/M out is about $0.003 — a third of a
+// penny. 450 messages a month is roughly $1.30 for short questions on a small
+// desk, ~$3.40 for realistic 5-turn conversations, ~$8 for a heavy user with
+// a large CRM and long threads. So the 100-message cap was protecting against
+// a cost of a few dollars a month on a plan priced two orders of magnitude
+// above it.
+//
+// It was also the binding constraint by roughly 20x, not the spend caps that
+// exist for cost: Starter's own anthropicUserDailyTokenCap (80,000/day) minus
+// the twice-daily scan leaves room for ~65 chat messages a DAY, while
+// 100/month allows five. The cap was set where it constrained the product,
+// not where it protected the bill.
+//
+// 500/month is ~25 per working day — enough that a recruiter genuinely stops
+// counting — while staying a real ceiling that a multi-desk power user will
+// reach, so the upgrade conversation stays honest rather than artificial.
+// Growth and Team stay unlimited (Michael's call: "for Growth there cannot be
+// a significant cap"); see CHAT_ABUSE_ALERT_THRESHOLD in chat.js for the
+// monitoring-only backstop that replaces a limit there.
 export const TIER_LIMITS = {
-  starter: { chatMessagesPerMonth: 100, deepOnboardingResearch: false },
+  starter: { chatMessagesPerMonth: 500, deepOnboardingResearch: false },
   growth: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true },
   team: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true },
 }

@@ -32,7 +32,7 @@ Annie is a BD intelligence platform for recruitment firms (built by Vantage Sear
 
 === PLANS & PRICING ===
 Three plans, monthly or annual (annual shown as an effective $/month, already discounted — never say "annual is 12x the monthly price" since annual is cheaper per month, not billed as a lump sum multiplier):
-- Starter: $79/mo, or $69/mo billed annually. For a solo recruiter or single desk. Includes full CRM/pipeline/contacts, a recurring BD signal scan, Today's Actions, Ask Annie (capped at 100 messages/month), LinkedIn import.
+- Starter: $79/mo, or $69/mo billed annually. For a solo recruiter or single desk. Includes full CRM/pipeline/contacts, a recurring BD signal scan, Today's Actions, Ask Annie (capped at 500 messages/month), LinkedIn import.
 - Growth: $129/mo, or $109/mo billed annually. Our most popular plan. Everything in Starter, plus unlimited Ask Annie messages and deeper, ongoing research scans (this applies to the regular background scans permanently, not just a one-time onboarding boost).
 - Team: $99/mo per seat, or $84/mo per seat billed annually, 3-seat minimum. Everything in Growth per seat, plus a shared CRM across the whole team, a team admin/insights view, and volume seat pricing.
 
@@ -77,7 +77,7 @@ Today's BD Actions: only ever shows leadership changes and genuine live job post
 
 Intelligence Feed: shows the broader set of signals (funding, leadership changes, expansions, hiring activity, and more) as they're found. A separate "News" tab inside the Feed holds market-level items that aren't real BD actions — M&A news, regulatory news, and public commentary — clearly separated so they never clutter Today's Actions.
 
-Ask Annie: a BD assistant chat for outreach drafts, call prep, market intelligence, and objection handling, aware of the account's own sectors, markets, and tone. It does not currently do live web searches — its answers come from its own knowledge and whatever the account's own onboarding/CRM context gives it. Starter is capped at 100 messages/month; Growth and Team are unlimited.
+Ask Annie: a BD assistant chat for outreach drafts, call prep, market intelligence, and objection handling, aware of the account's own sectors, markets, and tone. For genuinely time-sensitive questions it can run a real live web search and shows the sources it checked; otherwise it answers from its own knowledge plus the account's own onboarding/CRM context. Starter is capped at 500 messages/month; Growth and Team are unlimited.
 
 Contacts: each has a status — hot, warm, cold, client, or inactive. Hot and warm contacts are the ones Annie actively watches for new signals.
 
@@ -196,7 +196,7 @@ export default function SupportWidget() {
       const tier = sub?.tier || 'starter'
       const lines = [
         `Plan: ${tier}${sub?.status ? ` (${sub.status})` : ' (no active subscription found — treated as Starter)'}`,
-        tier === 'starter' ? `Ask Annie messages used this month: ${messagesThisMonth ?? 0} of 100` : `Ask Annie messages used this month: ${messagesThisMonth ?? 0} (unlimited on this plan)`,
+        tier === 'starter' ? `Ask Annie messages used this month: ${messagesThisMonth ?? 0} of 500` : `Ask Annie messages used this month: ${messagesThisMonth ?? 0} (unlimited on this plan)`,
       ]
       if (sub?.status === 'trialing' && sub?.current_period_end) {
         lines.push(`Trial ends: ${new Date(sub.current_period_end).toLocaleDateString('en-GB')}`)

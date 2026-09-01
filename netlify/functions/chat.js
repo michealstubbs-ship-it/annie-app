@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { reserveAnthropicTokens, reserveChatCall } from './lib/aiUsage.js'
+import { alertIfConfigured } from './lib/scanShared.js'
 import { getEntitlements, resolveResourceCaps } from './lib/entitlements.js'
 import { createTimeoutFetch, fetchWithTimeout } from './lib/scanShared.js'
 import { parseIntEnv } from './lib/env.js'
@@ -161,7 +162,17 @@ export default async (req, context) => {
   // this counts what's actually been sent, not a separate guess at it.
   // Soft gate means this only ever narrows a perk, never blocks the rest of
   // the product — see entitlements.js's header comment.
-  if (Number.isFinite(entitlements.limits.chatMessagesPerMonth)) {
+  // 2026-09-01: the count now runs for EVERY tier, not only capped ones.
+  // Two reasons. (1) The response carries the used/limit pair back to the
+  // client so Chat.jsx can warn a Starter recruiter as they approach the
+  // ceiling instead of letting them walk into it — a cap you can see coming
+  // is a prompt to upgrade, a cap you hit without warning is a bad surprise
+  // in the middle of prepping for a call. (2) Growth and Team are
+  // deliberately uncapped, which means nothing would otherwise notice a
+  // scripted or runaway caller on those plans; the alert below is
+  // monitoring, not billing, and never blocks the customer.
+  let messagesUsed = null
+  if (usageClient) {
     const startOfMonth = new Date()
     startOfMonth.setUTCDate(1)
     startOfMonth.setUTCHours(0, 0, 0, 0)
@@ -171,11 +182,17 @@ export default async (req, context) => {
       .eq('user_id', user.id)
       .eq('role', 'user')
       .gte('created_at', startOfMonth.toISOString())
-    if ((count || 0) >= entitlements.limits.chatMessagesPerMonth) {
-      return new Response(
-        JSON.stringify({ error: `You've used all ${entitlements.limits.chatMessagesPerMonth} Ask Annie messages included this month. Upgrade to Growth for unlimited messages.` }),
-        { status: 402, headers: { 'Content-Type': 'application/json' } },
-      )
+    messagesUsed = count || 0
+
+    if (Number.isFinite(entitlements.limits.chatMessagesPerMonth)) {
+      if (messagesUsed >= entitlements.limits.chatMessagesPerMonth) {
+        return new Response(
+          JSON.stringify({ error: `You've used all ${entitlements.limits.chatMessagesPerMonth} Ask Annie messages included this month. Upgrade to Growth for unlimited messages.` }),
+          { status: 402, headers: { 'Content-Type': 'application/json', ...chatUsageHeaders(messagesUsed, entitlements) } },
+        )
+      }
+    } else if (messagesUsed >= CHAT_ABUSE_ALERT_THRESHOLD) {
+      alertUnlimitedChatVolumeOnce(user.id, entitlements.tier, messagesUsed)
     }
   }
 
@@ -315,7 +332,7 @@ export default async (req, context) => {
       // for the reply to finish before responding.
       return new Response(streamAnthropicReplyAsNdjson(resp.body), {
         status: 200,
-        headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+        headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8', ...chatUsageHeaders(messagesUsed, entitlements) },
       })
     }
 
@@ -339,12 +356,41 @@ export default async (req, context) => {
 
     return new Response(JSON.stringify({ text, citations }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...chatUsageHeaders(messagesUsed, entitlements) },
     })
   } catch (err) {
     await reportServerError('chat', err)
     return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } })
   }
+}
+
+// An uncapped plan still shouldn't be able to run indefinitely unnoticed.
+// This is a monitoring backstop for Growth/Team only: it never blocks a
+// request and never appears to the customer. 2,000 messages in a calendar
+// month is roughly 100 per working day — far beyond any plausible single
+// recruiter's real use, so crossing it means either a genuinely exceptional
+// team account worth a conversation, or something scripted worth looking at.
+const CHAT_ABUSE_ALERT_THRESHOLD = 2000
+
+// Fires at most once per user per day per warm container, mirroring
+// alertCapHitOnce in scanShared.js — the alert is worth sending, but not on
+// every message for the rest of the month once the threshold is crossed.
+const alertedChatVolume = new Set()
+function alertUnlimitedChatVolumeOnce(userId, tier, used) {
+  const key = `${userId}:${new Date().toISOString().slice(0, 10)}`
+  if (alertedChatVolume.has(key)) return
+  alertedChatVolume.add(key)
+  alertIfConfigured(`:eyes: Ask Annie volume: user ${userId} (${tier}, uncapped) has sent ${used} messages this calendar month, past the ${CHAT_ABUSE_ALERT_THRESHOLD} monitoring threshold. Not blocked — worth checking whether this is a real heavy team or something scripted.`)
+}
+
+// Sent on every chat response so Chat.jsx can show a Starter recruiter how
+// much of their monthly allowance is left BEFORE they hit it. Omitted
+// entirely for unlimited tiers — there is nothing to count down to, and a
+// Growth user should never see a number that implies a limit exists.
+function chatUsageHeaders(used, entitlements) {
+  const limit = entitlements?.limits?.chatMessagesPerMonth
+  if (used === null || !Number.isFinite(limit)) return {}
+  return { 'X-Annie-Chat-Used': String(used), 'X-Annie-Chat-Limit': String(limit) }
 }
 
 export const config = { path: '/api/chat' }

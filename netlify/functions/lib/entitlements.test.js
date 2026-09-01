@@ -56,7 +56,7 @@ describe('getEntitlements', () => {
   it('growth and team are both unlimited on chat messages', () => {
     expect(TIER_LIMITS.growth.chatMessagesPerMonth).toBe(Infinity)
     expect(TIER_LIMITS.team.chatMessagesPerMonth).toBe(Infinity)
-    expect(TIER_LIMITS.starter.chatMessagesPerMonth).toBe(100)
+    expect(TIER_LIMITS.starter.chatMessagesPerMonth).toBe(500)
   })
 })
 
