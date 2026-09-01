@@ -106,3 +106,45 @@ describe('keyword matching against realistic company industry text (the actual u
     expect(matches('independent oil and gas exploration company', 'Law > Litigation & Disputes')).toBe(false)
   })
 })
+
+// 2026-09-01: 4 sub-sectors promoted to their own top-level sector, approved
+// by Michael. See this file's own header comment for the full rationale.
+describe('2026-09-01 sector promotions — Construction, Manufacturing, Education, Marketing/Media/Advertising', () => {
+  it('are present as their own top-level sectors', () => {
+    for (const label of ['Construction', 'Manufacturing', 'Education', 'Marketing, Media & Advertising']) {
+      expect(SECTOR_PARENT_LABELS).toContain(label)
+    }
+  })
+
+  it('match real industry phrasing on their own whole-category selection', () => {
+    expect(matches('leading general contractor and main contractor for commercial construction', 'Construction')).toBe(true)
+    expect(matches('heavy manufacturing and industrial manufacturing group', 'Manufacturing')).toBe(true)
+    expect(matches('higher education university', 'Education')).toBe(true)
+    expect(matches('full-service advertising agency and creative agency', 'Marketing, Media & Advertising')).toBe(true)
+  })
+
+  it('narrowed sub-sector picks work precisely for each new sector', () => {
+    expect(matches('specialist mep contractor and fit-out contractor', 'Construction > Specialist & MEP Contracting')).toBe(true)
+    expect(matches('automotive manufacturer and oem auto parts manufacturer', 'Manufacturing > Automotive Manufacturing')).toBe(true)
+    expect(matches('edtech e-learning platform for schools', 'Education > EdTech')).toBe(true)
+    expect(matches('television network and broadcasting group', 'Marketing, Media & Advertising > Media & Broadcasting')).toBe(true)
+  })
+
+  it('Industrial no longer carries Manufacturing or Engineering & Construction as sub-sectors', () => {
+    const industrial = SECTOR_TAXONOMY.find(c => c.label === 'Industrial')
+    const subLabels = industrial.subSectors.map(s => s.label)
+    expect(subLabels).not.toContain('Manufacturing')
+    expect(subLabels).not.toContain('Engineering & Construction')
+    expect(subLabels).toEqual(['Logistics & Supply Chain', 'Automotive'])
+  })
+
+  it('selecting the whole "Industrial" sector no longer matches a pure construction/manufacturing company', () => {
+    expect(matches('general contractor specializing in commercial construction', 'Industrial')).toBe(false)
+    expect(matches('heavy machinery and metal parts factory production', 'Industrial')).toBe(false)
+  })
+
+  it('Government & Public Sector no longer carries Education as a sub-sector', () => {
+    const gov = SECTOR_TAXONOMY.find(c => c.label === 'Government & Public Sector')
+    expect(gov.subSectors.map(s => s.label)).not.toContain('Education')
+  })
+})

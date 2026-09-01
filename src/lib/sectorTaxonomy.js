@@ -4,6 +4,25 @@
 // a list of sub-sectors with tighter keyword sets (used when they narrow down).
 // "Executive Search" was removed, it's the customer's own profession, not a market
 // they place candidates into, and it never matched anything real anyway.
+//
+// 2026-09-01: promoted 4 sub-sectors to their own top-level sector, approved by
+// Michael ("Yes you can do that for these 4") after researching how top job
+// boards (LinkedIn's own industry taxonomy, both the classic ~150-value list and
+// the newer NAICS-aligned ~400-value list) and Crunchbase/NAICS classify these
+// markets — each is large and distinct enough on its own that bundling it inside
+// a broader category buried it from being separately targetable: Construction
+// (was Industrial > Engineering & Construction), Manufacturing (was Industrial >
+// Manufacturing), Education (was Government & Public Sector > Education), and
+// Marketing, Media & Advertising (new — wasn't represented at all before).
+// Removed from their old homes rather than left duplicated, so selecting the
+// old parent category (Industrial / Government & Public Sector) no longer
+// silently also matches what is now its own independent sector — that would
+// have defeated the point of separating them out. Industrial is narrower now
+// (Logistics & Supply Chain, Automotive); Government & Public Sector no longer
+// carries Education. NOTE for anyone with an existing saved sector selection of
+// "Industrial > Manufacturing", "Industrial > Engineering & Construction", or
+// "Government & Public Sector > Education": that exact sub-sector label no
+// longer exists in this list — re-pick the new standalone sector instead.
 
 export const SECTOR_TAXONOMY = [
   {
@@ -84,10 +103,8 @@ export const SECTOR_TAXONOMY = [
   },
   {
     label: 'Industrial',
-    keywords: ['industrial', 'manufacturing', 'engineering', 'construction'],
+    keywords: ['industrial', 'logistics', 'supply chain', 'automotive'],
     subSectors: [
-      { label: 'Manufacturing', keywords: ['manufacturing', 'factory', 'production'] },
-      { label: 'Engineering & Construction', keywords: ['engineering', 'construction', 'contractor', 'epc'] },
       { label: 'Logistics & Supply Chain', keywords: ['logistics', 'supply chain', 'freight', 'shipping'] },
       { label: 'Automotive', keywords: ['automotive', 'vehicle manufactur', 'auto parts'] },
     ],
@@ -123,9 +140,51 @@ export const SECTOR_TAXONOMY = [
     subSectors: [
       { label: 'Central Government', keywords: ['ministry', 'government department', 'federal government'] },
       { label: 'Public Health', keywords: ['public health', 'ministry of health'] },
-      { label: 'Education', keywords: ['university', 'education authority', 'ministry of education'] },
       { label: 'Non-profit / NGO', keywords: ['ngo', 'non-profit', 'nonprofit', 'foundation'] },
       { label: 'Defense & Security', keywords: ['defense', 'defence', 'security agency'] },
+    ],
+  },
+  {
+    label: 'Construction',
+    keywords: ['construction', 'contractor', 'built environment', 'infrastructure', 'epc'],
+    subSectors: [
+      { label: 'General & Commercial Contracting', keywords: ['general contractor', 'commercial construction', 'main contractor', 'building contractor'] },
+      { label: 'Civil & Infrastructure', keywords: ['civil engineering', 'infrastructure', 'highways', 'rail infrastructure', 'heavy civil'] },
+      { label: 'Residential & Housebuilding', keywords: ['residential construction', 'housebuilder', 'homebuilder', 'house building'] },
+      { label: 'Specialist & MEP Contracting', keywords: ['mep contractor', 'specialist contractor', 'mechanical electrical plumbing', 'fit-out'] },
+      { label: 'Construction Technology', keywords: ['contech', 'construction technology', 'bim software'] },
+    ],
+  },
+  {
+    label: 'Manufacturing',
+    keywords: ['manufacturing', 'factory', 'production', 'industrial manufactur'],
+    subSectors: [
+      { label: 'Industrial & Heavy Manufacturing', keywords: ['heavy manufacturing', 'industrial manufacturing', 'machinery manufactur', 'metals manufactur'] },
+      { label: 'Consumer Goods Manufacturing', keywords: ['consumer goods manufactur', 'fmcg manufactur', 'packaged goods manufactur'] },
+      { label: 'Automotive Manufacturing', keywords: ['automotive manufactur', 'vehicle manufactur', 'auto parts manufactur', 'oem'] },
+      { label: 'Electronics & Semiconductor Manufacturing', keywords: ['electronics manufactur', 'semiconductor manufactur', 'contract manufactur', 'pcb manufactur'] },
+      { label: 'Aerospace & Defense Manufacturing', keywords: ['aerospace manufactur', 'defense manufactur', 'defence manufactur', 'aviation manufactur'] },
+    ],
+  },
+  {
+    label: 'Education',
+    keywords: ['education', 'school', 'university', 'academy', 'edtech'],
+    subSectors: [
+      { label: 'Higher Education', keywords: ['university', 'college', 'higher education'] },
+      { label: 'K-12 & Schools', keywords: ['school', 'k-12', 'primary school', 'secondary school', 'academy trust', 'independent school'] },
+      { label: 'EdTech', keywords: ['edtech', 'education technology', 'e-learning platform', 'learning platform'] },
+      { label: 'Vocational & Training Providers', keywords: ['vocational training', 'apprenticeship provider', 'training provider', 'further education'] },
+    ],
+  },
+  {
+    label: 'Marketing, Media & Advertising',
+    keywords: ['marketing', 'advertising', 'media', 'agency', 'publishing'],
+    subSectors: [
+      { label: 'Advertising & Creative Agencies', keywords: ['advertising agency', 'creative agency', 'ad agency'] },
+      { label: 'Digital & Marketing Agencies', keywords: ['digital agency', 'marketing agency', 'performance marketing agency', 'growth agency'] },
+      { label: 'Media & Broadcasting', keywords: ['broadcasting', 'television network', 'radio network', 'media company', 'streaming service'] },
+      { label: 'Publishing', keywords: ['publishing', 'publisher', 'magazine publisher', 'newspaper'] },
+      { label: 'PR & Communications Agencies', keywords: ['pr agency', 'public relations agency', 'communications agency'] },
     ],
   },
 ]
