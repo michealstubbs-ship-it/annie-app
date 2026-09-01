@@ -99,6 +99,28 @@ export function interleaveSignalLists(lists) {
   return out
 }
 
+// 2026-09-01, Michael: the cross-industry-by-function pass (see
+// scanOneCustomer below) roughly doubles this file's own Anthropic line
+// item per customer per month if run on both of this cron's twice-daily
+// fires. Michael's call after seeing the real cost numbers: keep the
+// existing sector-scoped call running on both daily fires unchanged, but
+// only run the ADDED cross-industry pass on one of the two — "once a day
+// in the morning" — so the scope improvement lands daily without doubling
+// its cost. This cron's schedule (see the `export const config` at the
+// bottom of this file, and intelligence-scan.js's own `schedule` config) is
+// a fixed '0 */12 * * *', firing at 00:00 UTC and 12:00 UTC — Michael chose
+// the 00:00 UTC fire as "morning" (4am UAE / 1am UK BST / 8pm US East the
+// prior day — the closer of the two fixed slots to a UAE/UK morning, this
+// business's core market). `< 12` rather than an exact-hour match is
+// deliberately tolerant of the invocation actually starting a few minutes
+// (or, on a slow chain, longer) after the top of the hour. Computed ONCE
+// per whole run (see the `export default` handler below), not per
+// customer, so every customer in one invocation gets the same answer even
+// if the per-customer loop runs long enough to cross the boundary.
+export function isMorningCrossIndustryRun(now = new Date()) {
+  return now.getUTCHours() < 12
+}
+
 // The exact shape a real customer confirmed works (2026-08-23 product-copy
 // pass): a warm opener, one paragraph that introduces the firm and the
 // specific niche this signal calls for (never the recruiter's whole sector
@@ -311,7 +333,7 @@ async function fetchExistingDedupKeys(supabase, userId) {
 // try/catch is what reports and moves on, same as before this was pulled
 // out into its own function.
 async function scanOneCustomer(ob, ctx) {
-  const { anthropicKey, apolloKey, companiesHouseKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase } = ctx
+  const { anthropicKey, apolloKey, companiesHouseKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase, crossIndustryRun } = ctx
 
   // 2026-08-25: resolved per customer, not once for the whole run — tier is
   // an account-level fact, and this loop scans every customer in one pass.
@@ -368,17 +390,22 @@ async function scanOneCustomer(ob, ctx) {
 
     // 2026-09-01, Michael: applied to every recurring scan now, not just the
     // one-off onboarding scan — explicit call after seeing the real added
-    // Anthropic cost (~$4-8.50/customer/month, roughly doubling just this
-    // line of the recurring-scan cost). Run alongside the existing sector-
-    // scoped call as a genuinely separate, equal-budget pass (not folded
-    // into the one call, and not just a bigger token/search-use ceiling on
-    // it — see buildScanPrompt's own header for why that alone wouldn't
-    // have delivered real cross-industry coverage). Skipped entirely for an
-    // account with no functions selected, same guard as the onboarding
-    // scan's runCrossIndustryFunctionPass.
+    // Anthropic cost (~$4-8.50/customer/month if run on every fire, roughly
+    // doubling just this line of the recurring-scan cost). Run alongside
+    // the existing sector-scoped call as a genuinely separate, equal-budget
+    // pass (not folded into the one call, and not just a bigger token/
+    // search-use ceiling on it — see buildScanPrompt's own header for why
+    // that alone wouldn't have delivered real cross-industry coverage).
+    // Skipped for an account with no functions selected (same guard as the
+    // onboarding scan's runCrossIndustryFunctionPass) AND — Michael's very
+    // next follow-up, once he saw that cost line — skipped on this cron's
+    // 12:00 UTC fire, so the added cost is incurred once a day, not twice
+    // (see isMorningCrossIndustryRun's own header above for which fire and
+    // why). The primary sector-scoped call is untouched and still runs on
+    // both fires, unchanged.
     const [text, crossIndustryText] = await Promise.all([
       callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }), supabase, { maxTokens: tierConfig.anthropicMaxTokens, maxUses: tierConfig.anthropicMaxUses, userId: ob.user_id, anthropicCaps: resourceCaps.anthropicTokens }),
-      ob.functions?.length
+      (ob.functions?.length && crossIndustryRun)
         ? callAnthropic(anthropicKey, buildScanPrompt(ob, recentCompanies, { crossIndustryByFunction: true, learned, watchlist }), supabase, { maxTokens: tierConfig.anthropicMaxTokens, maxUses: tierConfig.anthropicMaxUses, userId: ob.user_id, anthropicCaps: resourceCaps.anthropicTokens })
             .catch(err => {
               // A cap hit or transient failure on JUST this second call
@@ -516,7 +543,9 @@ export default async (req) => {
 
   let totalNewSignals = 0
   let processedCount = 0
-  const scanCtx = { anthropicKey, apolloKey, companiesHouseKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase }
+  const crossIndustryRun = isMorningCrossIndustryRun()
+  console.log(`[intelligence-scan-background] cross-industry-by-function pass ${crossIndustryRun ? 'WILL' : 'will NOT'} run this invocation (00:00 UTC fire only, see isMorningCrossIndustryRun)`)
+  const scanCtx = { anthropicKey, apolloKey, companiesHouseKey, adzunaAppId, adzunaAppKey, theirStackApiKey, supabase, crossIndustryRun }
 
   for (const ob of onboardingRows) {
     if (Date.now() - runStartedAt > RUN_BUDGET_MS) {

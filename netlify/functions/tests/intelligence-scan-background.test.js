@@ -34,6 +34,7 @@ function makeSupabase(onboardingResult) {
 
 let handler
 let interleaveSignalLists
+let isMorningCrossIndustryRun
 
 beforeEach(async () => {
   vi.clearAllMocks()
@@ -42,7 +43,7 @@ beforeEach(async () => {
   process.env.ANTHROPIC_API_KEY = 'sk-ant-test'
   process.env.INTERNAL_SCAN_SECRET = 'test-internal-secret'
   vi.resetModules()
-  ;({ default: handler, interleaveSignalLists } = await import('../intelligence-scan-background.js'))
+  ;({ default: handler, interleaveSignalLists, isMorningCrossIndustryRun } = await import('../intelligence-scan-background.js'))
 })
 
 afterEach(() => {
@@ -164,5 +165,37 @@ describe('interleaveSignalLists (2026-09-01: cross-industry-by-function second c
     const sectorList = [sig('Acme', 'Acme raises Series B')]
     const out = interleaveSignalLists([sectorList, null])
     expect(out.map(s => s.company)).toEqual(['Acme'])
+  })
+})
+
+// 2026-09-01, Michael: run the cross-industry-by-function pass once a day,
+// not on both of this cron's twice-daily fires, so the added Anthropic cost
+// doesn't double — see isMorningCrossIndustryRun's own header in
+// intelligence-scan-background.js for which of the two fixed UTC fires
+// (00:00 vs 12:00) counts as "morning" and why.
+describe('isMorningCrossIndustryRun (2026-09-01: once-a-day cross-industry pass, not twice)', () => {
+  it('is true right at 00:00 UTC, the fire Michael chose as "morning"', () => {
+    expect(isMorningCrossIndustryRun(new Date('2026-09-02T00:00:00Z'))).toBe(true)
+  })
+
+  it('stays true through the rest of the 00:00 UTC fire\'s window, tolerating a slow start', () => {
+    expect(isMorningCrossIndustryRun(new Date('2026-09-02T06:30:00Z'))).toBe(true)
+    expect(isMorningCrossIndustryRun(new Date('2026-09-02T11:59:59Z'))).toBe(true)
+  })
+
+  it('is false right at 12:00 UTC, the other daily fire', () => {
+    expect(isMorningCrossIndustryRun(new Date('2026-09-02T12:00:00Z'))).toBe(false)
+  })
+
+  it('stays false through the rest of the 12:00 UTC fire\'s window', () => {
+    expect(isMorningCrossIndustryRun(new Date('2026-09-02T18:00:00Z'))).toBe(false)
+    expect(isMorningCrossIndustryRun(new Date('2026-09-02T23:59:59Z'))).toBe(false)
+  })
+
+  it('defaults to evaluating the real current time when called with no argument', () => {
+    // Not asserting a specific value (that would make the test's own
+    // pass/fail depend on what time it happens to run) — just confirming
+    // it doesn't throw and returns a real boolean off Date.now().
+    expect(typeof isMorningCrossIndustryRun()).toBe('boolean')
   })
 })
