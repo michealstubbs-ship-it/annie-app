@@ -14,6 +14,7 @@ import {
   enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs,
   looksTruncatedByTokenLimit, getLearnedSources, recordLearnedDiscoveries, isJunkLearnedSourceValue,
+  normalizeLearnedLocation,
   writeToSignalPool, fetchSignalPoolMatches, personalizePoolHits,
   logMarketCoverage, getMarketCoverageReport,
   getCustomerWatchlistCompanies, buildCustomerWatchlistHint,
@@ -1756,6 +1757,62 @@ describe('recordLearnedDiscoveries — last_confirmed_at refresh (2026-08-27 fix
     expect(row.last_confirmed_at).toBeTruthy()
     expect(new Date(row.last_confirmed_at).toString()).not.toBe('Invalid Date')
     expect(row).not.toHaveProperty('first_seen_at')
+  })
+})
+
+// 2026-09-01 bug fix (Michael): recordLearnedDiscoveries used to write
+// location: e.location || 'Global' for EVERY row, because buildScanPrompt's
+// annie_learned schema never actually asked the AI for a location — the
+// fallback fired every single time, so the per-market half of "Annie
+// learns by sector and market" was completely inert (a GCC recruiter and a
+// UK recruiter drew on an identical learned set). Fixed by having the
+// prompt ask for a location and having this write path keep it when it's a
+// real, recognized one.
+describe('normalizeLearnedLocation (2026-09-01 fix)', () => {
+  it('passes through a recognized region exactly as given', () => {
+    expect(normalizeLearnedLocation('UAE / GCC')).toBe('UAE / GCC')
+    expect(normalizeLearnedLocation('United Kingdom')).toBe('United Kingdom')
+  })
+
+  it('is case- and whitespace-insensitive but still normalizes to the canonical spelling', () => {
+    expect(normalizeLearnedLocation('  united kingdom  ')).toBe('United Kingdom')
+    expect(normalizeLearnedLocation('uae / gcc')).toBe('UAE / GCC')
+  })
+
+  it('passes through "Global" regardless of case', () => {
+    expect(normalizeLearnedLocation('global')).toBe('Global')
+    expect(normalizeLearnedLocation('Global')).toBe('Global')
+  })
+
+  it('falls back to Global for a missing location, so a row is never left with no location at all', () => {
+    expect(normalizeLearnedLocation(undefined)).toBe('Global')
+    expect(normalizeLearnedLocation('')).toBe('Global')
+  })
+
+  it('falls back to Global for an unrecognized value, rather than writing a stray string getLearnedSources can never match', () => {
+    expect(normalizeLearnedLocation('Dubai')).toBe('Global')
+    expect(normalizeLearnedLocation('UK')).toBe('Global')
+    expect(normalizeLearnedLocation('somewhere the AI made up')).toBe('Global')
+  })
+})
+
+describe('recordLearnedDiscoveries — region-aware writes (2026-09-01 fix)', () => {
+  it('writes the AI-supplied location when it is a real, recognized region, instead of collapsing everything to Global', async () => {
+    const upsertSpy = vi.fn().mockResolvedValue({ error: null })
+    const supabase = { from: () => ({ upsert: upsertSpy }) }
+    await recordLearnedDiscoveries(supabase, [
+      { kind: 'company', sector: 'Management Consulting', value: 'Some GCC Boutique', foundVia: 'consultancy-me.com', location: 'UAE / GCC' },
+    ])
+    const row = upsertSpy.mock.calls[0][0][0]
+    expect(row.location).toBe('UAE / GCC')
+  })
+
+  it('still falls back to Global when the entry genuinely has no location (old behavior preserved as the safety net, not the common case)', async () => {
+    const upsertSpy = vi.fn().mockResolvedValue({ error: null })
+    const supabase = { from: () => ({ upsert: upsertSpy }) }
+    await recordLearnedDiscoveries(supabase, [{ kind: 'company', sector: 'Technology', value: 'Acme Corp' }])
+    const row = upsertSpy.mock.calls[0][0][0]
+    expect(row.location).toBe('Global')
   })
 })
 

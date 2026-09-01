@@ -166,6 +166,7 @@ For each genuinely new company or source you noticed while checking the named so
 - sector: the exact sector label (from the list this recruiter targets, above) this belongs to
 - value: the company name, or the source's name/domain, exactly as you'd want it referenced again on a future scan
 - foundVia: the specific named source you found it on (e.g. "consultancy-me.com", "Legal 500 UAE"), never blank
+- location: which market this discovery belongs to — one of exactly [${onboarding?.locations?.join(', ') || 'this recruiter\'s selected markets'}] (copy the spelling from that list exactly), or "Global" only if it's a genuinely global resource with no single home market (e.g. a worldwide-only ranking). Get this right: it decides whether this discovery is offered to future recruiters in the SAME market, or wrongly offered to recruiters in an unrelated one — a UAE-specific firm found via consultancy-me.com's UAE rankings is "UAE / GCC", never "Global". Required — do not omit this field or leave it blank.
 Only include something here you actually found via search and are confident is real and current — never invent a plausible-sounding company or site to pad this out. Leave this out entirely for a scan where nothing genuinely new turned up, it is not required every time.
 
 Return a single JSON array mixing all three kinds of entries, each tagged with its entryType. Only return the JSON array, nothing else. If nothing genuinely good was found, return an empty array.`

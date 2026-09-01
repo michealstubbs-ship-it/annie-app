@@ -2360,6 +2360,36 @@ export function isJunkLearnedSourceValue(normalizedKey) {
 // filtered through the same isJunkLearnedSourceValue check, keyed off the
 // same normalized value_key already computed for the dedup constraint, so a
 // value is judged consistently regardless of which path wrote it.
+//
+// 2026-09-01 bug fix (Michael): every row ever written by this function
+// landed as location='Global', seeds and AI discoveries alike, because
+// buildScanPrompt's "annie_learned" entry schema never actually asked the
+// AI for a location, so `e.location` was always undefined and this
+// fallback fired every single time. getLearnedSources's own read side was
+// already correct (it filters on the customer's own locations plus
+// 'Global') — the whole per-market half of "Annie learns by sector AND
+// market" was silently inert, a GCC recruiter and a UK recruiter drawing
+// on an identical learned set. Fixed on the prompt side (both scan files'
+// annie_learned schema now requires a location, using this customer's own
+// onboarding.locations strings so it round-trips exactly). This
+// normalizeLearnedLocation guard is the write-side backstop: an AI
+// response is free text, and a near-miss (wrong case, stray whitespace, a
+// region synonym the model used instead of the canonical spelling) would
+// otherwise write a real, non-junk row that getLearnedSources's exact
+// `.in('location', ...)` match can never find again — invisible, not
+// wrong, which is worse. Snapping anything that isn't a recognized region
+// back to 'Global' keeps every row at least findable (Global is always
+// read) rather than silently orphaned.
+const KNOWN_LEARNED_LOCATIONS = new Map(
+  Object.keys(REGIONAL_SOURCE_DIRECTORY).map(loc => [loc.trim().toLowerCase(), loc])
+)
+export function normalizeLearnedLocation(location) {
+  if (!location) return 'Global'
+  const trimmed = String(location).trim()
+  if (trimmed.toLowerCase() === 'global') return 'Global'
+  return KNOWN_LEARNED_LOCATIONS.get(trimmed.toLowerCase()) || 'Global'
+}
+
 export async function recordLearnedDiscoveries(supabase, entries) {
   if (!supabase || !entries?.length) return
   const nowIso = new Date().toISOString()
@@ -2368,7 +2398,7 @@ export async function recordLearnedDiscoveries(supabase, entries) {
     .map(e => ({
       kind: e.kind,
       sector: e.sector,
-      location: e.location || 'Global',
+      location: normalizeLearnedLocation(e.location),
       value: e.value,
       value_key: normalizeCompanyKey(e.value),
       found_via: e.foundVia || 'discovered',
