@@ -18,7 +18,7 @@ import {
   writeToSignalPool, fetchSignalPoolMatches, personalizePoolHits,
   logMarketCoverage, getMarketCoverageReport,
   getCustomerWatchlistCompanies, buildCustomerWatchlistHint,
-  buildLiveJobBoardHint,
+  buildLiveJobBoardHint, buildTargetFirmHint,
 } from './scanShared.js'
 
 // Full behavioural coverage for extractJson now lives in
@@ -2377,5 +2377,57 @@ describe('buildLiveJobBoardHint — UAE federal jobs board (2026-09-01)', () => 
   it('never mentions federaljobs.gov.ae for a customer who did not select UAE / GCC as a market', () => {
     const hint = buildLiveJobBoardHint(['United Kingdom', 'United States'], [])
     expect(hint).not.toContain('federaljobs.gov.ae')
+  })
+})
+
+describe('buildTargetFirmHint (2026-09-01: Private Equity, Financial Services, location-scoped Government & Public Sector)', () => {
+  it('keeps the global (non-location-keyed) shape working for Management Consulting', () => {
+    const hint = buildTargetFirmHint(['Management Consulting'], null, ['United Kingdom'])
+    expect(hint).toContain('Deloitte')
+    expect(hint).toContain('consultancy-me.com')
+  })
+
+  it('shows UAE sovereign funds and independent PE firms, plus the DFSA/ADGM registers, only for a customer who selected UAE / GCC', () => {
+    const hint = buildTargetFirmHint(['Private Equity'], null, ['UAE / GCC'])
+    expect(hint).toContain('Mubadala Investment Company')
+    expect(hint).toContain('Abu Dhabi Investment Authority (ADIA)')
+    expect(hint).toContain('dfsa.ae/public-register/funds')
+    expect(hint).toContain('adgm.com/public-registers/fsra')
+  })
+
+  it('never mentions UAE PE firms or the DFSA/ADGM registers for a customer who only selected UK/US', () => {
+    const hint = buildTargetFirmHint(['Private Equity'], null, ['United Kingdom', 'United States'])
+    expect(hint).not.toContain('Mubadala')
+    expect(hint).not.toContain('dfsa.ae')
+  })
+
+  it('shows major UAE banks and the Central Bank register for Financial Services, only for a UAE / GCC customer', () => {
+    const hint = buildTargetFirmHint(['Financial Services'], null, ['UAE / GCC'])
+    expect(hint).toContain('Emirates NBD')
+    expect(hint).toContain('First Abu Dhabi Bank (FAB)')
+    expect(hint).toContain('centralbank.ae')
+  })
+
+  it('splits Government & Public Sector by location instead of showing every region to every customer', () => {
+    const ukOnly = buildTargetFirmHint(['Government & Public Sector'], null, ['United Kingdom'])
+    expect(ukOnly).toContain('Cabinet Office')
+    expect(ukOnly).not.toContain('FAHR')
+    expect(ukOnly).not.toContain('General Services Administration')
+
+    const uaeOnly = buildTargetFirmHint(['Government & Public Sector'], null, ['UAE / GCC'])
+    expect(uaeOnly).toContain('Federal Authority for Government Human Resources (FAHR)')
+    expect(uaeOnly).not.toContain('Cabinet Office')
+  })
+
+  it('still layers in learned companies for a location-keyed sector on top of the seed anchors', () => {
+    const learned = { companies: { 'Private Equity': ['Some New Fund Manager'] } }
+    const hint = buildTargetFirmHint(['Private Equity'], learned, ['UAE / GCC'])
+    expect(hint).toContain('Some New Fund Manager')
+    expect(hint).toContain('Mubadala Investment Company')
+  })
+
+  it('returns an empty string for a sector with no matching location entry and nothing learned yet, rather than a bare or broken block', () => {
+    const hint = buildTargetFirmHint(['Private Equity'], null, ['United Kingdom'])
+    expect(hint).toBe('')
   })
 })

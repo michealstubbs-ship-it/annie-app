@@ -2167,50 +2167,119 @@ export const TARGET_FIRM_DIRECTORY = {
   // below are genuine government, semi-government and multilateral bodies
   // instead. This sector also doesn't map onto the "funding/expansion"
   // signal types the other two directories lean on the same way — a
-  // government department doesn't raise a funding round — so the
+  // government department doesn't raise a funding round — so each region's
   // discoveryHint below leans on leadership-appointment and new-mandate
   // coverage specifically, which is the BD-relevant event type that
   // genuinely does happen here (a new agency head, a newly stood-up unit).
   //
-  // discoveryHint deliberately does NOT introduce a second set of press
-  // sources: REGIONAL_SOURCE_DIRECTORY above already names a real, verified
-  // outlet for this exact sector in every region (WAM for UAE/GCC, Civil
-  // Service World for the UK, GovExec/Route Fifty for the US, Politico
-  // Europe/Euractiv for Europe, GovInsider for Asia Pacific) and every scan
+  // 2026-09-01 (Michael): restructured from one flat `anchors` array mixing
+  // UK, UAE and US bodies together into `byLocation`, mirroring
+  // REGIONAL_SOURCE_DIRECTORY/LIVE_JOB_BOARD_DIRECTORY — the flat version was
+  // showing every customer all three regions' bodies regardless of which
+  // markets they actually selected (a UK-only customer's prompt was being
+  // told to check FAHR and Dubai Future Foundation, entirely irrelevant to
+  // them). Fixed here as part of adding Private Equity/Financial Services
+  // below, which would otherwise have repeated the exact same mistake.
+  // discoveryHint per region deliberately does NOT introduce a second set of
+  // press sources: REGIONAL_SOURCE_DIRECTORY above already names a real,
+  // verified outlet for this exact sector in every region and every scan
   // already receives that via buildRegionalSourceHint — this just points
-  // back at it, the same "equivalent named regional trade press already
-  // listed above" pattern Management Consulting's own hint already uses,
+  // back at it, the same pattern Management Consulting's own hint uses,
   // rather than inventing a parallel list that could drift out of sync.
   'Government & Public Sector': {
-    anchors: [
-      // UK — central departments and the regulators/NDPBs most likely to have BD-relevant leadership moves
-      'Cabinet Office', 'HM Treasury', 'Home Office', 'Ofcom', 'Competition and Markets Authority (CMA)',
-      // UAE — verified real government and semi-government bodies (not GREs like DEWA/ADNOC, which sit under their own sectors)
-      'Federal Authority for Government Human Resources (FAHR)', 'Dubai Future Foundation', 'Government Development and The Future Office (UAE)', 'Mohammed Bin Rashid School of Government (MBRSG)',
-      // US — federal bodies plus multilateral organisations that genuinely do use recruiters for policy roles
-      'General Services Administration (GSA)', 'World Bank', 'International Monetary Fund (IMF)',
-    ],
-    discoveryHint: "Beyond these bodies, use this customer's own regional trade press already named above (Civil Service World for the UK, WAM for UAE/GCC, GovExec and Route Fifty for the US, Politico Europe/Euractiv for Europe, GovInsider for Asia Pacific) as the authority on leadership moves and newly created bodies or units — this sector doesn't have a single global ranking site the way consulting or law do, so the region-specific coverage above is the real discovery mechanism here — then check each body's own careers/press pages the same way.",
+    byLocation: {
+      'United Kingdom': {
+        // Central departments and the regulators/NDPBs most likely to have BD-relevant leadership moves.
+        anchors: ['Cabinet Office', 'HM Treasury', 'Home Office', 'Ofcom', 'Competition and Markets Authority (CMA)'],
+        discoveryHint: "Beyond these bodies, use this customer's own regional trade press already named above (Civil Service World) as the authority on leadership moves and newly created bodies or units — this sector doesn't have a single global ranking site the way consulting or law do — then check each body's own careers/press pages the same way.",
+      },
+      'UAE / GCC': {
+        // Verified real government and semi-government bodies (not GREs like DEWA/ADNOC, which sit under their own sectors).
+        anchors: ['Federal Authority for Government Human Resources (FAHR)', 'Dubai Future Foundation', 'Government Development and The Future Office (UAE)', 'Mohammed Bin Rashid School of Government (MBRSG)'],
+        discoveryHint: "Beyond these bodies, use this customer's own regional trade press already named above (WAM) as the authority on leadership moves and newly created bodies or units, then check each body's own careers/press pages the same way.",
+      },
+      'United States': {
+        // Federal bodies plus multilateral organisations that genuinely do use recruiters for policy roles.
+        anchors: ['General Services Administration (GSA)', 'World Bank', 'International Monetary Fund (IMF)'],
+        discoveryHint: "Beyond these bodies, use this customer's own regional trade press already named above (GovExec and Route Fifty) as the authority on leadership moves and newly created bodies or units, then check each body's own careers/press pages the same way.",
+      },
+    },
+  },
+  // 2026-09-01 (Michael): "all registered PE funds", not just a handful of
+  // famous names — and the real, authoritative, self-updating source of that
+  // is the regulators' own public registers, not a hand-typed list that goes
+  // stale the moment a new fund registers. UAE/GCC only for now — add UK/US
+  // entries once researched with the same care, deliberately not guessed at
+  // here (an unverified list is worse than no list — see the Government &
+  // Public Sector correction above for exactly why).
+  'Private Equity': {
+    byLocation: {
+      'UAE / GCC': {
+        // Verified: the three Abu Dhabi sovereign funds, Dubai's own, plus
+        // two long-established independent regional PE firms — small enough
+        // a set that missing any would be an obvious gap.
+        anchors: ['Mubadala Investment Company', 'Abu Dhabi Investment Authority (ADIA)', 'ADQ', 'Investment Corporation of Dubai (ICD)', 'Gulf Capital', 'Investcorp'],
+        discoveryHint: "Beyond these, the DFSA's public register (dfsa.ae/public-register/funds and dfsa.ae/public-register/firms) and ADGM's FSRA public register (adgm.com/public-registers/fsra) are the real authority here — every fund manager actually licensed to operate in DIFC or ADGM, the two free zones almost every UAE-based PE/VC/growth-equity fund registers through, is on one of these, kept current by the regulator itself rather than by us. Check both directly rather than relying on search alone to surface a fund that hasn't made news recently.",
+      },
+    },
+  },
+  // 2026-09-01 (Michael): same registry-over-hand-list reasoning as Private
+  // Equity above. Banking's authoritative register is the UAE Central Bank's
+  // own published "CB Register" (centralbank.ae) rather than DFSA/ADGM —
+  // most UAE banks are licensed onshore by the Central Bank, not through the
+  // free zones; DFSA/ADGM still cover the free-zone-licensed wealth
+  // managers, insurers and fintech/payments firms that also sit under this
+  // sector. UAE/GCC only for now, same reason as above.
+  'Financial Services': {
+    byLocation: {
+      'UAE / GCC': {
+        anchors: ['Emirates NBD', 'First Abu Dhabi Bank (FAB)', 'Abu Dhabi Commercial Bank (ADCB)', 'Dubai Islamic Bank (DIB)', 'Mashreq', 'Abu Dhabi Islamic Bank (ADIB)'],
+        discoveryHint: "Beyond these, the Central Bank of the UAE's own published register of every licensed bank (centralbank.ae) is the real authority, kept current by the regulator itself. For free-zone-licensed wealth managers, insurers and fintech/payments firms specifically, the DFSA (dfsa.ae/public-register/firms) and ADGM FSRA (adgm.com/public-registers/fsra) public registers cover those. Check the relevant one directly rather than relying on search alone to surface an institution that hasn't made news recently.",
+      },
+    },
   },
 }
 
 // Composes the proactive firm-tier check-list for the prompt, mirroring
 // buildRegionalSourceHint's shape and only-what-they-selected discipline —
-// only fires for a customer who actually selected Management Consulting
-// and/or Law, so nobody else's prompt grows for a mechanism they don't use.
+// only fires for a customer who actually selected a sector with an entry
+// here, so nobody else's prompt grows for a mechanism they don't use.
 // `learned` layers in every firm Annie has already discovered beyond the
 // seed anchors (see getLearnedSources) so the list actually reflects big
 // firms down to boutique ones as it grows, not just the original seed.
-export function buildTargetFirmHint(sectors, learned) {
+//
+// 2026-09-01 (Michael): now takes `locations` too. TARGET_FIRM_DIRECTORY
+// entries come in two shapes — { anchors, discoveryHint } for a sector whose
+// major players are genuinely global (Management Consulting, Law: a Big 4 or
+// Magic Circle firm is worth checking in every market this customer
+// selected, no split needed), and { byLocation: { <LOCATIONS value>: {
+// anchors, discoveryHint } } } for a sector where "who the major players
+// are" is inherently market-specific (Government & Public Sector, Private
+// Equity, Financial Services). The location-keyed shape only ever surfaces
+// the markets this customer actually picked, and only the ones actually
+// researched — a market with no entry yet simply contributes nothing rather
+// than guessing, exactly like LIVE_JOB_BOARD_DIRECTORY/
+// REGIONAL_SOURCE_DIRECTORY already handle an unresearched market elsewhere
+// in this file.
+export function buildTargetFirmHint(sectors, learned, locations) {
   const parts = (sectors || []).map(sector => {
     const dir = TARGET_FIRM_DIRECTORY[sector]
+    if (!dir) return null
     const learnedNames = learned?.companies?.[sector] || []
-    const names = [...new Set([...(dir?.anchors || []), ...learnedNames])]
-    if (!dir || !names.length) return null
-    return `${sector} — firms worth checking directly regardless of whether they've come up as a signal yet (${names.length} tracked so far, seed anchors plus everything discovered since): ${names.join(', ')}. ${dir.discoveryHint}`
+    if (dir.anchors) {
+      const names = [...new Set([...dir.anchors, ...learnedNames])]
+      if (!names.length) return null
+      return `${sector} — firms worth checking directly regardless of whether they've come up as a signal yet (${names.length} tracked so far, seed anchors plus everything discovered since): ${names.join(', ')}. ${dir.discoveryHint}`
+    }
+    const locDirs = (locations || []).map(loc => dir.byLocation?.[loc]).filter(Boolean)
+    const seedAnchors = locDirs.flatMap(d => d.anchors)
+    const names = [...new Set([...seedAnchors, ...learnedNames])]
+    if (!names.length) return null
+    const hints = locDirs.map(d => d.discoveryHint).join(' ')
+    return `${sector} — firms worth checking directly regardless of whether they've come up as a signal yet (${names.length} tracked so far, seed anchors plus everything discovered since): ${names.join(', ')}.${hints ? ` ${hints}` : ''}`
   }).filter(Boolean)
   if (!parts.length) return ''
-  return `\nThis customer targets a sector with well-known major players, so proactively check these specific firms' own career pages too, the same way as the per-company follow-up check above, rather than waiting for them to surface as a signal first:\n${parts.join('\n')}\nThis list should keep growing: if you find a real, verifiable firm active in this customer's markets on the named ranking source above, big or boutique, that isn't already in this list, report it as an "annie_learned" entry (kind "company", see the output format below) so it's added for next time — this is exactly how the list above grew past its original starting set.\n`
+  return `\nThis customer targets a sector with well-known major players, so proactively check these specific firms' own career pages too, the same way as the per-company follow-up check above, rather than waiting for them to surface as a signal first:\n${parts.join('\n')}\nThis list should keep growing: if you find a real, verifiable firm active in this customer's markets on the named register/ranking source above, big or boutique, that isn't already in this list, report it as an "annie_learned" entry (kind "company", see the output format below) so it's added for next time — this is exactly how the list above grew past its original starting set.\n`
 }
 
 // Reads Annie's own growing research memory (25 Aug 2026, Michael) — companies

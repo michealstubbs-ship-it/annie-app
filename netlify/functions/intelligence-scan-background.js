@@ -121,7 +121,7 @@ Write anything you find this way as its own "live_job" entry the same way as an 
 
 For every company you write up as a signal above (funding, expansion, leadership change, M&A, anything), before moving to the next one, do one direct follow-up check of that specific company's own website: search for its careers or jobs page to see whether it has a real, specific opening posted right now that matches this recruiter's target functions. If you find one, write it as an ADDITIONAL, separate "live_job" entry for that same company, same rules as above — a real title, sourceUrl pointing straight at that company's own posting. Skip it if the company genuinely has no findable careers page.
 ${buildRegionalSourceHint(onboarding?.locations, onboarding?.sectors, opts.learned)}
-${buildTargetFirmHint(onboarding?.sectors, opts.learned)}
+${buildTargetFirmHint(onboarding?.sectors, opts.learned, onboarding?.locations)}
 ${buildCustomerWatchlistHint(opts.watchlist)}
 Companies already surfaced recently, don't re-report the same event for these unless there is a brand new development: ${recentCompanies.join(', ') || 'None yet'}.
 
