@@ -255,6 +255,21 @@ export default function Overview() {
     const todayDateStr = new Date().toISOString().slice(0, 10)
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
+    // 2026-09-01: same team_members -> subscriptions.tier lookup
+    // SupportWidget.jsx already uses (see that file's own header for the
+    // pattern) — needed here so the "researching your market" banner can
+    // give an accurate, tier-specific wait-time estimate (Starter's scan
+    // ceiling is 10 minutes, Growth/Team's is 20 — SCAN_TIER_CONFIG in
+    // entitlements.js) instead of one generic estimate that's wrong for
+    // half of all customers. Same "no active subscription found ->
+    // Starter" fallback as everywhere else this is looked up.
+    async function fetchTier() {
+      const { data: membership } = await supabase.from('team_members').select('team_id').eq('user_id', user.id).eq('status', 'active').maybeSingle()
+      if (!membership?.team_id) return 'starter'
+      const { data: sub } = await supabase.from('subscriptions').select('tier').eq('team_id', membership.team_id).maybeSingle()
+      return sub?.tier || 'starter'
+    }
+
     const [
       { data: fullContacts },
       { data: deals },
@@ -265,6 +280,7 @@ export default function Overview() {
       { data: meetingRows },
       { data: taskRows },
       { count: contactsCountResult },
+      tierResult,
     ] = await Promise.all([
       // jobs/candidates/meetings/bd_tasks/contacts are the shared CRM —
       // team-scoped by RLS, dropping the user_id filter is what makes the
@@ -293,6 +309,7 @@ export default function Overview() {
       // profiles.linkedin_import_completed which gets set true on skip too. This banner
       // self-clears the moment a real import lands, no extra state to keep in sync.
       supabase.from('contacts').select('id', { count: 'exact', head: true }),
+      fetchTier(),
     ])
 
     // Same pools -> selectDailyItems -> resolveTodaysActions pipeline
@@ -343,6 +360,7 @@ export default function Overview() {
     setMeetings(meetingRows || [])
     setTasks(taskRows || [])
     setContactsCount(contactsCountResult ?? 0)
+    setTier(tierResult)
     } catch (err) {
       if (loadTokenRef.current !== token) return
       console.error('[Overview] failed to load dashboard data', err)
@@ -398,6 +416,22 @@ export default function Overview() {
     return 'Nothing urgent right now. Good time to work through your pipeline.'
   }, [urgentCount, totalActions, meetings.length, tasks.length, researching, dashboardIsQuiet, scanCopy])
 
+  // 2026-09-01 (Michael): give a real, tier-specific time estimate instead
+  // of a vague "several minutes" for everyone — Starter's scan ceiling is 10
+  // minutes, Growth/Team's is 20 (SCAN_TIER_CONFIG in entitlements.js), and
+  // a Starter customer taking "several minutes" literally then seeing it
+  // still running at minute 8 could reasonably read that as broken. Starter
+  // also gets one subtle, factual mention of the difference — not a sales
+  // banner, just the honest reason the wait is shorter — matching the
+  // existing gold-accent treatment this page already uses for a soft aside
+  // (see the "Here's the shape of your day" span above), not a bolded CTA.
+  const scanBannerCopy = useMemo(() => {
+    if (tier === 'starter') {
+      return { minutes: 10, upgradeHint: 'On Growth or Team, Annie spends twice as long scanning and comes back with more.' }
+    }
+    return { minutes: 20, upgradeHint: null }
+  }, [tier])
+
   function quickAdd(path) {
     navigate(path, { state: { autoOpenAdd: true } })
   }
@@ -429,15 +463,24 @@ export default function Overview() {
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-bold text-white">Annie is researching your market right now</p>
-            {/* 2026-08-26 audit fix: was "usually land within a couple of
-                minutes" — entitlements.js's SCAN_TIER_CONFIG budgets 10-20
-                minutes of wall-clock scan time depending on tier, and this
-                page's own poll window (below) is sized at 24 minutes
-                specifically because a scan can legitimately still be
-                running that long. A customer taking the "couple of
-                minutes" line literally and refreshing at the 3-minute mark
-                would see nothing and reasonably conclude it was broken. */}
-            <p className="text-[12.5px] text-gray-300 mt-0.5 leading-relaxed">Live funding rounds, leadership changes and hiring signals in your sectors. A full pass can take several minutes for a market this size — this page updates itself the moment results land, no need to refresh.</p>
+            {/* 2026-08-26 audit fix, refined 2026-09-01: was "usually land
+                within a couple of minutes" — entitlements.js's
+                SCAN_TIER_CONFIG budgets 10-20 minutes of wall-clock scan
+                time depending on tier, and this page's own poll window
+                (below) is sized at 24 minutes specifically because a scan
+                can legitimately still be running that long. A customer
+                taking the "couple of minutes" line literally and
+                refreshing at the 3-minute mark would see nothing and
+                reasonably conclude it was broken. Now gives the real,
+                tier-specific ceiling instead of one number that's wrong for
+                half of all customers (see scanBannerCopy above), and points
+                the customer at something useful to do with the wait rather
+                than just asking them to sit and watch a spinner. */}
+            <p className="text-[12.5px] text-gray-300 mt-0.5 leading-relaxed">
+              Live funding rounds, leadership changes and hiring signals in your sectors. This can take up to {scanBannerCopy.minutes} minutes — feel free to start adding contacts and clients and building out your CRM in the meantime.
+              {scanBannerCopy.upgradeHint && <span className="text-gold"> {scanBannerCopy.upgradeHint}</span>}
+              {' '}This page updates itself the moment results land, no need to refresh.
+            </p>
           </div>
         </div>
       )}
