@@ -505,34 +505,52 @@ export function buildSearchKeywords(sectors, functions, max = 6) {
 // risk). If a parent label is renamed in the taxonomy, add the new spelling
 // here; an unmapped function degrades to the generic leadership titles
 // below rather than breaking the scan.
+//
+// 2026-09-01, follow-up to the same-day functionTaxonomy.js title audit:
+// each function's list only ever had 3-4 titles, all essentially the single
+// most senior C-suite spelling — a real opening for "Head of Treasury" or
+// "Tax Director" was never searched for at all, regardless of how broad the
+// underlying job-search API's own results are, because that title string
+// was simply never sent. Expanded every function to 6-7 real senior titles
+// (Director/Head/VP/Chief level — never below, for the same reason as
+// functionTaxonomy.js's manager-level floor: a live_job signal exists to
+// surface a real BD mandate, and a junior opening isn't one) spanning that
+// function's actual sub-disciplines, sourced from the same researched title
+// list as functionTitleCoverage.test.js. buildJobTitleQueries' own `max`
+// default moved from 4 to 6 in the same edit, below, so the extra titles
+// here are actually used every scan rather than sitting unused past the old
+// cap — Michael's own question when this was proposed.
 export const FUNCTION_JOB_TITLES = {
-  'Strategy & Corporate Development': ['Chief Strategy Officer', 'Head of Strategy', 'Strategy Director', 'Corporate Development Director'],
-  'Policy & Government Affairs': ['Head of Public Affairs', 'Director of Government Relations', 'Head of Policy', 'Regulatory Affairs Director'],
-  'HSE, Sustainability & Quality': ['Head of HSE', 'Head of Sustainability', 'HSE Manager', 'Director of ESG'],
-  'Construction & Built Environment': ['Project Director', 'Construction Director', 'Development Director', 'Head of Projects'],
-  'Healthcare & Clinical': ['Chief Medical Officer', 'Medical Director', 'Director of Nursing', 'Head of Clinical Services'],
-  'Finance & Accounting': ['Chief Financial Officer', 'Finance Director', 'Head of Finance', 'Financial Controller'],
-  'HR & People': ['Chief People Officer', 'HR Director', 'Head of Talent', 'Director of Human Resources'],
-  'Legal & Compliance': ['General Counsel', 'Head of Legal', 'Head of Compliance', 'Legal Director'],
-  'Sales & Business Development': ['Chief Commercial Officer', 'Sales Director', 'Commercial Director', 'Head of Business Development'],
-  'Marketing, Communications & Creative': ['Chief Marketing Officer', 'Marketing Director', 'Head of Communications', 'Brand Director'],
-  'Operations & Supply Chain': ['Chief Operating Officer', 'Operations Director', 'Head of Supply Chain', 'Head of Operations'],
-  'Technology, Data & Engineering': ['Chief Technology Officer', 'Chief Information Officer', 'Head of Engineering', 'Head of Data'],
-  'Investment & Asset Management': ['Chief Investment Officer', 'Head of Investments', 'Investment Director', 'Portfolio Director'],
-  'Risk & Audit': ['Chief Risk Officer', 'Head of Risk', 'Head of Internal Audit', 'Audit Director'],
-  'Manufacturing & Production': ['Manufacturing Director', 'Plant Director', 'Production Director', 'Head of Manufacturing'],
-  'Real Estate, Facilities & Hospitality': ['Head of Real Estate', 'Facilities Director', 'Asset Management Director', 'General Manager'],
-  'General Management / Executive Leadership': ['Chief Executive Officer', 'Managing Director', 'Chief Operating Officer', 'General Manager'],
-  'Administration & Office Support': ['Head of Administration', 'Head of Business Support', 'Office Director'],
-  'Customer Service & Success': ['Chief Customer Officer', 'Head of Customer Success', 'Customer Experience Director'],
-  'Education & Training': ['Director of Education', 'Head of Learning and Development', 'Academic Director'],
+  'Strategy & Corporate Development': ['Chief Strategy Officer', 'Head of Strategy', 'Strategy Director', 'Corporate Development Director', 'Head of M&A', 'Director of Business Transformation'],
+  'Policy & Government Affairs': ['Head of Public Affairs', 'Director of Government Relations', 'Head of Policy', 'Regulatory Affairs Director', 'Government Relations Director', 'Director of Public Policy'],
+  'HSE, Sustainability & Quality': ['Head of HSE', 'HSE Director', 'Head of Sustainability', 'Director of Sustainability', 'Director of ESG', 'Head of Quality'],
+  'Construction & Built Environment': ['Project Director', 'Construction Director', 'Development Director', 'Head of Projects', 'Head of Construction', 'Design Director'],
+  'Healthcare & Clinical': ['Chief Medical Officer', 'Medical Director', 'Director of Nursing', 'Head of Clinical Services', 'Chief Nursing Officer', 'Head of Clinical Operations'],
+  'Finance & Accounting': ['Chief Financial Officer', 'Finance Director', 'Head of Finance', 'Financial Controller', 'Head of Treasury', 'Tax Director'],
+  'HR & People': ['Chief People Officer', 'HR Director', 'Head of Talent', 'Director of Human Resources', 'Head of Talent Acquisition', 'VP of Human Resources'],
+  'Legal & Compliance': ['General Counsel', 'Head of Legal', 'Head of Compliance', 'Legal Director', 'Chief Compliance Officer', 'Head of Regulatory Affairs'],
+  'Sales & Business Development': ['Chief Commercial Officer', 'Sales Director', 'Commercial Director', 'Head of Business Development', 'VP of Sales', 'Head of Partnerships'],
+  'Marketing, Communications & Creative': ['Chief Marketing Officer', 'Marketing Director', 'Head of Communications', 'Brand Director', 'VP of Marketing', 'Director of Digital Marketing'],
+  'Operations & Supply Chain': ['Chief Operating Officer', 'Operations Director', 'Head of Supply Chain', 'Head of Operations', 'VP of Operations', 'Director of Logistics'],
+  'Technology, Data & Engineering': ['Chief Technology Officer', 'Chief Information Officer', 'Head of Engineering', 'Head of Data', 'VP Engineering', 'Cybersecurity Director'],
+  'Investment & Asset Management': ['Chief Investment Officer', 'Head of Investments', 'Investment Director', 'Portfolio Director', 'Head of Research', 'Head of Wealth Management'],
+  'Risk & Audit': ['Chief Risk Officer', 'Head of Risk', 'Head of Internal Audit', 'Audit Director', 'Head of Credit Risk', 'Head of Financial Crime'],
+  'Manufacturing & Production': ['Manufacturing Director', 'Plant Director', 'Production Director', 'Head of Manufacturing', 'VP of Manufacturing', 'Director of Continuous Improvement'],
+  'Real Estate, Facilities & Hospitality': ['Head of Real Estate', 'Facilities Director', 'Asset Management Director', 'General Manager', 'Director of Asset Management', 'Regional Director of Operations'],
+  'General Management / Executive Leadership': ['Chief Executive Officer', 'Managing Director', 'Chief Operating Officer', 'General Manager', 'President', 'Country Manager'],
+  'Administration & Office Support': ['Head of Administration', 'Head of Business Support', 'Office Director', 'Director of Administrative Services'],
+  'Customer Service & Success': ['Chief Customer Officer', 'Head of Customer Success', 'Customer Experience Director', 'VP of Customer Success', 'Director of Customer Support'],
+  'Education & Training': ['Director of Education', 'Head of Learning and Development', 'Academic Director', 'Dean', 'Provost'],
 }
 
 // The fallback when a customer's function isn't in the map above (a renamed
 // taxonomy label, or a customer who selected no functions at all). Senior
 // generalist titles, so the scan still asks a sensible question rather than
 // falling back to the sector-label behaviour this whole block exists to fix.
-export const GENERIC_LEADERSHIP_TITLES = ['Chief Executive Officer', 'Managing Director', 'Chief Financial Officer', 'Chief Operating Officer']
+// Expanded to 6 (2026-09-01) in step with the buildJobTitleQueries default
+// max moving from 4 to 6, so the no-function-selected case gets the same
+// broadened title-query budget every mapped function now gets.
+export const GENERIC_LEADERSHIP_TITLES = ['Chief Executive Officer', 'Managing Director', 'Chief Financial Officer', 'Chief Operating Officer', 'General Manager', 'President']
 
 // TheirStack's own enum, confirmed live 2026-08-31 by sending a deliberate
 // bad value and reading the validation error back: 'c_level', 'staff',
@@ -558,7 +576,16 @@ export function functionParentLabel(value) {
 // fill the cap on its own. Deduplicated, because several disciplines
 // legitimately share a title (Chief Operating Officer sits under both
 // Operations and General Management).
-export function buildJobTitleQueries(functions, max = 4) {
+//
+// Default max raised 4 -> 6 (2026-09-01), in the same edit that expanded
+// FUNCTION_JOB_TITLES/GENERIC_LEADERSHIP_TITLES to 6-7 titles each — moving
+// one without the other would have meant curating broader per-function
+// title coverage that never actually got queried, capped out by this
+// number before the new titles were ever reached. This is the title-QUERY
+// cap only (how many distinct title strings get searched for) — it does
+// not change how many results come back per source; that's each caller's
+// own separate cap (10 for Adzuna/TheirStack, 8 for Apollo).
+export function buildJobTitleQueries(functions, max = 6) {
   const perFunction = []
   const seenFn = new Set()
   for (const value of functions || []) {

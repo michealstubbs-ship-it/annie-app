@@ -244,19 +244,40 @@ describe('buildJobTitleQueries (the 2026-08-31 live-jobs fix)', () => {
   })
 
   it('falls back to generic leadership titles for an unmapped or empty function list', () => {
-    expect(buildJobTitleQueries([])).toEqual(GENERIC_LEADERSHIP_TITLES.slice(0, 4))
-    expect(buildJobTitleQueries(null)).toEqual(GENERIC_LEADERSHIP_TITLES.slice(0, 4))
-    expect(buildJobTitleQueries(['Not A Real Function'])).toEqual(GENERIC_LEADERSHIP_TITLES.slice(0, 4))
+    // Default max (6) now matches GENERIC_LEADERSHIP_TITLES' own length
+    // exactly (2026-09-01) — see both constants' own comments for why they
+    // moved together.
+    expect(buildJobTitleQueries([])).toEqual(GENERIC_LEADERSHIP_TITLES)
+    expect(buildJobTitleQueries(null)).toEqual(GENERIC_LEADERSHIP_TITLES)
+    expect(buildJobTitleQueries(['Not A Real Function'])).toEqual(GENERIC_LEADERSHIP_TITLES)
   })
 
   it('respects the max', () => {
     expect(buildJobTitleQueries(['Finance & Accounting'], 2)).toHaveLength(2)
   })
 
-  it('every mapped function has at least three real titles and none is its own label', () => {
+  it('every mapped function has at least 4 real titles (2026-09-01 breadth expansion, most have 6) and none is its own label', () => {
     for (const [label, titles] of Object.entries(FUNCTION_JOB_TITLES)) {
-      expect(titles.length).toBeGreaterThanOrEqual(3)
+      expect(titles.length).toBeGreaterThanOrEqual(4)
       expect(titles).not.toContain(label)
+    }
+  })
+
+  // A live_job signal exists to surface a real BD mandate — the same
+  // manager-level floor as functionTaxonomy.js's own corporate-function
+  // keywords (2026-09-01, Michael: "make sure they [are] no less than
+  // manager level... that will not be interesting for customers"), applied
+  // here to every function (job POSTINGS, unlike contact-title matching,
+  // are a decision to hire — a junior opening is never a mandate, in any
+  // discipline). None of the titles below "Director/Head/VP/Chief/Manager/
+  // President/Country Manager/Dean/Provost" seniority words should ever
+  // appear in these lists.
+  it('every FUNCTION_JOB_TITLES and GENERIC_LEADERSHIP_TITLES entry reads as manager-level or above', () => {
+    const seniorityWords = ['chief', 'director', 'head of', 'vp ', 'vp of', 'president', 'manager', 'officer', 'dean', 'provost', 'controller', 'counsel']
+    const allTitles = [...Object.values(FUNCTION_JOB_TITLES).flat(), ...GENERIC_LEADERSHIP_TITLES]
+    for (const title of allTitles) {
+      const lower = title.toLowerCase()
+      expect(seniorityWords.some(w => lower.includes(w))).toBe(true)
     }
   })
 })
