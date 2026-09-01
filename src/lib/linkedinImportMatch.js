@@ -17,6 +17,7 @@
 // re-verified again next time.
 import { FLAT_SECTOR_OPTIONS } from './sectorTaxonomy'
 import { FLAT_FUNCTION_OPTIONS } from './functionTaxonomy'
+import { normalizeCompanyName } from './companyMatch'
 
 // Sector and market keywords serve two purposes: (1) matched against a company's real
 // Apollo industry/country data when we have it, confidently excluding a confirmed
@@ -41,8 +42,25 @@ export const SENIORITY_OPTIONS = [
   { label: 'C-Suite / Partner / MD', keywords: ['ceo', 'cfo', 'coo', 'cto', 'chro', 'cmo', 'chief', 'partner', 'managing director', 'president', 'founder', 'md'] },
 ]
 
+// 2026-09-01 audit fix, prompted directly by Michael asking whether the
+// import could leave the CRM with duplicate company rows: this used to be
+// its own bare `.trim().toLowerCase()` — an exact-string key with no legal-
+// suffix handling — while Companies.jsx's own manual "does this company
+// already exist" check, and the BD-signal warm-contact matching in this
+// same codebase, both already use companyMatch.js's normalizeCompanyName,
+// which also strips legal suffixes and punctuation (Ltd/LLC/FZE/DMCC/WLL/
+// etc — see that file's own header for the real UAE/GCC bug this already
+// fixed once elsewhere). Two LinkedIn contacts whose company field read
+// "Acme Trading" and "Acme Trading FZE" would have normalized to two
+// DIFFERENT keys here, creating two separate Companies rows for one real
+// company — exactly the "same client added twice" failure this file's own
+// company-creation code (see LinkedInImport.jsx's runImport) already
+// deliberately protects against for exact-string variants, just not yet for
+// suffix variants. Delegating to the shared function closes that gap and
+// makes every "is this the same company" check in the app agree with each
+// other, instead of three independent, slightly different implementations.
 export function normalizeCompany(name) {
-  return (name || '').trim().toLowerCase()
+  return normalizeCompanyName(name)
 }
 
 // 2026-08-26 audit fix: every keyword check on this page used plain

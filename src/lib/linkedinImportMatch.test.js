@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  MARKET_OPTIONS, SENIORITY_OPTIONS, keywordMatches,
+  MARKET_OPTIONS, SENIORITY_OPTIONS, keywordMatches, normalizeCompany,
   passesFunctionFilter, passesSeniorityFilter, passesConnectionAge,
   passesTitleFilters, softGroupMatch, realGroupMatch, passesSectorMarket, matchesFilters,
 } from './linkedinImportMatch.js'
@@ -172,6 +172,21 @@ describe('passesSectorMarket — whole-sector selection covers its sub-sectors, 
     const contact = { company: 'Acme Digital' }
     const companyData = { 'acme digital': { matched: true, industry: 'Manufacturing', city: '', state: '', country: '' } }
     expect(passesSectorMarket(contact, { sectors: ['Financial Services'], markets: ['Global'], companyData })).toBe(false)
+  })
+})
+
+describe('normalizeCompany — 2026-09-01 audit fix: same company, different legal-suffix spelling, must key the same (prevents a duplicate Companies row on import)', () => {
+  it('a plain name and its FZE-suffixed variant normalize identically (the exact scenario Michael asked about — one contact at "X", another later at "X FZE")', () => {
+    expect(normalizeCompany('Acme Trading')).toBe(normalizeCompany('Acme Trading FZE'))
+  })
+
+  it('agrees with Companies.jsx\'s own dedup function (companyMatch.js\'s normalizeCompanyName) rather than being a second, independent implementation', () => {
+    expect(normalizeCompany('Acme Trading W.L.L.')).toBe(normalizeCompany('Acme Trading'))
+    expect(normalizeCompany('Acme Ltd.')).toBe(normalizeCompany('ACME'))
+  })
+
+  it('still tells apart two genuinely different company names', () => {
+    expect(normalizeCompany('Acme Trading')).not.toBe(normalizeCompany('Zenith Holdings'))
   })
 })
 
