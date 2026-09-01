@@ -2328,6 +2328,43 @@ export const TARGET_FIRM_DIRECTORY = {
       },
     },
   },
+  // 2026-09-01 (Michael): new sector, all three markets. No regulator
+  // licenses a tech company, so unlike the register-backed sectors above,
+  // this leans on real, independently published startup/scaleup tracking
+  // sites as the discoveryHint authority — the closest thing this sector
+  // has to a register, and each one already does exactly the "ones to
+  // watch" job the wrapper instruction above asks for generally, so the
+  // per-sector discoveryHint here names it explicitly rather than leaving
+  // it to the generic instruction alone.
+  //
+  // Deliberately did NOT anchor on FAANG-tier names (Apple, Google,
+  // Microsoft, Amazon, Meta) even though they're the most obvious tech
+  // employers in every one of these markets — the base scan prompt already
+  // tells Annie to "bias against obvious, oversaturated, famous names", and
+  // every recruiter already targets those relentlessly. The anchors below
+  // are instead real, substantial, but less oversaturated companies (UK/US)
+  // or the market's genuine unicorn tier (UAE, where the ecosystem is small
+  // enough that these ARE the obvious names, and still worth anchoring on
+  // directly rather than relying on discovery alone).
+  Technology: {
+    byLocation: {
+      'United Kingdom': {
+        // Verified: notable UK fintech/tech scaleups and unicorns, not FAANG-adjacent.
+        anchors: ['Revolut', 'Wise', 'Monzo', 'Darktrace', 'Deliveroo'],
+        discoveryHint: "Beyond these, Sifted (sifted.eu/rankings) is the real authority on rising UK and European tech companies — a genuine, independently published \"ones to watch\" tracker, not a static list, regularly updated with new scaleups by sector. Check it directly for companies worth a proactive careers-page check.",
+      },
+      'UAE / GCC': {
+        // Verified: the UAE's genuine unicorn/notable-scaleup tier.
+        anchors: ['Careem', 'Tabby', 'Kitopi', 'Property Finder'],
+        discoveryHint: "Beyond these, MAGNiTT (magnitt.com) is the real authority on MENA startups and funding activity — a genuine, independently published tracker covering the region's rising companies, not just the largest names. Check it directly for companies worth a proactive careers-page check.",
+      },
+      'United States': {
+        // Verified: substantial, current US enterprise software/AI companies, deliberately not FAANG-tier.
+        anchors: ['Salesforce', 'ServiceNow', 'Snowflake', 'Palantir Technologies', 'Databricks'],
+        discoveryHint: "Beyond these, CB Insights (cbinsights.com) is the real authority on rising US tech companies and unicorns — a genuine, independently published \"ones to watch\" tracker, regularly updated. Check it directly for companies worth a proactive careers-page check.",
+      },
+    },
+  },
 }
 
 // Composes the proactive firm-tier check-list for the prompt, mirroring

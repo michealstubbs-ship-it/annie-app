@@ -2497,3 +2497,34 @@ describe('buildTargetFirmHint — UK/US Private Equity + Financial Services, and
     expect(hint.toLowerCase()).toContain('careers')
   })
 })
+
+describe('buildTargetFirmHint — Technology (2026-09-01)', () => {
+  it('shows UK tech scaleups and Sifted for a UK customer, never FAANG names', () => {
+    const hint = buildTargetFirmHint(['Technology'], null, ['United Kingdom'])
+    expect(hint).toContain('Revolut')
+    expect(hint).toContain('sifted.eu')
+    expect(hint).not.toContain('Google')
+    expect(hint).not.toContain('Amazon')
+  })
+
+  it('shows UAE tech unicorns and MAGNiTT for a UAE/GCC customer', () => {
+    const hint = buildTargetFirmHint(['Technology'], null, ['UAE / GCC'])
+    expect(hint).toContain('Careem')
+    expect(hint).toContain('Tabby')
+    expect(hint).toContain('magnitt.com')
+  })
+
+  it('shows US tech companies and CB Insights for a US customer, never FAANG names', () => {
+    const hint = buildTargetFirmHint(['Technology'], null, ['United States'])
+    expect(hint).toContain('Salesforce')
+    expect(hint).toContain('cbinsights.com')
+    expect(hint).not.toContain('Apple')
+    expect(hint).not.toContain('Meta')
+  })
+
+  it('never mixes UK, UAE and US tech anchors together for a customer who only selected one of those markets', () => {
+    const ukOnly = buildTargetFirmHint(['Technology'], null, ['United Kingdom'])
+    expect(ukOnly).not.toContain('Careem')
+    expect(ukOnly).not.toContain('Salesforce')
+  })
+})
