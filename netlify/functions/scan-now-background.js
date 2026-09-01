@@ -275,6 +275,23 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
   // (see below) — a full 2-retry budget per group could burn a large chunk
   // of the 15-minute wall-clock budget on one bad group. One retry still
   // absorbs a transient 429/5xx.
+  //
+  // 2026-09-01: raised 120000 -> 240000 after a real production run (mstubbs
+  // @meetannie.ai's own Growth-tier onboarding scan) showed all 3 parallel
+  // sector-group calls abort on BOTH the first attempt and the retry within
+  // the same few minutes — i.e. this wasn't a transient blip, 120s genuinely
+  // wasn't enough time for a call allowed up to anthropicBroadenMaxUses (15
+  // for Growth/Team) round-trips of web search, so the retry just burned
+  // another 120s failing the same way. That failure silently drops this
+  // pass's entire sector-specific signal set (this is the one pass whose
+  // prompt is scoped tightly enough to actually connect a signal to one of
+  // the customer's chosen functions — see buildScanPrompt's function-mapping
+  // instruction below); whatever a customer sees instead comes from the
+  // broaden fallback, which is deliberately wider and less tied to their
+  // specific functions. Groups still run in parallel (Promise.all above), so
+  // this only changes each group's own worst case (240s attempt + 240s retry
+  // = 8 min) against the 10-minute WALL_CLOCK_BUDGET_MS for this round, not
+  // an additive cost across groups.
   const resp = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
@@ -285,7 +302,7 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
       messages: [{ role: 'user', content: 'Scan for signals now.' }],
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxUses }],
     }),
-  }, 120000, 1) // web search runs multiple search round-trips, needs far more than the 12s default
+  }, 240000, 1) // web search runs multiple search round-trips, needs far more than the 12s default
   if (!resp.ok) throw new Error(`Anthropic ${resp.status}`)
   const data = await resp.json()
   return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
