@@ -421,13 +421,17 @@ export default function Overview() {
   // minutes, Growth/Team's is 20 (SCAN_TIER_CONFIG in entitlements.js), and
   // a Starter customer taking "several minutes" literally then seeing it
   // still running at minute 8 could reasonably read that as broken. Starter
-  // also gets one subtle, factual mention of the difference — not a sales
-  // banner, just the honest reason the wait is shorter — matching the
-  // existing gold-accent treatment this page already uses for a soft aside
-  // (see the "Here's the shape of your day" span above), not a bolded CTA.
+  // also gets one subtle mention of the difference — not a bolded CTA, same
+  // gold-accent treatment this page already uses for a soft aside (see the
+  // "Here's the shape of your day" span above) — reframed 2026-09-01 per
+  // Michael's own read: the first draft ("spends twice as long scanning")
+  // read like an apology for Starter being slow rather than a reason to
+  // want Growth/Team. Longer scan time is the upsell, not the caveat, so
+  // the copy now leads with what that time buys (more signals, more depth)
+  // rather than the time itself.
   const scanBannerCopy = useMemo(() => {
     if (tier === 'starter') {
-      return { minutes: 10, upgradeHint: 'On Growth or Team, Annie spends twice as long scanning and comes back with more.' }
+      return { minutes: 10, upgradeHint: 'Growth and Team give Annie twice as long to dig — more signals, more depth.' }
     }
     return { minutes: 20, upgradeHint: null }
   }, [tier])
