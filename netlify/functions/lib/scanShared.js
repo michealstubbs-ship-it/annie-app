@@ -2208,10 +2208,11 @@ export const TARGET_FIRM_DIRECTORY = {
   // 2026-09-01 (Michael): "all registered PE funds", not just a handful of
   // famous names — and the real, authoritative, self-updating source of that
   // is the regulators' own public registers, not a hand-typed list that goes
-  // stale the moment a new fund registers. UAE/GCC only for now — add UK/US
-  // entries once researched with the same care, deliberately not guessed at
-  // here (an unverified list is worse than no list — see the Government &
-  // Public Sector correction above for exactly why).
+  // stale the moment a new fund registers. UK and US added same day, same
+  // registry-first approach, once each was independently verified — never
+  // guess a market's regulator or anchor names, add them once confirmed real
+  // (an unverified list is worse than no list — see the Government & Public
+  // Sector correction above for exactly why).
   'Private Equity': {
     byLocation: {
       'UAE / GCC': {
@@ -2221,20 +2222,109 @@ export const TARGET_FIRM_DIRECTORY = {
         anchors: ['Mubadala Investment Company', 'Abu Dhabi Investment Authority (ADIA)', 'ADQ', 'Investment Corporation of Dubai (ICD)', 'Gulf Capital', 'Investcorp'],
         discoveryHint: "Beyond these, the DFSA's public register (dfsa.ae/public-register/funds and dfsa.ae/public-register/firms) and ADGM's FSRA public register (adgm.com/public-registers/fsra) are the real authority here — every fund manager actually licensed to operate in DIFC or ADGM, the two free zones almost every UAE-based PE/VC/growth-equity fund registers through, is on one of these, kept current by the regulator itself rather than by us. Check both directly rather than relying on search alone to surface a fund that hasn't made news recently.",
       },
+      'United Kingdom': {
+        // Verified: the largest London-headquartered buyout firms.
+        anchors: ['CVC Capital Partners', 'Permira', 'Cinven', 'Apax Partners', 'Bridgepoint'],
+        discoveryHint: "Beyond these, the FCA's Financial Services Register (fca.org.uk/firms/financial-services-register) is the real authority — most UK-based fund managers, including the large majority of private equity and venture firms, are required to register with the FCA to operate, and the register is kept current by the regulator itself rather than by us. Check it directly rather than relying on search alone to surface a fund that hasn't made news recently.",
+      },
+      'United States': {
+        // Verified: the largest US-headquartered PE firms by AUM.
+        anchors: ['Blackstone', 'KKR', 'The Carlyle Group', 'Apollo Global Management', 'TPG', 'Warburg Pincus'],
+        discoveryHint: "Beyond these, the SEC's Investment Adviser Public Disclosure database (adviserinfo.sec.gov/pubsearch) is the real authority — most US private equity firms above a modest size are required to register with the SEC as investment advisers, and the database is kept current by the regulator itself rather than by us. Check it directly rather than relying on search alone to surface a firm that hasn't made news recently.",
+      },
     },
   },
   // 2026-09-01 (Michael): same registry-over-hand-list reasoning as Private
-  // Equity above. Banking's authoritative register is the UAE Central Bank's
-  // own published "CB Register" (centralbank.ae) rather than DFSA/ADGM —
-  // most UAE banks are licensed onshore by the Central Bank, not through the
-  // free zones; DFSA/ADGM still cover the free-zone-licensed wealth
+  // Equity above. UAE's authoritative register is the Central Bank's own
+  // published "CB Register" (centralbank.ae) — most UAE banks are licensed
+  // onshore by the Central Bank, not through the free zones, so DFSA/ADGM
+  // are named as the secondary source for free-zone-licensed wealth
   // managers, insurers and fintech/payments firms that also sit under this
-  // sector. UAE/GCC only for now, same reason as above.
+  // sector. UK and US added same day, same care as Private Equity above.
   'Financial Services': {
     byLocation: {
       'UAE / GCC': {
         anchors: ['Emirates NBD', 'First Abu Dhabi Bank (FAB)', 'Abu Dhabi Commercial Bank (ADCB)', 'Dubai Islamic Bank (DIB)', 'Mashreq', 'Abu Dhabi Islamic Bank (ADIB)'],
         discoveryHint: "Beyond these, the Central Bank of the UAE's own published register of every licensed bank (centralbank.ae) is the real authority, kept current by the regulator itself. For free-zone-licensed wealth managers, insurers and fintech/payments firms specifically, the DFSA (dfsa.ae/public-register/firms) and ADGM FSRA (adgm.com/public-registers/fsra) public registers cover those. Check the relevant one directly rather than relying on search alone to surface an institution that hasn't made news recently.",
+      },
+      'United Kingdom': {
+        // Verified: the UK's largest retail/commercial banking groups.
+        anchors: ['HSBC UK', 'Barclays', 'Lloyds Banking Group', 'NatWest Group', 'Santander UK'],
+        discoveryHint: "Beyond these, the FCA's Financial Services Register (fca.org.uk/firms/financial-services-register) is the real authority on every firm regulated to operate in UK financial services — banking, insurance, wealth management, fintech and payments alike — kept current by the regulator itself. Check it directly rather than relying on search alone to surface a firm that hasn't made news recently.",
+      },
+      'United States': {
+        // Verified: the largest US banking groups by assets.
+        anchors: ['JPMorgan Chase', 'Bank of America', 'Wells Fargo', 'Citigroup', 'Goldman Sachs', 'Morgan Stanley'],
+        discoveryHint: "Beyond these, the SEC's Investment Adviser Public Disclosure database (adviserinfo.sec.gov/pubsearch) is the real authority for registered investment advisers, wealth managers and broker-dealers — kept current by the regulator itself. Check it directly rather than relying on search alone to surface a firm that hasn't made news recently.",
+      },
+    },
+  },
+  // 2026-09-01 (Michael): new sector, UAE/GCC only — Dubai Land Department's
+  // RERA arm publishes a public register of every licensed developer, the
+  // same registry-over-hand-list reasoning as Private Equity/Financial
+  // Services above, verified before adding. UK and US deliberately not
+  // added: neither has a single national developer-licensing register the
+  // way Dubai does (real estate regulation is fragmented/local in both), so
+  // this stays UAE/GCC-only rather than guessing at an equivalent that may
+  // not exist.
+  'Real Estate': {
+    byLocation: {
+      'UAE / GCC': {
+        // Verified: Dubai's and Abu Dhabi's largest, most established master developers.
+        anchors: ['Emaar Properties', 'DAMAC Properties', 'Nakheel', 'Aldar Properties', 'Dubai Properties', 'Meraas'],
+        discoveryHint: "Beyond these, Dubai Land Department's RERA register of licensed developers (dubailand.gov.ae) is the real authority — every developer legally permitted to sell property in Dubai is on it, kept current by the regulator itself rather than by us. Check it directly rather than relying on search alone to surface a developer that hasn't made news recently.",
+      },
+    },
+  },
+  // 2026-09-01 (Michael): new sector, global anchors — unlike Government &
+  // Public Sector/Private Equity/Financial Services, the major players in
+  // engineering & construction are genuinely the same handful of global
+  // names in every market this customer might select, so this uses the flat
+  // `anchors` shape like Management Consulting/Law rather than a
+  // location split. discoveryHint points at ENR's own Top 250 Global
+  // Contractors ranking (enr.com/toplists) — a real, independently
+  // published, annually updated authority — rather than a hand-list, same
+  // registry/ranking-over-guessing reasoning as everything else added today.
+  Industrial: {
+    anchors: ['Bechtel', 'Fluor Corporation', 'AECOM', 'Jacobs', 'Vinci', 'Bouygues'],
+    discoveryHint: "Beyond these, ENR's (Engineering News-Record) Top 250 Global Contractors ranking (enr.com/toplists) is the real authority on who else is active — it ranks engineering, construction and EPC firms across every tier, not just the largest names, and is independently published and updated annually — for this customer's selected markets, then check those firms' own career pages the same way.",
+  },
+  // 2026-09-01 (Michael): new sector, United Kingdom only for now. CQC (Care
+  // Quality Commission) publishes a genuinely public, searchable register of
+  // every registered health and social care provider in England
+  // (cqc.org.uk/care-services), including an open dataset
+  // (data.gov.uk/dataset — "Care Quality Commission care directory") — a
+  // real, government-run register, same reasoning as everywhere else added
+  // today. UAE and US deliberately not added: UAE's healthcare regulators
+  // (DHA, DOH, MOHAP, SHA) are real but a public, browsable register of
+  // every licensed facility the way CQC has was not confirmed before
+  // writing this, and the US has no single national equivalent (healthcare
+  // facility licensing is state-by-state) — add either once a genuine
+  // register is confirmed for it, not guessed at here.
+  Healthcare: {
+    byLocation: {
+      'United Kingdom': {
+        // Verified: the UK's largest private hospital/healthcare groups.
+        anchors: ['Bupa', 'HCA Healthcare UK', 'Nuffield Health', 'Spire Healthcare', 'Ramsay Health Care UK'],
+        discoveryHint: "Beyond these, the CQC's (Care Quality Commission) public register of every regulated care provider in England (cqc.org.uk/care-services) is the real authority, kept current by the regulator itself rather than by us. Check it directly rather than relying on search alone to surface a provider that hasn't made news recently.",
+      },
+    },
+  },
+  // 2026-09-01 (Michael): new sector, United Kingdom only for now. Ofgem
+  // publishes its own list of every licensed electricity and gas supplier —
+  // a real, government-run register, same reasoning as everywhere else
+  // added today. UAE and US deliberately not added: UAE's major energy
+  // players (DEWA, ADNOC, TAQA) are government-related entities rather than
+  // license-registrants in the retail-supplier sense Ofgem covers, and the
+  // US has no single national equivalent (energy is regulated state-by-state
+  // via each state's Public Utilities Commission, plus FERC federally) — add
+  // either once a genuine registry-style mechanism is confirmed for it.
+  'Energy & Utilities': {
+    byLocation: {
+      'United Kingdom': {
+        // Verified: the UK's largest household energy suppliers by market share.
+        anchors: ['British Gas (Centrica)', 'Octopus Energy', 'EDF Energy', 'E.ON UK', 'SSE'],
+        discoveryHint: "Beyond these, Ofgem's own published list of licensed electricity and gas suppliers (ofgem.gov.uk) is the real authority, kept current by the regulator itself rather than by us. Check it directly rather than relying on search alone to surface a supplier that hasn't made news recently.",
       },
     },
   },
@@ -2279,7 +2369,7 @@ export function buildTargetFirmHint(sectors, learned, locations) {
     return `${sector} — firms worth checking directly regardless of whether they've come up as a signal yet (${names.length} tracked so far, seed anchors plus everything discovered since): ${names.join(', ')}.${hints ? ` ${hints}` : ''}`
   }).filter(Boolean)
   if (!parts.length) return ''
-  return `\nThis customer targets a sector with well-known major players, so proactively check these specific firms' own career pages too, the same way as the per-company follow-up check above, rather than waiting for them to surface as a signal first:\n${parts.join('\n')}\nThis list should keep growing: if you find a real, verifiable firm active in this customer's markets on the named register/ranking source above, big or boutique, that isn't already in this list, report it as an "annie_learned" entry (kind "company", see the output format below) so it's added for next time — this is exactly how the list above grew past its original starting set.\n`
+  return `\nThis customer targets a sector with well-known major players, so proactively check these specific firms' own career pages too, the same way as the per-company follow-up check above, rather than waiting for them to surface as a signal first:\n${parts.join('\n')}\nCrucially, do not stop at these seed names — this recruiter almost certainly already knows the biggest, most obvious firms in their sector. The real value is in the ones they don't already know about: use the full depth of the named register/ranking source above (a register like the FCA's or DFSA's lists EVERY licensed firm, not just the famous ones; a ranking site like Legal 500/Chambers/consultancy-me.com/ENR covers Tier 2, boutique and challenger firms alongside the household names), and separately search for "ones to watch", "rising stars", "emerging manager", "40 under 40" or "startups/firms to watch" style coverage in this customer's own named regional trade press (already listed above) — smaller, newer, faster-growing firms are exactly the kind of lead a recruiter values most, precisely because their competitors haven't found them yet. For every firm this surfaces, seed name or newly found, do the same direct check: search its own careers/jobs page for a real, specific opening right now, the same way as the per-company follow-up check above — an emerging firm that's actively hiring is a live BD opportunity, not just a name on a list.\nThis list should keep growing: if you find a real, verifiable firm active in this customer's markets this way, big or boutique, well-known or genuinely emerging, that isn't already in this list, report it as an "annie_learned" entry (kind "company", see the output format below) so it's added for next time — this is exactly how the list above grew past its original starting set.\n`
 }
 
 // Reads Annie's own growing research memory (25 Aug 2026, Michael) — companies

@@ -2427,7 +2427,73 @@ describe('buildTargetFirmHint (2026-09-01: Private Equity, Financial Services, l
   })
 
   it('returns an empty string for a sector with no matching location entry and nothing learned yet, rather than a bare or broken block', () => {
-    const hint = buildTargetFirmHint(['Private Equity'], null, ['United Kingdom'])
+    const hint = buildTargetFirmHint(['Real Estate'], null, ['United States'])
     expect(hint).toBe('')
+  })
+})
+
+describe('buildTargetFirmHint — UK/US Private Equity + Financial Services, and new sectors (2026-09-01)', () => {
+  it('shows UK PE anchors and the FCA register for a UK customer', () => {
+    const hint = buildTargetFirmHint(['Private Equity'], null, ['United Kingdom'])
+    expect(hint).toContain('CVC Capital Partners')
+    expect(hint).toContain('fca.org.uk/firms/financial-services-register')
+  })
+
+  it('shows US PE anchors and the SEC IAPD database for a US customer', () => {
+    const hint = buildTargetFirmHint(['Private Equity'], null, ['United States'])
+    expect(hint).toContain('Blackstone')
+    expect(hint).toContain('adviserinfo.sec.gov/pubsearch')
+  })
+
+  it('shows UK banks for Financial Services, and never mixes in UAE or US banks for a UK-only customer', () => {
+    const hint = buildTargetFirmHint(['Financial Services'], null, ['United Kingdom'])
+    expect(hint).toContain('Barclays')
+    expect(hint).not.toContain('Emirates NBD')
+    expect(hint).not.toContain('JPMorgan Chase')
+  })
+
+  it('shows US banks and the SEC IAPD database for Financial Services in the US', () => {
+    const hint = buildTargetFirmHint(['Financial Services'], null, ['United States'])
+    expect(hint).toContain('JPMorgan Chase')
+    expect(hint).toContain('adviserinfo.sec.gov/pubsearch')
+  })
+
+  it('shows UAE Real Estate developers and the RERA/DLD register, and nothing for a customer with no UAE/GCC market selected', () => {
+    const uae = buildTargetFirmHint(['Real Estate'], null, ['UAE / GCC'])
+    expect(uae).toContain('Emaar Properties')
+    expect(uae).toContain('dubailand.gov.ae')
+    const ukOnly = buildTargetFirmHint(['Real Estate'], null, ['United Kingdom'])
+    expect(ukOnly).toBe('')
+  })
+
+  it('shows Industrial anchors and the ENR ranking regardless of which market the customer selected, since these are genuinely global players', () => {
+    const uk = buildTargetFirmHint(['Industrial'], null, ['United Kingdom'])
+    const uae = buildTargetFirmHint(['Industrial'], null, ['UAE / GCC'])
+    expect(uk).toContain('Bechtel')
+    expect(uk).toContain('enr.com/toplists')
+    expect(uae).toContain('Bechtel')
+  })
+
+  it('shows UK Healthcare anchors and the CQC register for a UK customer, and nothing for UAE/US where no register was confirmed', () => {
+    const uk = buildTargetFirmHint(['Healthcare'], null, ['United Kingdom'])
+    expect(uk).toContain('Bupa')
+    expect(uk).toContain('cqc.org.uk')
+    const uae = buildTargetFirmHint(['Healthcare'], null, ['UAE / GCC'])
+    expect(uae).toBe('')
+  })
+
+  it('shows UK Energy & Utilities anchors and the Ofgem register for a UK customer, and nothing for UAE/US', () => {
+    const uk = buildTargetFirmHint(['Energy & Utilities'], null, ['United Kingdom'])
+    expect(uk).toContain('Octopus Energy')
+    expect(uk).toContain('ofgem.gov.uk')
+    const uae = buildTargetFirmHint(['Energy & Utilities'], null, ['UAE / GCC'])
+    expect(uae).toBe('')
+  })
+
+  it('explicitly instructs Annie to look past the seed anchors for emerging/rising firms, not just the well-known names, and to check their hiring', () => {
+    const hint = buildTargetFirmHint(['Private Equity'], null, ['UAE / GCC'])
+    expect(hint).toContain('ones to watch')
+    expect(hint).toContain('rising stars')
+    expect(hint.toLowerCase()).toContain('careers')
   })
 })
