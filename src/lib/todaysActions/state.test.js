@@ -65,6 +65,45 @@ describe('loadActionState', () => {
     })
     await expect(loadActionState(supabase, 'u1', ['signal:s1'])).rejects.toEqual({ message: 'db down' })
   })
+
+  // 2026-09-02 audit fix: a bulk CSV import can produce hundreds of brand-new
+  // item keys in one load. A single .in() with all of them built an
+  // oversized GET URL that Supabase's edge rejected outright -- this is what
+  // took down Today's Actions and Overview after the first real import.
+  it('splits a large key list into multiple chunked .in() calls instead of one oversized request', async () => {
+    const itemKeys = Array.from({ length: 340 }, (_, i) => `new_client:contact:c${i}:`)
+    await loadActionState(supabase, 'u1', itemKeys)
+    expect(supabase._calls.in).toHaveLength(3) // 150 + 150 + 40
+    expect(supabase._calls.in.map(([, keys]) => keys.length)).toEqual([150, 150, 40])
+  })
+
+  it('merges rows from every chunk into a single Map', async () => {
+    const itemKeys = Array.from({ length: 200 }, (_, i) => `new_client:contact:c${i}:`)
+    supabase._state.set(itemKeys[0], { item_key: itemKeys[0], status: 'active', first_shown_at: '2026-08-01' })
+    supabase._state.set(itemKeys[160], { item_key: itemKeys[160], status: 'done', first_shown_at: '2026-08-01' })
+    const result = await loadActionState(supabase, 'u1', itemKeys)
+    expect(result.size).toBe(2)
+    expect(result.get(itemKeys[0]).status).toBe('active')
+    expect(result.get(itemKeys[160]).status).toBe('done')
+  })
+
+  it('still throws if any chunk errors, even if an earlier chunk succeeded', async () => {
+    let call = 0
+    supabase.from = () => ({
+      select: () => ({
+        eq: () => ({
+          in: () => {
+            call += 1
+            return call === 1
+              ? Promise.resolve({ data: [], error: null })
+              : Promise.resolve({ data: null, error: { message: 'db down' } })
+          },
+        }),
+      }),
+    })
+    const itemKeys = Array.from({ length: 200 }, (_, i) => `k${i}`)
+    await expect(loadActionState(supabase, 'u1', itemKeys)).rejects.toEqual({ message: 'db down' })
+  })
 })
 
 describe('recordFirstSeen', () => {
@@ -83,6 +122,13 @@ describe('recordFirstSeen', () => {
       { user_id: 'u1', item_key: 'signal:s2', status: 'active' },
     ])
     expect(supabase._calls.upsert[0].opts).toEqual({ onConflict: 'user_id,item_key', ignoreDuplicates: true })
+  })
+
+  it('splits a large key list into multiple chunked upsert calls instead of one oversized payload', async () => {
+    const itemKeys = Array.from({ length: 340 }, (_, i) => `new_client:contact:c${i}:`)
+    await recordFirstSeen(supabase, 'u1', itemKeys)
+    expect(supabase._calls.upsert).toHaveLength(3)
+    expect(supabase._calls.upsert.map(c => c.rows.length)).toEqual([150, 150, 40])
   })
 })
 
