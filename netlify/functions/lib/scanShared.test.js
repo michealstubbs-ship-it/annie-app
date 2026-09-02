@@ -13,7 +13,7 @@ import {
   normalizeCompanyKey, extractFundingSignature, fundingFuzzyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
   buildExistingByCompanyType, findSemanticDedupTargets, filterSemanticDuplicates,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
-  enrichCompany, looksLikeJobPostingUrl, looksLikeStaffingAgencyName, isStaffingAgencyIndustry, verifyContactsAcrossFunctions, createTimeoutFetch,
+  enrichCompany, looksLikeJobPostingUrl, looksLikeStaffingAgencyName, isStaffingAgencyIndustry, verifyContactsAcrossFunctions, resolveContactForSignal, createTimeoutFetch,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs, discoverHotCompanies,
   looksTruncatedByTokenLimit, getLearnedSources, recordLearnedDiscoveries, isJunkLearnedSourceValue,
   normalizeLearnedLocation,
@@ -2056,6 +2056,75 @@ describe('buildEnrichedSignalRow — always a contact recommendation on the 4 wh
       { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
     )
     expect(row.signal_type).toBe('live_job')
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('resolveContactForSignal — EXTENDED_FUNCTION_TITLE_BUCKETS retry (2026-09-02: live_job/leadership_change always retry)', () => {
+  // CAPIMAX (a real production live_job signal) never got this wider pass
+  // because the customer's own subscription had lapsed to Starter-tier scan
+  // config (apolloContactRetry: false) — these two tests pin the fix:
+  // live_job and leadership_change now get the wider pass regardless of
+  // apolloContactRetry, while every other signal type stays tier-gated as
+  // before.
+  function stubEmptyThenExtendedBucketHit(bucketTitle, personName) {
+    const [first, last] = personName.split(' ')
+    return vi.fn(async (url, opts) => {
+      if (url.includes('mixed_people/api_search')) {
+        const body = JSON.parse(opts.body)
+        if (body.person_titles?.includes(bucketTitle)) {
+          return { ok: true, json: async () => ({ people: [{ first_name: first, last_name: last, title: bucketTitle, id: 'p1' }] }) }
+        }
+        return { ok: true, json: async () => ({ people: [] }) }
+      }
+      if (url.includes('people/match')) return { ok: true, json: async () => ({ person: { first_name: first, last_name: last, email: 'x@acme.com' } }) }
+      return { ok: true, text: async () => '' }
+    })
+  }
+
+  it('a live_job signal at Starter tier (apolloContactRetry: false) still gets the EXTENDED bucket pass when the standard buckets find nobody', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', stubEmptyThenExtendedBucketHit('COO', 'Sara Ahmed'))
+    const { contact, contactCandidates } = await resolveContactForSignal({
+      apolloKey: 'k', company: 'Acme Ltd', signalType: 'live_job', titleKeywords: ['Finance Manager'],
+      supabase, apolloOrgId: 'org_1', userId: 'u1', apolloContactRetry: false,
+    })
+    expect(contact).toBeNull()
+    expect(contactCandidates.some(c => c.name === 'Sara Ahmed' && c.function === 'operations')).toBe(true)
+    vi.unstubAllGlobals()
+  })
+
+  it('a leadership_change signal at Starter tier (apolloContactRetry: false) still gets the EXTENDED bucket pass when the standard buckets find nobody', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', stubEmptyThenExtendedBucketHit('General Manager', 'Tariq Hassan'))
+    const { contactCandidates } = await resolveContactForSignal({
+      apolloKey: 'k', company: 'Acme Ltd', signalType: 'leadership_change', titleKeywords: ['Chief Marketing Officer'],
+      appointedName: null, supabase, apolloOrgId: 'org_1', userId: 'u1', apolloContactRetry: false,
+    })
+    expect(contactCandidates.some(c => c.name === 'Tariq Hassan' && c.function === 'general_management')).toBe(true)
+    vi.unstubAllGlobals()
+  })
+
+  it('leaves every other signal type tier-gated — hiring_activity at Starter tier does NOT get the EXTENDED bucket pass', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', stubEmptyThenExtendedBucketHit('COO', 'Sara Ahmed'))
+    const { contact, contactCandidates } = await resolveContactForSignal({
+      apolloKey: 'k', company: 'Acme Ltd', signalType: 'hiring_activity', titleKeywords: ['Finance Manager'],
+      supabase, apolloOrgId: 'org_1', userId: 'u1', apolloContactRetry: false,
+    })
+    expect(contact).toBeNull()
+    expect(contactCandidates).toEqual([])
+    vi.unstubAllGlobals()
+  })
+
+  it('a live_job signal at Growth tier (apolloContactRetry: true) keeps working exactly as before', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', stubEmptyThenExtendedBucketHit('COO', 'Sara Ahmed'))
+    const { contactCandidates } = await resolveContactForSignal({
+      apolloKey: 'k', company: 'Acme Ltd', signalType: 'live_job', titleKeywords: ['Finance Manager'],
+      supabase, apolloOrgId: 'org_1', userId: 'u1', apolloContactRetry: true,
+    })
+    expect(contactCandidates.some(c => c.name === 'Sara Ahmed')).toBe(true)
     vi.unstubAllGlobals()
   })
 })

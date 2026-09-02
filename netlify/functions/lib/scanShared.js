@@ -1596,17 +1596,22 @@ const FUNCTION_TITLE_BUCKETS = {
   commercial: ['Commercial Director', 'VP Sales', 'Head of Business Development'],
 }
 
-// A second, wider net — tried only for tiers with apolloContactRetry
-// enabled (Growth/Team, see SCAN_TIER_CONFIG in entitlements.js) when the
-// standard multi-function fallback below still comes back with nobody for
-// a leadership_change/live_job signal. Kept separate from
-// FUNCTION_TITLE_BUCKETS rather than merged into it, since that constant's
-// default export is also used unconditionally for every funding/expansion
-// signal regardless of tier — folding these in there would have quietly
-// widened (and re-costed) that path too. Real GCC production data
-// (25 Aug 2026) showed the standard fallback still comes back empty on
-// these two signal types more often than search budget alone explains —
-// this is a second real attempt for the tiers that pay for one, not a
+// A second, wider net, tried when the standard multi-function fallback
+// below still comes back with nobody for a leadership_change/live_job
+// signal. Originally gated to tiers with apolloContactRetry enabled
+// (Growth/Team, see SCAN_TIER_CONFIG in entitlements.js); as of 2026-09-02
+// it also always runs for live_job/leadership_change regardless of tier
+// (see resolveContactForSignal's alwaysRetryContactSearch) — these are the
+// two types Michael has said must never be shown contact-less, so the
+// guarantee can't depend on billing status. Other signal types (e.g. a
+// funding/expansion signal at Starter tier that still comes back empty)
+// remain tier-gated as before. Kept separate from FUNCTION_TITLE_BUCKETS
+// rather than merged into it, since that constant's default export is also
+// used unconditionally for every funding/expansion signal regardless of
+// tier — folding these in there would have quietly widened (and re-costed)
+// that path too. Real GCC production data (25 Aug 2026) showed the standard
+// fallback still comes back empty on these two signal types more often
+// than search budget alone explains — this is a second real attempt, not a
 // bigger Anthropic search budget.
 const EXTENDED_FUNCTION_TITLE_BUCKETS = {
   operations: ['COO', 'Head of Operations', 'VP Operations'],
@@ -2011,14 +2016,29 @@ export async function resolveContactForSignal({ apolloKey, company, signalType, 
     if (!contact && apolloOrgId) {
       contactCandidates = await verifyContactsAcrossFunctions(apolloKey, company, supabase, apolloOrgId, undefined, undefined, userId, apolloCaps)
     }
-    // Growth/Team only during ordinary scanning (2026-08-25, see
-    // SCAN_TIER_CONFIG in entitlements.js): one more, wider attempt across a
-    // different set of title buckets before accepting "no contact" — see
-    // EXTENDED_FUNCTION_TITLE_BUCKETS's own header for why this is normally
-    // gated by tier. resolve-signal-contact.js's manual-retry path forces
-    // this on for every tier, since that call site is a one-off, explicit
-    // user action, not routine per-signal scan cost.
-    if (!contact && !contactCandidates.length && apolloContactRetry && apolloOrgId) {
+    // Growth/Team only during ordinary scanning for most signal types
+    // (2026-08-25, see SCAN_TIER_CONFIG in entitlements.js): one more, wider
+    // attempt across a different set of title buckets before accepting "no
+    // contact" — see EXTENDED_FUNCTION_TITLE_BUCKETS's own header for why
+    // this is normally gated by tier. resolve-signal-contact.js's
+    // manual-retry path forces this on for every tier, since that call site
+    // is a one-off, explicit user action, not routine per-signal scan cost.
+    //
+    // 2026-09-02: live_job and leadership_change are the exception — these
+    // are the two types Michael has said must never come up contact-less
+    // (a live_job with nobody to approach, or a new exec appointment nobody
+    // can be pointed at, reads as "Annie found nothing" even though the
+    // signal itself is real). Discovered via a real case (CAPIMAX, a
+    // live_job signal) that never got this wider pass because the
+    // customer's own subscription had lapsed to Starter-tier scan config —
+    // gating the "always have a contact" guarantee on billing status for
+    // exactly the two types meant to always have one defeats the point, so
+    // for these two the wider pass now runs regardless of apolloContactRetry.
+    // Funding/expansion don't need this override — they already go straight
+    // to verifyContactsAcrossFunctions above, unconditionally, for every
+    // tier.
+    const alwaysRetryContactSearch = ['live_job', 'leadership_change'].includes(signalType)
+    if (!contact && !contactCandidates.length && (apolloContactRetry || alwaysRetryContactSearch) && apolloOrgId) {
       contactCandidates = await verifyContactsAcrossFunctions(
         apolloKey, company, supabase, apolloOrgId,
         Object.keys(EXTENDED_FUNCTION_TITLE_BUCKETS), EXTENDED_FUNCTION_TITLE_BUCKETS, userId, apolloCaps,
