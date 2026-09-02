@@ -250,7 +250,37 @@ export async function getEntitlements(supabase, userId) {
     .eq('team_id', membership.team_id)
     .maybeSingle()
 
-  const isEntitled = sub && ['active', 'trialing'].includes(sub.status) && TIER_LIMITS[sub.tier]
+  // Admin accounts keep their subscription row's configured tier even when
+  // its Stripe status isn't active/trialing — added 2026-09-02 after
+  // Michael's own account (tier: growth, status: canceled from a real,
+  // deliberately-cancelled Stripe subscription — stripe-webhook.js is "the
+  // only writer" of this table, so that status is genuine, not a sync bug)
+  // silently fell back to Starter-tier scan config with no way to tell.
+  // Michael didn't want to either hand-edit the subscriptions row (would
+  // desync from Stripe's real state and could get silently overwritten the
+  // next time stripe-webhook.js writes this table) or run a real Stripe
+  // checkout just to unblock his own testing. is_admin already gates the
+  // separate admin-dashboard views (see profiles table / Sidebar.jsx) —
+  // reusing that same flag here means any future internal/test account gets
+  // the same treatment without another one-off carve-out, and it's scoped
+  // to bypassing the *status* check only: an admin account still needs a
+  // real subscriptions row with a real tier on it, and the returned
+  // `status` still reports the true Stripe status (so billing UI doesn't
+  // lie about it) — only which tier's scan config gets used changes.
+  // Only queried when actually needed (sub exists but isn't active/
+  // trialing) so the common case — a real paying customer — costs no extra
+  // query.
+  let isAdminOverride = false
+  if (sub && !['active', 'trialing'].includes(sub.status)) {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('is_admin')
+      .eq('id', userId)
+      .maybeSingle()
+    isAdminOverride = !!profile?.is_admin
+  }
+
+  const isEntitled = sub && (['active', 'trialing'].includes(sub.status) || isAdminOverride) && TIER_LIMITS[sub.tier]
   const tier = isEntitled ? sub.tier : DEFAULT_TIER
 
   return { tier, status: sub?.status || null, teamId: membership.team_id, limits: TIER_LIMITS[tier] }

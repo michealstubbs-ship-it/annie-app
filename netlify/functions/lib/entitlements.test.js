@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { getEntitlements, TIER_LIMITS, SCAN_TIER_CONFIG, resolveResourceCaps } from './entitlements.js'
 
-function makeSupabase({ membership = null, subscription = null } = {}) {
+function makeSupabase({ membership = null, subscription = null, isAdmin = false } = {}) {
   return {
     from(table) {
       if (table === 'team_members') {
@@ -9,6 +9,9 @@ function makeSupabase({ membership = null, subscription = null } = {}) {
       }
       if (table === 'subscriptions') {
         return { select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: subscription, error: null }) }) }) }
+      }
+      if (table === 'profiles') {
+        return { select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: { is_admin: isAdmin }, error: null }) }) }) }
       }
       throw new Error(`unexpected table ${table}`)
     },
@@ -32,6 +35,59 @@ describe('getEntitlements', () => {
   it('defaults to Starter-level limits when the subscription exists but is not active/trialing', async () => {
     const result = await getEntitlements(makeSupabase({ membership: { team_id: 't1' }, subscription: { tier: 'growth', status: 'canceled' } }), 'u1')
     expect(result.tier).toBe('starter')
+  })
+
+  // 2026-09-02: is_admin override — see getEntitlements's own header comment.
+  // Michael's own account had a real, genuinely-cancelled Stripe
+  // subscription (tier: growth) blocking his own testing; rather than
+  // hand-edit the subscriptions row (would desync from Stripe and could be
+  // silently overwritten by the next stripe-webhook.js write) or run a real
+  // checkout, an admin account keeps its subscription's configured tier
+  // regardless of status.
+  it('an admin account keeps its configured tier even when the subscription is canceled', async () => {
+    const result = await getEntitlements(
+      makeSupabase({ membership: { team_id: 't1' }, subscription: { tier: 'growth', status: 'canceled' }, isAdmin: true }),
+      'u1',
+    )
+    expect(result.tier).toBe('growth')
+    expect(result.limits).toEqual(TIER_LIMITS.growth)
+  })
+
+  it('an admin account still reports the true underlying status — the override changes tier, not the billing truth', async () => {
+    const result = await getEntitlements(
+      makeSupabase({ membership: { team_id: 't1' }, subscription: { tier: 'growth', status: 'canceled' }, isAdmin: true }),
+      'u1',
+    )
+    expect(result.status).toBe('canceled')
+  })
+
+  it('a non-admin account with the exact same canceled subscription still falls back to Starter — the override is scoped to is_admin, not universal', async () => {
+    const result = await getEntitlements(
+      makeSupabase({ membership: { team_id: 't1' }, subscription: { tier: 'growth', status: 'canceled' }, isAdmin: false }),
+      'u1',
+    )
+    expect(result.tier).toBe('starter')
+  })
+
+  it('an admin account with no subscription row at all still falls back to Starter — the override bypasses the status check only, not the missing-row case', async () => {
+    const result = await getEntitlements(
+      makeSupabase({ membership: { team_id: 't1' }, subscription: null, isAdmin: true }),
+      'u1',
+    )
+    expect(result.tier).toBe('starter')
+  })
+
+  it('an admin account with an already-active subscription never even queries profiles (no extra cost on the common path)', async () => {
+    let profilesQueried = false
+    const supabase = makeSupabase({ membership: { team_id: 't1' }, subscription: { tier: 'growth', status: 'active' } })
+    const originalFrom = supabase.from.bind(supabase)
+    supabase.from = (table) => {
+      if (table === 'profiles') profilesQueried = true
+      return originalFrom(table)
+    }
+    const result = await getEntitlements(supabase, 'u1')
+    expect(result.tier).toBe('growth')
+    expect(profilesQueried).toBe(false)
   })
 
   it('resolves the real tier for an active subscription', async () => {
