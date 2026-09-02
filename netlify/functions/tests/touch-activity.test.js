@@ -15,8 +15,8 @@ const { mockEq, mockUpdate } = vi.hoisted(() => {
   return { mockEq, mockUpdate }
 })
 
-vi.mock('./lib/auth.js', () => ({ getAuthedClient: mockGetAuthedClient }))
-vi.mock('./lib/reportError.js', () => ({ reportServerError: mockReportServerError }))
+vi.mock('../lib/auth.js', () => ({ getAuthedClient: mockGetAuthedClient }))
+vi.mock('../lib/reportError.js', () => ({ reportServerError: mockReportServerError }))
 
 function makeRequest({ method = 'POST' } = {}) {
   return new Request('https://annie.example/api/touch-activity', { method })
@@ -38,7 +38,7 @@ beforeEach(async () => {
   })
 
   vi.resetModules()
-  ;({ default: handler } = await import('./touch-activity.js'))
+  ;({ default: handler } = await import('../touch-activity.js'))
 })
 
 it('rejects a non-POST request without touching auth', async () => {

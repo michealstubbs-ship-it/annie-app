@@ -37,8 +37,8 @@ const { mockCreateClient } = vi.hoisted(() => ({
 }))
 
 vi.mock('@supabase/supabase-js', () => ({ createClient: mockCreateClient }))
-vi.mock('./lib/aiUsage.js', () => ({ reserveAnthropicTokens: mockReserveAnthropicTokens }))
-vi.mock('./lib/reportError.js', () => ({ reportServerError: mockReportServerError }))
+vi.mock('../lib/aiUsage.js', () => ({ reserveAnthropicTokens: mockReserveAnthropicTokens }))
+vi.mock('../lib/reportError.js', () => ({ reportServerError: mockReportServerError }))
 
 function anthropicResponse(insights) {
   return { ok: true, json: () => Promise.resolve({ content: [{ type: 'text', text: JSON.stringify(insights) }] }) }
@@ -59,7 +59,7 @@ beforeEach(async () => {
   global.fetch = vi.fn().mockResolvedValue(anthropicResponse([]))
 
   vi.resetModules()
-  ;({ default: handler } = await import('./admin-ai-insights-generate.js'))
+  ;({ default: handler } = await import('../admin-ai-insights-generate.js'))
 })
 
 it('returns 200 without calling Supabase or Anthropic when not configured', async () => {

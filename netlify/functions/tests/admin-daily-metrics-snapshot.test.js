@@ -10,7 +10,7 @@
 // background job's own failure alarm anyone but Michael" posture as every
 // other scheduled function in this codebase).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { TIERS } from '../../src/lib/pricing.js'
+import { TIERS } from '../../../src/lib/pricing.js'
 
 const { mockReportServerError } = vi.hoisted(() => ({ mockReportServerError: vi.fn().mockResolvedValue(undefined) }))
 const { mockUpsert } = vi.hoisted(() => ({ mockUpsert: vi.fn().mockResolvedValue({ error: null }) }))
@@ -67,7 +67,7 @@ const { mockCreateClient } = vi.hoisted(() => {
 })
 
 vi.mock('@supabase/supabase-js', () => ({ createClient: mockCreateClient }))
-vi.mock('./lib/reportError.js', () => ({ reportServerError: mockReportServerError }))
+vi.mock('../lib/reportError.js', () => ({ reportServerError: mockReportServerError }))
 
 let handler
 
@@ -82,7 +82,7 @@ beforeEach(async () => {
   state.companiesTotal = 0; state.companiesMatched = 0
   state.countErrors = {}
   vi.resetModules()
-  ;({ default: handler } = await import('./admin-daily-metrics-snapshot.js'))
+  ;({ default: handler } = await import('../admin-daily-metrics-snapshot.js'))
 })
 
 const growth = TIERS.find(t => t.key === 'growth')
