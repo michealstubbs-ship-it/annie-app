@@ -10,12 +10,22 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { mockGetAuthedUser } = vi.hoisted(() => ({ mockGetAuthedUser: vi.fn() }))
 const { mockSendSupportEscalationEmail } = vi.hoisted(() => ({ mockSendSupportEscalationEmail: vi.fn() }))
 const { mockReportServerError } = vi.hoisted(() => ({ mockReportServerError: vi.fn().mockResolvedValue(undefined) }))
+const { mockInsert } = vi.hoisted(() => ({ mockInsert: vi.fn().mockResolvedValue({ error: null }) }))
 const { mockCreateClient } = vi.hoisted(() => {
-  function makeBuilder(result) {
+  function makeSelectBuilder(result) {
     const builder = { select: () => builder, eq: () => builder, maybeSingle: () => Promise.resolve(result) }
     return builder
   }
-  return { mockCreateClient: vi.fn(() => ({ from: () => makeBuilder({ data: { firm_name: 'Acme Recruiting' }, error: null }) })) }
+  // Same shared client mock backs both the firm-name lookup (select/eq/
+  // maybeSingle) and the new support_escalations insert — a real Supabase
+  // client's `from()` call supports both chains depending on what's called
+  // next, so the mock needs to too, not just whichever one existing tests
+  // happened to exercise first.
+  return {
+    mockCreateClient: vi.fn(() => ({
+      from: () => ({ ...makeSelectBuilder({ data: { firm_name: 'Acme Recruiting' }, error: null }), insert: mockInsert }),
+    })),
+  }
 })
 
 vi.mock('../lib/auth.js', () => ({ getAuthedUser: mockGetAuthedUser }))
@@ -42,6 +52,7 @@ beforeEach(async () => {
 
   mockGetAuthedUser.mockResolvedValue({ user: { id: 'user_123', email: 'client@acme.com' }, error: null })
   mockSendSupportEscalationEmail.mockResolvedValue(true)
+  mockInsert.mockResolvedValue({ error: null })
   // clearAllMocks only clears call history, not a return value/implementation
   // a previous test set via mockReturnValue/mockImplementation — reassign it
   // fresh every test so one test's override (e.g. the firm-lookup-failure
@@ -49,6 +60,7 @@ beforeEach(async () => {
   mockCreateClient.mockImplementation(() => ({
     from: () => ({
       select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: { firm_name: 'Acme Recruiting' }, error: null }) }) }),
+      insert: mockInsert,
     }),
   }))
 
@@ -107,11 +119,38 @@ it('truncates an excessively long excerpt to the last MAX_EXCERPT_CHARS characte
 
 it('still returns 200 when the firm-name lookup fails — the email still sends with just the account email', async () => {
   mockCreateClient.mockReturnValue({
-    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: () => Promise.reject(new Error('db down')) } ) }) }),
+    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: () => Promise.reject(new Error('db down')) } ) }), insert: mockInsert }),
   })
   const resp = await handler(makeRequest())
   expect(resp.status).toBe(200)
   expect(mockReportServerError).toHaveBeenCalled()
+})
+
+it('writes a support_escalations row alongside the email, with the same fields', async () => {
+  await handler(makeRequest({ category: 'refund_billing', excerpt: 'user: I want a refund' }))
+  expect(mockInsert).toHaveBeenCalledWith({
+    user_id: 'user_123',
+    firm_name: 'Acme Recruiting',
+    customer_email: 'client@acme.com',
+    category: 'refund_billing',
+    excerpt: 'user: I want a refund',
+  })
+})
+
+it('still returns 200 and reports the failure when the support_escalations insert itself fails — the email already sent and should not be treated as failed', async () => {
+  mockInsert.mockResolvedValue({ error: { message: 'insert denied' } })
+  const resp = await handler(makeRequest())
+  expect(resp.status).toBe(200)
+  const body = await resp.json()
+  expect(body.ok).toBe(true)
+  expect(mockReportServerError).toHaveBeenCalledWith('support-escalate', expect.objectContaining({ message: expect.stringContaining('insert denied') }), expect.objectContaining({ userId: 'user_123' }))
+})
+
+it('never attempts the insert when there is no service key (no supabase client at all)', async () => {
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY
+  const resp = await handler(makeRequest())
+  expect(resp.status).toBe(200)
+  expect(mockInsert).not.toHaveBeenCalled()
 })
 
 it('reports but still returns 200 when sendSupportEscalationEmail resolves false (unconfigured/failed send)', async () => {

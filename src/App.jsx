@@ -1,7 +1,8 @@
-import React, { Suspense, lazy } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import React, { Suspense, lazy, useEffect } from 'react'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import PageLoader from './components/PageLoader'
+import { pingActivity } from './lib/activityPing'
 
 // A scale-readiness audit (2026-08-22) found these six top-level routes
 // were all statically imported here, shipping in the main bundle regardless
@@ -63,6 +64,16 @@ function routeForUser(user, profile) {
 
 function AppRoutes() {
   const { user, profile, loading } = useAuth()
+  const location = useLocation()
+
+  // Fires the throttled activityPing on every authenticated route change —
+  // this is what backs profiles.last_active_at (see touch-activity.js) and
+  // the Annie Overview "inactive N days" flag. Per-route rather than a
+  // single mount-only ping so a user who logs in once and comes back over
+  // many days keeps registering as active on each visit, not just the first.
+  useEffect(() => {
+    if (user) pingActivity()
+  }, [user, location.pathname])
 
   if (loading) return <PageLoader />
 
