@@ -90,10 +90,27 @@ export default function Chat() {
     // the fix for "needs to be functioning like a top AI chat bot" — the
     // old version showed bouncing dots then popped the whole reply in at
     // once, which is why it never felt like one.
+    //
+    // 2026-09-02, live-tested per Michael's "test it yourself" report: a
+    // question that triggers web search (shouldSearchWeb below) genuinely
+    // cannot stream. Measured against the live deploy: Anthropic doesn't
+    // emit its first content token until AFTER it's run the search tool
+    // (multiple seconds of real network latency), which alone reliably
+    // clears Netlify's streaming-function execution ceiling before a single
+    // byte comes back — so the "try streaming, fall back to non-streaming
+    // on failure" path below doesn't fail rarely for these, it fails EVERY
+    // time, and only after burning its own ~10s first. That's the wasted
+    // first third of the ~30s total wait Michael saw. Known up front (we
+    // already compute this before sending), so a search question skips the
+    // doomed streaming attempt entirely and goes straight to the
+    // non-streaming call — same eventual answer, ~10s faster, and the
+    // placeholder says what's actually happening instead of sitting on
+    // generic dots for half a minute.
+    const willSearchWeb = shouldSearchWeb(userMsg.content)
     let assistantIndex
     setMessages(prev => {
       assistantIndex = prev.length
-      return [...prev, { role: 'assistant', content: '', streaming: true }]
+      return [...prev, { role: 'assistant', content: '', streaming: true, searching: willSearchWeb }]
     })
 
     try {
@@ -189,12 +206,17 @@ Write like a sharp, switched-on colleague typing quickly, not a business documen
         messages: recentHistory([...messages, userMsg]).map(m => ({ role: m.role, content: m.content })),
         systemOverride: systemPrompt,
         maxTokens: 1500,
-        webSearch: shouldSearchWeb(userMsg.content),
+        webSearch: willSearchWeb,
         maxSearchUses: 3,
       }
 
       let text, citations
       const streamStartedAt = Date.now()
+      if (willSearchWeb) {
+        // See the placeholder comment above — this always loses the race
+        // against Netlify's streaming timeout, so don't run it at all.
+        ;({ text, citations } = await callChat(chatPayload))
+      } else {
       try {
         ;({ text, citations } = await callChatStream({
           ...chatPayload,
@@ -212,21 +234,19 @@ Write like a sharp, switched-on colleague typing quickly, not a business documen
         // execution (their own docs: "If the limit is reached, the response
         // stops streaming" — their staff points to Edge Functions as the
         // real fix, since only CPU time counts there, not time waiting on
-        // Anthropic). A question that triggers a real web search (Annie can
-        // run up to 3, each with genuine multi-second latency — see
-        // shouldSearchWeb above) can easily clear 10s of actual generation
-        // time while still comfortably finishing inside a REGULAR function's
-        // much more generous ~30s limit — chat.js's own non-streaming path,
-        // used by every caller except this one. So rather than surface that
-        // platform ceiling as a failure at all, retry once, non-streaming,
-        // through the exact same endpoint with the exact same payload —
-        // the recruiter loses the word-by-word animation on this one reply,
-        // not the reply itself. Only for a generic, contentless failure
-        // (what a killed stream produces): a real server-sent answer (the
-        // monthly Ask Annie cap, a rate limit) means the request was never
-        // in doubt, so retrying non-streaming would just hit the identical
-        // wall a second time for no reason — let the outer catch show that
-        // verbatim instead, same as before this fix.
+        // Anthropic). Web-search questions no longer take this path at all
+        // (see willSearchWeb above) — this is now only a safety net for a
+        // PLAIN question's stream dying for some other reason (a deploy
+        // swap, a dropped connection), not the expected/every-time path it
+        // used to be. Retry once, non-streaming, through the exact same
+        // endpoint with the exact same payload — the recruiter loses the
+        // word-by-word animation on this one reply, not the reply itself.
+        // Only for a generic, contentless failure (what a killed stream
+        // produces): a real server-sent answer (the monthly Ask Annie cap, a
+        // rate limit) means the request was never in doubt, so retrying
+        // non-streaming would just hit the identical wall a second time for
+        // no reason — let the outer catch show that verbatim instead, same
+        // as before this fix.
         if (!isGenericNetworkFailure(streamErr)) throw streamErr
         // 2026-08-30: observability only, no behavior change. Today's
         // Actions' identical callChatStream call sites were traced to a
@@ -251,6 +271,7 @@ Write like a sharp, switched-on colleague typing quickly, not a business documen
           return next
         })
         ;({ text, citations } = await callChat(chatPayload))
+      }
       }
 
       setMessages(prev => {
@@ -345,8 +366,19 @@ Write like a sharp, switched-on colleague typing quickly, not a business documen
             <div className={`max-w-[80%] px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap
               ${m.role === 'user' ? 'bg-navy text-white rounded-br-sm' : 'bg-white border border-gray-100 text-gray-700 rounded-bl-sm shadow-sm'}`}>
               {m.streaming && !m.content ? (
-                <div className="flex gap-1">
-                  {[0,1,2].map(i => <div key={i} className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />)}
+                // 2026-09-02, per Michael's "how unnatural it replies" report:
+                // a web-search question takes noticeably longer (Annie's
+                // actually out checking sources, not just generating text —
+                // see willSearchWeb in send() above), and three silent
+                // bouncing dots for 15-20s straight reads as frozen, not
+                // busy. Same dots, plus a word that says what's actually
+                // happening, only for the messages that actually take that
+                // long.
+                <div className="flex items-center gap-2">
+                  <div className="flex gap-1">
+                    {[0,1,2].map(i => <div key={i} className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />)}
+                  </div>
+                  {m.searching && <span className="text-xs text-gray-400">Checking live sources...</span>}
                 </div>
               ) : (
                 <>
