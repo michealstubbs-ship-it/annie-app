@@ -92,25 +92,25 @@ export default function Chat() {
     // once, which is why it never felt like one.
     //
     // 2026-09-02, live-tested per Michael's "test it yourself" report: a
-    // question that triggers web search (shouldSearchWeb below) genuinely
-    // cannot stream. Measured against the live deploy: Anthropic doesn't
-    // emit its first content token until AFTER it's run the search tool
-    // (multiple seconds of real network latency), which alone reliably
-    // clears Netlify's streaming-function execution ceiling before a single
-    // byte comes back — so the "try streaming, fall back to non-streaming
-    // on failure" path below doesn't fail rarely for these, it fails EVERY
-    // time, and only after burning its own ~10s first. That's the wasted
-    // first third of the ~30s total wait Michael saw. Known up front (we
-    // already compute this before sending), so a search question skips the
-    // doomed streaming attempt entirely and goes straight to the
-    // non-streaming call — same eventual answer, ~10s faster, and the
-    // placeholder says what's actually happening instead of sitting on
-    // generic dots for half a minute.
+    // question that makes Anthropic actually invoke web search can't stream
+    // its first token until the search itself has run, which reliably
+    // clears Netlify's streaming-function ceiling before a single byte
+    // comes back. An EARLIER version of this fix tried to predict that
+    // upfront from shouldSearchWeb() and skip streaming entirely — wrong
+    // call, caught before it did real damage: shouldSearchWeb() only says
+    // the search tool is OFFERED to the model, not that it'll be used, so
+    // that gate would have silently killed the streaming animation for
+    // most ordinary questions too (they offer the tool and never touch it,
+    // streaming back fine in 1-3s). The real fix now lives in
+    // callChat.js's callChatStream(): it races the first token against a
+    // short timer and bails to the non-streaming fallback fast if nothing's
+    // arrived, instead of guessing in advance. Every message tries streaming
+    // first here, same as before this whole investigation started.
     const willSearchWeb = shouldSearchWeb(userMsg.content)
     let assistantIndex
     setMessages(prev => {
       assistantIndex = prev.length
-      return [...prev, { role: 'assistant', content: '', streaming: true, searching: willSearchWeb }]
+      return [...prev, { role: 'assistant', content: '', streaming: true }]
     })
 
     try {
@@ -212,11 +212,6 @@ Write like a sharp, switched-on colleague typing quickly, not a business documen
 
       let text, citations
       const streamStartedAt = Date.now()
-      if (willSearchWeb) {
-        // See the placeholder comment above — this always loses the race
-        // against Netlify's streaming timeout, so don't run it at all.
-        ;({ text, citations } = await callChat(chatPayload))
-      } else {
       try {
         ;({ text, citations } = await callChatStream({
           ...chatPayload,
@@ -234,19 +229,26 @@ Write like a sharp, switched-on colleague typing quickly, not a business documen
         // execution (their own docs: "If the limit is reached, the response
         // stops streaming" — their staff points to Edge Functions as the
         // real fix, since only CPU time counts there, not time waiting on
-        // Anthropic). Web-search questions no longer take this path at all
-        // (see willSearchWeb above) — this is now only a safety net for a
-        // PLAIN question's stream dying for some other reason (a deploy
-        // swap, a dropped connection), not the expected/every-time path it
-        // used to be. Retry once, non-streaming, through the exact same
-        // endpoint with the exact same payload — the recruiter loses the
-        // word-by-word animation on this one reply, not the reply itself.
-        // Only for a generic, contentless failure (what a killed stream
-        // produces): a real server-sent answer (the monthly Ask Annie cap, a
-        // rate limit) means the request was never in doubt, so retrying
-        // non-streaming would just hit the identical wall a second time for
-        // no reason — let the outer catch show that verbatim instead, same
-        // as before this fix.
+        // Anthropic). A question that triggers a real web search can easily
+        // clear that ceiling while still comfortably finishing inside a
+        // REGULAR function's much more generous ~30s limit — chat.js's own
+        // non-streaming path, used by every caller except this one. So
+        // rather than surface that platform ceiling as a failure at all,
+        // retry once, non-streaming, through the exact same endpoint with
+        // the exact same payload — the recruiter loses the word-by-word
+        // animation on this one reply, not the reply itself.
+        //
+        // 2026-09-02: callChatStream() itself now bails out of a stalled
+        // stream (no first token within ~4.5s) well before Netlify's own
+        // ~10s kill would — see its own header. That's what actually cuts
+        // the wasted wait on a search question; this catch just still needs
+        // to run the fallback once that happens, same as it always has.
+        // Only for a generic, contentless failure (what a killed/aborted
+        // stream produces): a real server-sent answer (the monthly Ask
+        // Annie cap, a rate limit) means the request was never in doubt, so
+        // retrying non-streaming would just hit the identical wall a second
+        // time for no reason — let the outer catch show that verbatim
+        // instead, same as before this fix.
         if (!isGenericNetworkFailure(streamErr)) throw streamErr
         // 2026-08-30: observability only, no behavior change. Today's
         // Actions' identical callChatStream call sites were traced to a
@@ -261,17 +263,24 @@ Write like a sharp, switched-on colleague typing quickly, not a business documen
         // transport failure — elapsedMs is what actually distinguishes them.
         reportClientError('Ask Annie: streaming reply failed, falling back to non-streaming', streamErr, {
           elapsedMs: Date.now() - streamStartedAt,
+          willSearchWeb,
         })
         setMessages(prev => {
           const next = [...prev]
           // Clear whatever partial text the killed stream left in the
           // placeholder before the retry starts — the fallback's own answer
           // replaces it below once it lands, not appends to a fragment.
-          next[assistantIndex] = { role: 'assistant', content: '', streaming: true }
+          // Only messages that actually offered web search show "Checking
+          // live sources..." here — the model may or may not have actually
+          // searched, but a fallback this fast (~4.5s in) on a search-
+          // eligible question is overwhelmingly that case, and the label is
+          // still honest either way ("checking" covers "reasoning about
+          // it" too), unlike leaving silent dots for whatever's left of the
+          // wait with no explanation at all.
+          next[assistantIndex] = { role: 'assistant', content: '', streaming: true, searching: willSearchWeb }
           return next
         })
         ;({ text, citations } = await callChat(chatPayload))
-      }
       }
 
       setMessages(prev => {

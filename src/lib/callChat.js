@@ -116,6 +116,32 @@ export async function callChat({ messages, systemOverride, maxTokens, model, web
   return usage ? { ...body, usage } : body
 }
 
+// 2026-09-02, live-tested against the deployed app: a question that makes
+// Anthropic actually invoke web search never emits its first token until
+// the search itself has run — real network latency that reliably clears
+// Netlify's ~10s streaming-function ceiling before a single byte streams
+// back (see chat.js's own header for the platform-limit detail). Chat.jsx's
+// fallback to callChat() already exists for this, but it only fires once
+// Netlify itself kills the connection — a full ~10s wasted on every single
+// search question before the (correct, working) non-streaming retry even
+// starts.
+//
+// Guessing up front which messages will actually trigger a search isn't
+// reliable enough to gate on (chatWebSearch.js's shouldSearchWeb() only
+// says the tool is OFFERED to the model, not that it'll be used — plenty of
+// ordinary questions offer the tool and never touch it, and stream back
+// fine in 1-3s). So instead of guessing, this races the FIRST token against
+// a short client-side timer: if nothing has streamed back within
+// STREAM_FIRST_TOKEN_TIMEOUT_MS, abort and let Chat.jsx's existing fallback
+// take over immediately, rather than waiting out Netlify's own much longer
+// kill. A normal question's first token arrives in 1-3s and never comes
+// close to this, so it streams exactly as before; a search question now
+// loses only ~4.5s to the doomed attempt instead of ~10s. The timer is
+// cleared the moment real content starts arriving, so a genuinely slow but
+// still-progressing reply (a long draft, a pause between sentences) is
+// never cut off once it's actually under way.
+const STREAM_FIRST_TOKEN_TIMEOUT_MS = 4500
+
 // chat.js now streams its reply as NDJSON (one {"type":"delta",...} line per
 // chunk of text, a final {"type":"done",...} line with citations) instead of
 // buffering the whole reply — see chat.js for why. This reads that stream
@@ -131,20 +157,48 @@ export async function callChatStream({ messages, systemOverride, maxTokens, mode
   const token = session?.access_token
   if (!token) throw new Error('You need to be signed in for that.')
 
-  const resp = await fetchWithNetworkRetry('/api/chat', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    // stream:true is what tells chat.js to send back NDJSON instead of its
-    // normal { text, citations } JSON body — see chat.js's 2026-08-26 fix
-    // comment. Every other caller of callChat() above omits this and keeps
-    // getting plain JSON.
-    body: JSON.stringify({ messages, systemOverride, maxTokens, model, webSearch, maxSearchUses, stream: true }),
-  })
+  const controller = new AbortController()
+  let firstDeltaReceived = false
+  const firstTokenTimer = setTimeout(() => {
+    if (!firstDeltaReceived) controller.abort()
+  }, STREAM_FIRST_TOKEN_TIMEOUT_MS)
+
+  // Chat.jsx's fallback logic (describeChatFailure/isGenericNetworkFailure)
+  // decides whether to retry non-streaming based on whether this error
+  // "looks like" a generic network failure — a real, deliberate abort must
+  // be classified the same way a killed connection already is (message
+  // 'Request failed', not a real server-sent reason), not surfaced as some
+  // other error, or the fallback that makes this whole thing worthwhile
+  // never runs. Native AbortError messages vary by browser and don't
+  // reliably match that classification, so any abort caused by OUR OWN
+  // timer (not a real network throw) is deliberately rewritten here.
+  function rethrowIfAborted(err) {
+    clearTimeout(firstTokenTimer)
+    if (controller.signal.aborted) throw new Error('Request failed')
+    throw err
+  }
+
+  let resp
+  try {
+    resp = await fetchWithNetworkRetry('/api/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      // stream:true is what tells chat.js to send back NDJSON instead of its
+      // normal { text, citations } JSON body — see chat.js's 2026-08-26 fix
+      // comment. Every other caller of callChat() above omits this and keeps
+      // getting plain JSON.
+      body: JSON.stringify({ messages, systemOverride, maxTokens, model, webSearch, maxSearchUses, stream: true }),
+      signal: controller.signal,
+    })
+  } catch (err) {
+    rethrowIfAborted(err)
+  }
 
   if (!resp.ok) {
+    clearTimeout(firstTokenTimer)
     const err = await resp.json().catch(() => ({}))
     throw new Error(err.error || 'Request failed')
   }
@@ -164,6 +218,10 @@ export async function callChatStream({ messages, systemOverride, maxTokens, mode
       return // a malformed/partial NDJSON line isn't worth failing the whole reply over
     }
     if (event.type === 'delta') {
+      if (!firstDeltaReceived) {
+        firstDeltaReceived = true
+        clearTimeout(firstTokenTimer)
+      }
       text += event.text
       onDelta?.(event.text, text)
     } else if (event.type === 'done') {
@@ -171,15 +229,20 @@ export async function callChatStream({ messages, systemOverride, maxTokens, mode
     }
   }
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() // keep the last, possibly-incomplete line for the next read()
-    for (const line of lines) handleLine(line)
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() // keep the last, possibly-incomplete line for the next read()
+      for (const line of lines) handleLine(line)
+    }
+  } catch (err) {
+    rethrowIfAborted(err)
   }
   if (buffer) handleLine(buffer) // stream can end without a trailing newline
+  clearTimeout(firstTokenTimer)
 
   const usage = readChatUsage(resp)
   return usage ? { text, citations, usage } : { text, citations }

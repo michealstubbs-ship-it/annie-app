@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const { getSessionMock } = vi.hoisted(() => ({ getSessionMock: vi.fn() }))
 vi.mock('./supabase', () => ({ supabase: { auth: { getSession: getSessionMock } } }))
 
-import { callChat } from './callChat.js'
+import { callChat, callChatStream } from './callChat.js'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -192,5 +192,117 @@ describe('callChat', () => {
     await assertion
     expect(fetchSpy).not.toHaveBeenCalled()
     vi.useRealTimers()
+  })
+})
+
+// A controllable fake reader for resp.body.getReader() — lets a test push
+// NDJSON chunks (or finish the stream) on its own schedule, and rejects any
+// pending read() the moment the AbortSignal passed to fetch() fires, the
+// same way a real aborted fetch's body stream behaves.
+function makeControllableReader(signal) {
+  let pending = null
+  const queued = []
+  let aborted = false
+  function rejectPending() {
+    aborted = true
+    if (pending) {
+      pending.reject(new DOMException('The operation was aborted.', 'AbortError'))
+      pending = null
+    }
+  }
+  signal?.addEventListener('abort', rejectPending)
+  return {
+    read() {
+      if (aborted) return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'))
+      if (queued.length) return Promise.resolve(queued.shift())
+      return new Promise((resolve, reject) => { pending = { resolve, reject } })
+    },
+    push(chunk) {
+      if (pending) { pending.resolve(chunk); pending = null } else { queued.push(chunk) }
+    },
+  }
+}
+
+function ndjson(obj) {
+  return new TextEncoder().encode(JSON.stringify(obj) + '\n')
+}
+
+// 2026-09-02: the real fix for Ask Annie's "30 second wait" report. A
+// search-triggering question never emits a first token until Anthropic's
+// own search tool has run, which reliably outlasts Netlify's ~10s streaming
+// ceiling — this races the first token against a much shorter client-side
+// timer instead, so the (already-existing) non-streaming fallback in
+// Chat.jsx kicks in fast rather than waiting for Netlify to kill the
+// connection itself.
+describe('callChatStream', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('streams normally and resolves with the assembled text when tokens arrive well within the timeout', async () => {
+    getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok_abc' } } })
+    let capturedSignal
+    const fetchSpy = vi.fn().mockImplementation((_url, opts) => {
+      capturedSignal = opts.signal
+      const reader = makeControllableReader(capturedSignal)
+      reader.push({ done: false, value: ndjson({ type: 'delta', text: 'Hel' }) })
+      reader.push({ done: false, value: ndjson({ type: 'delta', text: 'lo' }) })
+      reader.push({ done: false, value: ndjson({ type: 'done', citations: [{ url: 'https://x.com', title: 'X' }] }) })
+      reader.push({ done: true, value: undefined })
+      return Promise.resolve({ ok: true, headers: new Headers(), body: { getReader: () => reader } })
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const onDelta = vi.fn()
+    const result = await callChatStream({ messages: [{ role: 'user', content: 'hi' }], onDelta })
+
+    expect(result).toEqual({ text: 'Hello', citations: [{ url: 'https://x.com', title: 'X' }] })
+    expect(onDelta).toHaveBeenCalledTimes(2)
+    expect(capturedSignal.aborted).toBe(false)
+  })
+
+  it('aborts a stalled stream once the first-token timeout elapses, surfacing a fallback-classified error', async () => {
+    getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok_abc' } } })
+    const fetchSpy = vi.fn().mockImplementation((_url, opts) => {
+      const reader = makeControllableReader(opts.signal) // never pushed to — simulates Anthropic still searching
+      return Promise.resolve({ ok: true, headers: new Headers(), body: { getReader: () => reader } })
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const promise = callChatStream({ messages: [{ role: 'user', content: 'what is going on with acme inc' }] })
+    // isGenericNetworkFailure/describeChatFailure classify a message by its
+    // exact text — a raw AbortError message wouldn't match, so this must
+    // come back as exactly 'Request failed' for Chat.jsx's existing
+    // fallback-to-non-streaming logic to actually run.
+    const assertion = expect(promise).rejects.toThrow('Request failed')
+    await vi.advanceTimersByTimeAsync(4500)
+    await assertion
+  })
+
+  it('does NOT abort once a real token has already arrived, even if the rest of the reply is slow', async () => {
+    getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok_abc' } } })
+    let reader
+    const fetchSpy = vi.fn().mockImplementation((_url, opts) => {
+      reader = makeControllableReader(opts.signal)
+      return Promise.resolve({ ok: true, headers: new Headers(), body: { getReader: () => reader } })
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const promise = callChatStream({ messages: [{ role: 'user', content: 'hi' }] })
+    await vi.advanceTimersByTimeAsync(0) // let the mocked fetch() run so `reader` is assigned
+    reader.push({ done: false, value: ndjson({ type: 'delta', text: 'Working on it' }) })
+    await vi.advanceTimersByTimeAsync(0) // let the first delta's handleLine/clearTimeout run
+    await vi.advanceTimersByTimeAsync(10000) // well past the 4.5s timeout — must NOT abort now
+    reader.push({ done: false, value: ndjson({ type: 'done', citations: [] }) })
+    reader.push({ done: true, value: undefined })
+
+    const result = await promise
+    expect(result.text).toBe('Working on it')
+  })
+
+  it('does not retry a real, resolved non-ok response through the timeout/abort path', async () => {
+    getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok_abc' } } })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'Annie has hit her research budget for today — please try again tomorrow.' }) }))
+
+    await expect(callChatStream({ messages: [] })).rejects.toThrow('Annie has hit her research budget for today')
   })
 })
