@@ -13,7 +13,7 @@ import {
   normalizeCompanyKey, extractFundingSignature, fundingFuzzyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
   buildExistingByCompanyType, findSemanticDedupTargets, filterSemanticDuplicates,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
-  enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
+  enrichCompany, looksLikeJobPostingUrl, looksLikeStaffingAgencyName, isStaffingAgencyIndustry, verifyContactsAcrossFunctions, createTimeoutFetch,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs, discoverHotCompanies,
   looksTruncatedByTokenLimit, getLearnedSources, recordLearnedDiscoveries, isJunkLearnedSourceValue,
   normalizeLearnedLocation,
@@ -1141,6 +1141,71 @@ describe('buildEnrichedSignalRow', () => {
     vi.unstubAllGlobals()
   })
 
+  // 2026-09-02, Michael, real report: a live_job lead ("Private Equity -
+  // Investment Associate (Remote)") turned out to be posted BY another
+  // recruitment/staffing firm ("Quik Hire Staffing"), not a genuine hiring
+  // company — the "contact" surfaced was the agency's own founder, not a
+  // hiring manager. Two deterministic checks now guard this: a company-name
+  // keyword check (this test), and Apollo's own industry classification as
+  // a backstop for a name that gives no hint (the next test).
+  describe('drops a live_job entry posted by a staffing/recruitment agency', () => {
+    it('drops it on a company-name keyword match, before ever calling Apollo', async () => {
+      const fetchSpy = vi.fn()
+      vi.stubGlobal('fetch', fetchSpy)
+      const row = await buildEnrichedSignalRow(
+        { entryType: 'live_job', signalType: 'hiring_activity', company: 'Quik Hire Staffing', headline: 'Private Equity - Investment Associate (Remote)', sourceUrl: 'https://linkedin.com/jobs/view/123' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase: makeCacheSupabase({}), logPrefix: '[test]' },
+      )
+      expect(row).toBeNull()
+      // The whole point of catching this before enrichCompany runs — no
+      // Apollo credit spent finding a "contact" for a lead being dropped.
+      expect(fetchSpy).not.toHaveBeenCalled()
+      vi.unstubAllGlobals()
+    })
+
+    it('drops it on Apollo\'s own industry classification when the name gives no hint at all', async () => {
+      vi.stubGlobal('fetch', vi.fn(async (url) => {
+        if (url.includes('mixed_companies/search')) {
+          return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Quik Hire', industry: 'staffing and recruiting', primary_domain: 'quik-hire.com' }] }) }
+        }
+        return { ok: true, text: async () => '' }
+      }))
+      const row = await buildEnrichedSignalRow(
+        { entryType: 'live_job', signalType: 'hiring_activity', company: 'Quik Hire', headline: 'Private Equity - Investment Associate (Remote)', sourceUrl: 'https://linkedin.com/jobs/view/123' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase: makeTableAwareSupabase(), logPrefix: '[test]' },
+      )
+      expect(row).toBeNull()
+      vi.unstubAllGlobals()
+    })
+
+    it('only applies to live_job entries — an ordinary signal about a company with "recruitment" in its name is not dropped', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => '' }))
+      const supabase = makeCacheSupabase({ matched: false, contact_verified: false, checked_at: new Date().toISOString() })
+      const row = await buildEnrichedSignalRow(
+        { entryType: 'signal', signalType: 'funding', company: 'Acme Recruitment Group', headline: 'Raises Series B' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      )
+      expect(row).not.toBeNull()
+      expect(row.company_name).toBe('Acme Recruitment Group')
+      vi.unstubAllGlobals()
+    })
+
+    it('does not drop a genuine hiring company with a normal name and a non-staffing industry', async () => {
+      vi.stubGlobal('fetch', vi.fn(async (url) => {
+        if (url.includes('mixed_companies/search')) {
+          return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', industry: 'financial services', primary_domain: 'acme.com' }] }) }
+        }
+        return { ok: true, text: async () => '' }
+      }))
+      const row = await buildEnrichedSignalRow(
+        { entryType: 'live_job', signalType: 'hiring_activity', company: 'Acme Ltd', headline: 'Finance Manager', sourceUrl: 'https://linkedin.com/jobs/view/123' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase: makeTableAwareSupabase(), logPrefix: '[test]' },
+      )
+      expect(row).not.toBeNull()
+      expect(row.signal_type).toBe('live_job')
+    })
+  })
+
   it('resolves signal_type through resolveSignalType for an ordinary signal entry', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => '' }))
     const supabase = makeCacheSupabase({ matched: false, contact_verified: false, contact_checked_at: new Date().toISOString() })
@@ -1311,6 +1376,26 @@ function makeTableAwareSupabase() {
   })
   return { rpc: vi.fn().mockResolvedValue({ data: true, error: null }), from }
 }
+
+describe('buildEnrichedSignalRows — filters out entries buildEnrichedSignalRow deliberately drops', () => {
+  it('drops only the agency-posted live_job entry, keeping every other entry in the batch (including a sibling at the same company)', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', primary_domain: 'acme.com' }] }) }
+      return { ok: true, text: async () => '' }
+    }))
+
+    const entries = [
+      { entryType: 'live_job', company: 'Quik Hire Staffing', headline: 'PE Investment Associate', sourceUrl: 'https://x.com/1' },
+      { entryType: 'live_job', company: 'Acme Ltd', headline: 'Finance Manager', sourceUrl: 'https://x.com/2' },
+    ]
+    const rows = await buildEnrichedSignalRows(entries, { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' })
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0].company_name).toBe('Acme Ltd')
+    vi.unstubAllGlobals()
+  })
+})
 
 describe('buildEnrichedSignalRows — same-company sequencing (the actual Live Jobs "no double credits" guarantee)', () => {
   it('spends only one Apollo people-search credit for two live_job entries at the same company AND the same title bucket', async () => {
@@ -1817,6 +1902,49 @@ describe('looksLikeJobPostingUrl (live_job genuineness gate)', () => {
     expect(looksLikeJobPostingUrl('')).toBe(false)
     expect(looksLikeJobPostingUrl(null)).toBe(false)
     expect(looksLikeJobPostingUrl('not a url')).toBe(false)
+  })
+})
+
+describe('looksLikeStaffingAgencyName (live_job agency-posting gate)', () => {
+  it('catches the real report: a "Staffing" suffix', () => {
+    expect(looksLikeStaffingAgencyName('Quik Hire Staffing')).toBe(true)
+  })
+
+  it('catches other common agency-name patterns', () => {
+    expect(looksLikeStaffingAgencyName('Meridian Recruitment')).toBe(true)
+    expect(looksLikeStaffingAgencyName('Sterling Executive Search')).toBe(true)
+    expect(looksLikeStaffingAgencyName('Apex Talent Partners')).toBe(true)
+    expect(looksLikeStaffingAgencyName('Global Headhunters LLC')).toBe(true)
+    expect(looksLikeStaffingAgencyName('Vantage Search Group')).toBe(true)
+  })
+
+  it('does not flag an ordinary hiring company with no agency wording at all', () => {
+    expect(looksLikeStaffingAgencyName('Acme Ltd')).toBe(false)
+    expect(looksLikeStaffingAgencyName('DP World')).toBe(false)
+  })
+
+  it('handles a missing name rather than throwing', () => {
+    expect(looksLikeStaffingAgencyName('')).toBe(false)
+    expect(looksLikeStaffingAgencyName(null)).toBe(false)
+  })
+})
+
+describe('isStaffingAgencyIndustry (live_job agency-posting backstop)', () => {
+  it('flags Apollo\'s real "staffing and recruiting" industry classification', () => {
+    expect(isStaffingAgencyIndustry('staffing and recruiting')).toBe(true)
+    expect(isStaffingAgencyIndustry('Staffing & Recruiting')).toBe(true)
+    expect(isStaffingAgencyIndustry('human resources / recruitment')).toBe(true)
+  })
+
+  it('does not flag an unrelated industry', () => {
+    expect(isStaffingAgencyIndustry('financial services')).toBe(false)
+    expect(isStaffingAgencyIndustry('real estate')).toBe(false)
+  })
+
+  it('handles a missing industry rather than throwing', () => {
+    expect(isStaffingAgencyIndustry('')).toBe(false)
+    expect(isStaffingAgencyIndustry(null)).toBe(false)
+    expect(isStaffingAgencyIndustry(undefined)).toBe(false)
   })
 })
 

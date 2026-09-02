@@ -212,6 +212,39 @@ export function looksLikeJobPostingUrl(url) {
   }
 }
 
+// 2026-09-02, Michael, real report: a live_job lead ("Private Equity -
+// Investment Associate (Remote)" at "Quik Hire Staffing") turned out to be
+// posted BY another recruitment/staffing firm on behalf of an anonymous
+// client, not a genuine hiring company — the "contact" Annie surfaced (the
+// agency's own founder) is a rival recruiter, not a hiring manager, so
+// there's no real BD opportunity there the way there is for a company
+// actually filling its own seat. Both scan prompts already tell the AI to
+// skip anything that "reads as agency-posted" (see their live_job
+// instructions), but that's a soft ask the model doesn't reliably follow —
+// this exact case had the word "Staffing" right in the company name and
+// still got through. Two deterministic backstops, checked in
+// buildEnrichedSignalRow below rather than left to the prompt alone: a
+// keyword check on the company name (catches the obvious cases, no Apollo
+// call needed, checked first so those never even spend an enrichment
+// credit), and Apollo's own industry classification (catches an agency
+// whose name gives no hint at all — Apollo/LinkedIn's taxonomy classifies a
+// real staffing/recruitment business by industry, this isn't a guess from
+// text, it's the same real company_industry field already stored on every
+// signal).
+const STAFFING_AGENCY_NAME_PATTERN = /\b(staffing|recruitment|recruiting|recruiters?|talent (partners|solutions|acquisition)|search (partners|group)|headhunt(ing|ers?)|executive search|manpower)\b/i
+
+export function looksLikeStaffingAgencyName(companyName) {
+  if (!companyName) return false
+  return STAFFING_AGENCY_NAME_PATTERN.test(companyName)
+}
+
+const STAFFING_AGENCY_INDUSTRY_PATTERN = /staffing|recruiting|recruitment/i
+
+export function isStaffingAgencyIndustry(industry) {
+  if (!industry) return false
+  return STAFFING_AGENCY_INDUSTRY_PATTERN.test(industry)
+}
+
 // Best-effort ops alert for the one failure mode retries can't fix: every
 // customer in a run coming back with zero new signals, which almost always
 // means a systemic problem (a suspended key, an outage) rather than every
@@ -1996,6 +2029,19 @@ export async function resolveContactForSignal({ apolloKey, company, signalType, 
 }
 
 export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints = [], apolloContactRetry = false, apolloCaps = {} }) {
+  const isLiveJob = s.entryType === 'live_job'
+
+  // 2026-09-02: cheapest possible check, before spending anything —
+  // see looksLikeStaffingAgencyName's own header. A live_job entry posted
+  // by another recruitment/staffing firm isn't a hiring lead at all (the
+  // "contact" would be a rival recruiter, not a hiring manager), so this
+  // is a hard drop, not a demotion — unlike the URL-shape check below,
+  // there's no lesser signal type worth keeping it as.
+  if (isLiveJob && looksLikeStaffingAgencyName(s.company)) {
+    console.log(`${logPrefix} live_job entry for "${s.company}" dropped — company name reads as a staffing/recruitment agency, not the hiring employer`)
+    return null
+  }
+
   // enrichCompany runs first, not in parallel with verifyContact: Apollo's
   // people-search now requires a resolved organization_id (see
   // verifyContact's header), which only enrichCompany's own company lookup
@@ -2007,7 +2053,16 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
     verifySourceUrl(s.sourceUrl),
   ])
 
-  const isLiveJob = s.entryType === 'live_job'
+  // 2026-09-02: backstop for an agency whose name gives no hint at all —
+  // Apollo's own industry classification, not a guess from text. Checked
+  // here (after enrichCompany, before the contact-lookup Apollo spend
+  // below) so a company that slips past the name check still doesn't cost
+  // an extra credit finding a "contact" who'd just be a rival recruiter.
+  if (isLiveJob && isStaffingAgencyIndustry(companyInfo?.industry)) {
+    console.log(`${logPrefix} live_job entry for "${s.company}" dropped — Apollo classifies this company's industry as "${companyInfo.industry}" (staffing/recruiting), not a genuine hiring employer`)
+    return null
+  }
+
   // A live_job entry the AI surfaced via its own web search (rather than
   // Adzuna, which is already real-by-construction) has to actually resolve
   // to a genuine job-posting-shaped URL — see looksLikeJobPostingUrl. One
@@ -2141,7 +2196,12 @@ export async function buildEnrichedSignalRows(entries, { userId, apolloKey, comp
   const groupRows = await mapWithConcurrency([...groups.values()], concurrency, async (group) => {
     const rows = []
     for (const s of group) {
-      rows.push(await buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints, apolloContactRetry, apolloCaps }))
+      // 2026-09-02: buildEnrichedSignalRow returns null for a live_job entry
+      // it's deliberately dropping (an agency-posted "role" — see its own
+      // header) — never pushed, not even as a placeholder, so it simply
+      // never reaches Today's BD Actions or the Feed.
+      const row = await buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints, apolloContactRetry, apolloCaps })
+      if (row) rows.push(row)
     }
     return rows
   })
