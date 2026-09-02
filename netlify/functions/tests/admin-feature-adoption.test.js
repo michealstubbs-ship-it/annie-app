@@ -46,6 +46,8 @@ beforeEach(async () => {
   process.env.SUPABASE_SERVICE_ROLE_KEY = 'service_role_x'
   delete process.env.POSTHOG_PERSONAL_API_KEY
   delete process.env.POSTHOG_PROJECT_ID
+    process.env.VITE_POSTHOG_HOST = 'https://us.i.posthog.com'
+  
 
   mockGetAuthedUser.mockResolvedValue({ user: { id: 'user_admin' }, error: null })
   mockProfileSelect.mockResolvedValue({ data: { is_admin: true }, error: null })
