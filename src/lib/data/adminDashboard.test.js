@@ -6,6 +6,7 @@ vi.mock('../supabase', () => ({ supabase: { rpc: rpcMock, auth: { getSession: ge
 import {
   summarizeAccounts,
   getAdminAccountSummary,
+  getAdminAccountRows,
   getAdminFunnel,
   getAdminSignupTrend,
   getAdminTeamSeats,
@@ -15,6 +16,19 @@ import {
   getAdminResourceCaps,
   getAdminMarketCoverage,
   loadAdminOverview,
+  getAdminEscalations,
+  getAdminEscalationSummary,
+  reviewEscalation,
+  getAdminAccountActivity,
+  getAdminMetricsTrend,
+  getAdminAiInsights,
+  reviewAiInsight,
+  getAdminFeatureAdoption,
+  loadAdminOverviewTab,
+  loadAdminFinanceTab,
+  loadAdminCustomersTab,
+  loadAdminProductTab,
+  loadAdminEscalationsTab,
 } from './adminDashboard.js'
 
 const originalFetch = global.fetch
@@ -261,5 +275,162 @@ describe('loadAdminOverview', () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'Not authorized' }) })
     rpcMock.mockResolvedValue({ data: [], error: null })
     await expect(loadAdminOverview()).rejects.toThrow('Not authorized')
+  })
+})
+
+describe('getAdminAccountRows', () => {
+  it('returns the raw rows from get_admin_account_summary, unsummarized', async () => {
+    rpcMock.mockResolvedValue({ data: [{ tier: 'starter', status: 'active' }], error: null })
+    const result = await getAdminAccountRows()
+    expect(rpcMock).toHaveBeenCalledWith('get_admin_account_summary')
+    expect(result).toEqual([{ tier: 'starter', status: 'active' }])
+  })
+
+  it('defaults to an empty array rather than null', async () => {
+    rpcMock.mockResolvedValue({ data: null, error: null })
+    expect(await getAdminAccountRows()).toEqual([])
+  })
+})
+
+describe('escalations', () => {
+  it('getAdminEscalations calls get_admin_escalations and returns the rows', async () => {
+    rpcMock.mockResolvedValue({ data: [{ id: 'e1', status: 'open' }], error: null })
+    const result = await getAdminEscalations()
+    expect(rpcMock).toHaveBeenCalledWith('get_admin_escalations')
+    expect(result).toEqual([{ id: 'e1', status: 'open' }])
+  })
+
+  it('getAdminEscalationSummary returns the single row, or safe zeros when empty', async () => {
+    rpcMock.mockResolvedValue({ data: [], error: null })
+    expect(await getAdminEscalationSummary()).toEqual({ open_count: 0, in_progress_count: 0, resolved_30d_count: 0, avg_first_response_hours: null })
+  })
+
+  it('reviewEscalation calls admin_update_escalation_status with the id and new status', async () => {
+    rpcMock.mockResolvedValue({ data: null, error: null })
+    await reviewEscalation('e1', 'in_progress')
+    expect(rpcMock).toHaveBeenCalledWith('admin_update_escalation_status', { p_id: 'e1', p_status: 'in_progress' })
+  })
+
+  it('reviewEscalation throws on an RPC error', async () => {
+    rpcMock.mockResolvedValue({ data: null, error: new Error('not authorized') })
+    await expect(reviewEscalation('e1', 'resolved')).rejects.toThrow('not authorized')
+  })
+})
+
+describe('account activity', () => {
+  it('getAdminAccountActivity calls get_admin_account_activity and returns the rows', async () => {
+    rpcMock.mockResolvedValue({ data: [{ user_id: 'u1', last_active_at: '2026-08-01' }], error: null })
+    const result = await getAdminAccountActivity()
+    expect(rpcMock).toHaveBeenCalledWith('get_admin_account_activity')
+    expect(result).toHaveLength(1)
+  })
+})
+
+describe('metrics trend', () => {
+  it('getAdminMetricsTrend passes the requested day count through', async () => {
+    rpcMock.mockResolvedValue({ data: [], error: null })
+    await getAdminMetricsTrend(60)
+    expect(rpcMock).toHaveBeenCalledWith('get_admin_metrics_trend', { p_days: 60 })
+  })
+
+  it('getAdminMetricsTrend defaults to 84 days when not specified', async () => {
+    rpcMock.mockResolvedValue({ data: [], error: null })
+    await getAdminMetricsTrend()
+    expect(rpcMock).toHaveBeenCalledWith('get_admin_metrics_trend', { p_days: 84 })
+  })
+})
+
+describe('AI insights', () => {
+  it('getAdminAiInsights passes the requested day count through and returns the rows', async () => {
+    rpcMock.mockResolvedValue({ data: [{ id: 'i1', status: 'new' }], error: null })
+    const result = await getAdminAiInsights(14)
+    expect(rpcMock).toHaveBeenCalledWith('get_admin_ai_insights', { p_days: 14 })
+    expect(result).toEqual([{ id: 'i1', status: 'new' }])
+  })
+
+  it('reviewAiInsight calls admin_review_insight with the id and new status', async () => {
+    rpcMock.mockResolvedValue({ data: null, error: null })
+    await reviewAiInsight('i1', 'approved')
+    expect(rpcMock).toHaveBeenCalledWith('admin_review_insight', { p_id: 'i1', p_status: 'approved' })
+  })
+
+  it('reviewAiInsight throws on an RPC error', async () => {
+    rpcMock.mockResolvedValue({ data: null, error: new Error('invalid status') })
+    await expect(reviewAiInsight('i1', 'bogus')).rejects.toThrow('invalid status')
+  })
+})
+
+describe('getAdminFeatureAdoption', () => {
+  it('calls the admin-feature-adoption endpoint with the caller\'s own session token', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ configured: true, pages: [], events: [] }) })
+    const result = await getAdminFeatureAdoption()
+    expect(global.fetch).toHaveBeenCalledWith('/.netlify/functions/admin-feature-adoption', {
+      headers: { Authorization: 'Bearer tok_admin' },
+    })
+    expect(result).toEqual({ configured: true, pages: [], events: [] })
+  })
+
+  it('throws when there is no session to authenticate with', async () => {
+    getSessionMock.mockResolvedValue({ data: { session: null } })
+    await expect(getAdminFeatureAdoption()).rejects.toThrow('session has expired')
+  })
+
+  it('throws the server\'s own error message on a non-admin caller', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'Not authorized' }) })
+    await expect(getAdminFeatureAdoption()).rejects.toThrow('Not authorized')
+  })
+})
+
+describe('per-tab loaders', () => {
+  it('loadAdminOverviewTab fetches its 4 pieces and shapes them under named keys', async () => {
+    rpcMock.mockResolvedValue({ data: [], error: null })
+    const result = await loadAdminOverviewTab()
+    expect(Object.keys(result).sort()).toEqual(['accounts', 'aiInsights', 'escalationSummary', 'metricsTrend'].sort())
+  })
+
+  it('loadAdminFinanceTab fetches its 3 pieces and shapes them under named keys', async () => {
+    rpcMock.mockResolvedValue({ data: [], error: null })
+    const result = await loadAdminFinanceTab()
+    expect(Object.keys(result).sort()).toEqual(['accounts', 'opex', 'resourceCaps'].sort())
+  })
+
+  it('loadAdminCustomersTab fetches its 5 pieces and shapes them under named keys', async () => {
+    rpcMock.mockResolvedValue({ data: [], error: null })
+    const result = await loadAdminCustomersTab()
+    expect(Object.keys(result).sort()).toEqual(['accountRows', 'activity', 'funnel', 'signupTrend', 'teamSeats'].sort())
+  })
+
+  it('loadAdminProductTab fetches its 6 pieces and shapes them under named keys', async () => {
+    rpcMock.mockResolvedValue({ data: [], error: null })
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ configured: false }) })
+    const result = await loadAdminProductTab()
+    expect(Object.keys(result).sort()).toEqual(['accounts', 'dataQuality', 'errorHealth', 'errorLogs', 'featureAdoption', 'marketCoverage'].sort())
+  })
+
+  it('loadAdminProductTab fetches error logs via get_error_logs (shared with the existing Errors tab)', async () => {
+    rpcMock.mockImplementation((name) => {
+      if (name === 'get_error_logs') return Promise.resolve({ data: [{ id: 'err1' }], error: null })
+      return Promise.resolve({ data: [], error: null })
+    })
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ configured: false }) })
+    const result = await loadAdminProductTab()
+    expect(result.errorLogs).toEqual([{ id: 'err1' }])
+  })
+
+  it('loadAdminEscalationsTab fetches its 3 pieces and shapes them under named keys', async () => {
+    rpcMock.mockResolvedValue({ data: [], error: null })
+    const result = await loadAdminEscalationsTab()
+    expect(Object.keys(result).sort()).toEqual(['accountRows', 'escalations', 'summary'].sort())
+  })
+
+  it('each per-tab loader rejects independently on its own RPC failure, without needing another tab\'s data to be ok', async () => {
+    rpcMock.mockImplementation((name) => {
+      if (name === 'get_admin_escalations') return Promise.resolve({ data: null, error: new Error('escalations boom') })
+      return Promise.resolve({ data: [], error: null })
+    })
+    await expect(loadAdminEscalationsTab()).rejects.toThrow('escalations boom')
+    // A totally unrelated tab's loader, called with the same failing mock
+    // in place, must NOT be affected — it never calls get_admin_escalations.
+    await expect(loadAdminFinanceTab()).resolves.toBeTruthy()
   })
 })
