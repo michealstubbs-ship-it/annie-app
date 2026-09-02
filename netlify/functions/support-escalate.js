@@ -2,12 +2,18 @@
 // conversation needs a human — a refund/billing dispute, a GDPR data
 // request, a reproducible bug, or someone directly asking for a person
 // (see src/lib/supportEscalation.js for how that's detected from Annie's
-// reply). There is no ticketing system yet — per Michael's own call
-// (2026-08-26), this goes straight to his real inbox in real time rather
-// than only surfacing later in the admin Insights "Recent conversations"
-// tab, since he's the entire support team today. This function does one
-// thing: look up who's asking, and email him. It never blocks or changes
-// what the customer sees — the widget fires this without awaiting it.
+// reply). Per Michael's own call (2026-08-26), this still goes straight to
+// his real inbox in real time rather than waiting to be found on a
+// dashboard, since he's the entire support team today. It never blocks or
+// changes what the customer sees — the widget fires this without awaiting
+// it.
+//
+// 2026-09-02: this now ALSO writes a row to support_escalations (see that
+// migration's own header) — until this change, the email was the only
+// record of an escalation ever existing, so the Annie Overview "Client
+// Escalations" tab had no real data to read: no open/resolved counts, no
+// time-to-first-response, nothing. The email stays exactly as before; the
+// row is what makes that tab real instead of mocked.
 import { createClient } from '@supabase/supabase-js'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
@@ -60,8 +66,8 @@ export default async (req) => {
     // go out; the email is still useful with just the customer's own
     // account email (from their verified session) even without it.
     let firmName = null
-    if (serviceKey) {
-      const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
+    const supabase = serviceKey ? createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } }) : null
+    if (supabase) {
       const { data: profile } = await supabase.from('profiles').select('firm_name').eq('id', user.id).maybeSingle()
       firmName = profile?.firm_name || null
     }
@@ -79,6 +85,24 @@ export default async (req) => {
       // failure that shouldn't go unnoticed), but never worth failing the
       // request over: the customer's own conversation already succeeded.
       await reportServerError('support-escalate', new Error('escalation email did not send'), { userId: user.id, category })
+    }
+
+    // Best-effort, same reasoning as the firm-name lookup above: a failure
+    // to write this row should never be why the customer-facing request
+    // fails — it would just mean this one escalation is missing from the
+    // Overview tab's counts, not that the escalation itself was lost (the
+    // email still went out).
+    if (supabase) {
+      const { error: insertError } = await supabase.from('support_escalations').insert({
+        user_id: user.id,
+        firm_name: firmName,
+        customer_email: user.email,
+        category,
+        excerpt,
+      })
+      if (insertError) {
+        await reportServerError('support-escalate', new Error(`escalation row insert failed: ${insertError.message}`), { userId: user.id, category })
+      }
     }
 
     return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })

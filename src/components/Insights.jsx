@@ -48,9 +48,9 @@ export default function Insights() {
   return (
     <div className="p-8">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold text-navy">{tab === 'overview' ? 'Operator dashboard' : tab === 'learned' ? 'Learned sources' : 'Customer insights'}</h1>
+        <h1 className="text-3xl font-bold text-navy">{tab === 'overview' ? 'Annie Overview' : tab === 'learned' ? 'Learned sources' : 'Customer insights'}</h1>
         <p className="text-gray-500 mt-1">
-          {tab === 'overview' ? 'Annie, across every customer' : tab === 'learned' ? "What Annie has taught herself, and what customers' own CRM data has taught her" : 'What customers are asking Annie support, across every account'}
+          {tab === 'overview' ? "Annie, across every customer — finance, product, and who needs you right now" : tab === 'learned' ? "What Annie has taught herself, and what customers' own CRM data has taught her" : 'What customers are asking Annie support, across every account'}
         </p>
       </div>
 
