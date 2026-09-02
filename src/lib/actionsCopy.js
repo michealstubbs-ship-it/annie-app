@@ -22,7 +22,28 @@ export function describeItem(item) {
     return { ...base, company: item.deal.company, role: item.deal.role, contactName: item.contact?.name }
   }
   if (item.category === 'relationship') {
-    return { ...base, company: item.signal.company_name, signalTitle: item.signal.headline, contactName: item.contact?.name }
+    // 2026-09-02 audit fix, real report: a company having ANY contact row in
+    // the CRM (including a cold, unengaged LinkedIn import — see
+    // LinkedInImport.jsx's own 2026-09-02 fix, "an import is not a
+    // relationship either") got treated as proof of an actual relationship,
+    // so this item's copy was always written soft/light-touch and the real,
+    // Apollo-verified contact from the signal itself got swapped out for
+    // whichever CRM row happened to match by company name, dropping the
+    // real email in the process (see useTodaysActions.js's own fix). A real
+    // relationship needs actual evidence — a genuine note on file, ideally
+    // with a status showing real engagement — not just a row existing.
+    // Only pass that evidence through when it's genuinely there; the prompt
+    // below is told never to assume a relationship otherwise.
+    const hasRealEvidence = !!(item.contact && item.contact.notes && item.contact.notes.trim())
+    return {
+      ...base,
+      company: item.signal.company_name,
+      signalTitle: item.signal.headline,
+      priorContactName: hasRealEvidence ? item.contact.name : null,
+      priorNote: hasRealEvidence ? item.contact.notes : null,
+      priorNoteDate: hasRealEvidence ? (item.contact.last_contacted || null) : null,
+      priorContactStatus: hasRealEvidence ? item.contact.status : null,
+    }
   }
   if (item.category === 'new_client') {
     return { ...base, name: item.contact.name, company: item.contact.company, title: item.contact.title }
@@ -43,9 +64,10 @@ Below is a list of BD items that have ALREADY been selected by a scoring system,
 For every item, write:
 - headline: max 8 words, specific
 - detail: 1-2 sentences, what to do and why, grounded in the given signals
-- moveForward: an array of 2-3 distinct, genuinely tactical options for what to actually try next. Never restate the signals data back, that's already visible. For "dormant" and "new_client" items, give real drafted opening angles (one referencing something specific if possible, one leading with value, one solid fallback). For "meeting" items, give distinct re-engagement tactics (switching channel, adding a fresh hook, opening a second contact at the same company). For "relationship" items, suggest a genuine light-touch way to engage tied to the signal, not a hard ask.
+- moveForward: an array of 2-3 distinct, genuinely tactical options for what to actually try next. Never restate the signals data back, that's already visible. For "dormant" and "new_client" items, give real drafted opening angles (one referencing something specific if possible, one leading with value, one solid fallback). For "meeting" items, give distinct re-engagement tactics (switching channel, adding a fresh hook, opening a second contact at the same company). For "relationship" items, write it with EXACTLY the same substance and directness as a brand-new company approach — a company merely having a contact row in the CRM is NOT a relationship and is NOT a reason to go softer or lighter-touch; treat it as a cold approach by default.
+  2026-09-02 audit fix, real report: "relationship" items used to be written as a soft, light-touch nudge purely because some contact at that company already existed in the CRM — often just an unengaged, cold LinkedIn import, not anyone the recruiter has actually spoken to. That's wrong: never assume a relationship, never soften the approach, and never imply "you already know someone here" UNLESS this item's data includes priorContactName/priorNote/priorNoteDate — those three appearing together is the only real evidence of an actual prior conversation. When they ARE present, you may reference that specifically and naturally, e.g. "I can see you've previously spoken with priorContactName here, based on a note from priorNoteDate" — and if priorContactStatus is "warm" or "hot", say it's worth reaching back out to that same person; otherwise treat it as background color, not a reason to soften the ask. When those fields are absent (the ordinary case), write the SAME kind of direct, substantive approach you'd write for a brand-new company — never invent or imply a relationship that isn't evidenced.
 
-Every item needs real, specific headline/detail/moveForward, whatever its category — "relationship" items should be written with a lighter, less pushy TONE than a cold approach, never with LESS substance or effort than any other item. Do not skip or thin out an item because it's a soft touch rather than a hard ask.
+Every item needs real, specific headline/detail/moveForward, whatever its category. Do not skip or thin out an item just because it's labeled "relationship" — that label describes where Annie found the signal, not how confidently you should approach the company.
 
 Items (each has an "id" — echo that same id back on its matching output object, unchanged; you do not need to preserve item order, every id just needs to appear exactly once):
 ${JSON.stringify(items.map((item, i) => ({ id: i, ...describeItem(item) })))}

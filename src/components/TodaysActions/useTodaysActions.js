@@ -443,6 +443,20 @@ export function useTodaysActions({ user, profile }) {
           }
         }
         const enriched = enrichedByItem.get(item)
+        // 2026-09-02 audit fix, real report: a "relationship" item used to
+        // show whichever CRM contact happened to match the signal's company
+        // by name as THE contact — often just a cold, unengaged LinkedIn
+        // import (see LinkedInImport.jsx's own 2026-09-02 fix, "an import is
+        // not a relationship either") — and never surfaced the real,
+        // Apollo-verified contact that buildEnrichedSignalRow already
+        // resolved for this exact signal server-side (same enrichment every
+        // sourced signal gets — category is a client-side pool label, not a
+        // backend distinction). That's why relationship cards never showed a
+        // real email: the genuinely verified contact was being thrown away
+        // in favor of an unverified CRM row. Mirrors the 'sourced' branch
+        // above exactly, from the same item.signal fields.
+        const isRelationship = item.category === 'relationship'
+        const relSignal = isRelationship ? item.signal : null
         return {
           source: 'crm',
           category: item.category,
@@ -465,8 +479,21 @@ export function useTodaysActions({ user, profile }) {
           moveForward: enriched?.moveForward || [],
           signals: item.signals,
           company: item.contact?.company || item.deal?.company || item.signal?.company_name,
-          contact: item.contact?.name || item.deal?.contact_name || '',
-          title: item.contact?.title || '',
+          // A relationship item's top line no longer asserts the CRM-matched
+          // contact's name/title — that contact isn't necessarily who this
+          // signal is even about, and naming them here reads as "you know
+          // this person" with no real evidence behind it. Company-only here,
+          // same as a sourced card; the real contact (verified or a
+          // candidate panel, below) is the one place a name is asserted, and
+          // any genuine prior relationship only shows up as grounded AI copy
+          // backed by a real dated note (see describeItem/buildEnrichmentPrompt).
+          contact: isRelationship ? '' : (item.contact?.name || item.deal?.contact_name || ''),
+          title: isRelationship ? '' : (item.contact?.title || ''),
+          verifiedContact: relSignal?.contact_verified
+            ? { name: relSignal.contact_name, title: relSignal.contact_title, linkedin_url: relSignal.contact_linkedin_url, email: relSignal.contact_email }
+            : null,
+          // Mutually exclusive with verifiedContact, same as 'sourced'.
+          contactCandidates: Array.isArray(relSignal?.contact_candidates) ? relSignal.contact_candidates : [],
           signalId: item.category === 'relationship' ? item.signal?.id : null,
           // dormant/meeting/new_client have no signalId — resolveTodaysActions
           // needs a stable id for these too (see actionKey.js). keyContext is

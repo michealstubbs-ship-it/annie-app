@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildCandidatePitchPrompt, buildEnrichmentPrompt, fallbackHeadline, fallbackDetail } from './actionsCopy.js'
+import { buildCandidatePitchPrompt, buildEnrichmentPrompt, fallbackHeadline, fallbackDetail, describeItem } from './actionsCopy.js'
 
 describe('buildEnrichmentPrompt', () => {
   it('gives every item a positional id and tells the model to echo it back', () => {
@@ -15,7 +15,59 @@ describe('buildEnrichmentPrompt', () => {
 
   it('tells the model relationship items still need full substance, not just a softer tone', () => {
     const prompt = buildEnrichmentPrompt([{ category: 'relationship', signals: {}, signal: { company_name: 'Zenith', headline: 'x' }, contact: {} }], null, null)
-    expect(prompt).toMatch(/never with less substance/i)
+    expect(prompt).toMatch(/do not skip or thin out an item/i)
+  })
+
+  // 2026-09-02 audit fix, real report: a company having ANY contact row in
+  // the CRM (including a cold, unengaged LinkedIn import) got treated as
+  // proof of an actual relationship, so every "relationship" item was
+  // written soft and light-touch regardless of whether the recruiter had
+  // ever actually spoken to anyone there.
+  it('tells the model never to assume a relationship just because a contact row exists', () => {
+    const prompt = buildEnrichmentPrompt([{ category: 'relationship', signals: {}, signal: { company_name: 'Zenith', headline: 'x' }, contact: {} }], null, null)
+    expect(prompt).toMatch(/is NOT a relationship/i)
+    expect(prompt).toMatch(/treat it as a cold approach by default/i)
+  })
+
+  it('tells the model it may reference a real prior contact only when priorNote/priorNoteDate evidence is present', () => {
+    const prompt = buildEnrichmentPrompt([{ category: 'relationship', signals: {}, signal: { company_name: 'Zenith', headline: 'x' }, contact: {} }], null, null)
+    expect(prompt).toMatch(/priorContactName\/priorNote\/priorNoteDate/)
+    expect(prompt).toMatch(/never invent or imply a relationship that isn't evidenced/i)
+  })
+})
+
+describe('describeItem — relationship evidence', () => {
+  it('passes no prior-contact evidence through when the matched CRM contact has no notes on file', () => {
+    const item = { category: 'relationship', signals: {}, signal: { company_name: 'Mal', headline: 'CBUAE approval' }, contact: { name: 'Anas Bourani', notes: '' } }
+    const d = describeItem(item)
+    expect(d.priorContactName).toBeNull()
+    expect(d.priorNote).toBeNull()
+    expect(d.priorNoteDate).toBeNull()
+  })
+
+  it('passes no prior-contact evidence through when there is no matched CRM contact at all', () => {
+    const item = { category: 'relationship', signals: {}, signal: { company_name: 'Mal', headline: 'CBUAE approval' } }
+    const d = describeItem(item)
+    expect(d.priorContactName).toBeNull()
+  })
+
+  it('passes real prior-contact evidence through when the matched CRM contact has a genuine note on file', () => {
+    const item = {
+      category: 'relationship',
+      signals: {},
+      signal: { company_name: 'Mal', headline: 'CBUAE approval' },
+      contact: { name: 'Anas Bourani', notes: 'Spoke at GITEX, interested in a CTO-adjacent hire', last_contacted: '2026-06-01', status: 'warm' },
+    }
+    const d = describeItem(item)
+    expect(d.priorContactName).toBe('Anas Bourani')
+    expect(d.priorNote).toBe('Spoke at GITEX, interested in a CTO-adjacent hire')
+    expect(d.priorNoteDate).toBe('2026-06-01')
+    expect(d.priorContactStatus).toBe('warm')
+  })
+
+  it('treats a whitespace-only note as no real evidence', () => {
+    const item = { category: 'relationship', signals: {}, signal: { company_name: 'Mal', headline: 'x' }, contact: { name: 'A', notes: '   ' } }
+    expect(describeItem(item).priorContactName).toBeNull()
   })
 })
 
