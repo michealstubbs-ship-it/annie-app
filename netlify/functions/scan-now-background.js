@@ -33,6 +33,7 @@ import { reserveAnthropicTokens } from './lib/aiUsage.js'
 import { getEntitlements, SCAN_TIER_CONFIG, resolveResourceCaps } from './lib/entitlements.js'
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, fundingFuzzyKey, splitToKeywords, extractJson, looksTruncatedByTokenLimit,
+  buildExistingByCompanyType, findSemanticDedupTargets, filterSemanticDuplicates, SEMANTIC_DEDUP_MAX_TOKENS,
   discoverHotCompanies, discoverAdzunaJobs, discoverTheirStackJobs, fetchWithRetry, mapLocationsToAdzunaCountries,
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
   buildRegionalSourceHint,
@@ -642,7 +643,7 @@ async function checkTierProgress(supabase, userId) {
 // signals, enriches what's genuinely new, and writes it. Returns the rows
 // actually written (may be empty) and any write error.
 async function enrichAndWriteSignals(capped, ctx) {
-  const { userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints, apolloContactRetry, apolloCaps, ob } = ctx
+  const { userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints, apolloContactRetry, apolloCaps, ob, anthropicKey, anthropicCaps } = ctx
 
   // Dedupe against this customer's existing signals BEFORE spending Apollo
   // credits, not after. For a brand new account this set is normally empty,
@@ -664,16 +665,37 @@ async function enrichAndWriteSignals(capped, ctx) {
     const fuzzy = fundingFuzzyKey(r.company_name, r.signal_type, r.headline, r.why_it_matters)
     if (fuzzy) existingFuzzyKeys.add(fuzzy)
   }
+  // 2026-09-02: the general-purpose successor to fundingFuzzyKey, for every
+  // OTHER signal type — see filterSemanticDuplicates' own header in
+  // scanShared.js for why funding gets a cheap regex signature and
+  // everything else needs an actual AI comparison instead.
+  const existingByCompanyType = buildExistingByCompanyType(existingRows)
 
   // Row-building itself (enrichCompany → verifyContact per entry, plus
   // Companies House/source-URL checks) lives once in scanShared.js, shared
   // with intelligence-scan.js — see buildEnrichedSignalRows's own comment.
-  const newEntries = capped
+  const preSemanticCheck = capped
     .filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
     .filter(s => {
       const fuzzy = fundingFuzzyKey(s.company, s.signalType, s.headline, s.whyItMatters)
       return !(fuzzy && existingFuzzyKeys.has(fuzzy))
     })
+
+  // 2026-09-02: catches the "same real event, different article" case for
+  // expansion/leadership_change/m_and_a, which the regex-based fuzzy check
+  // above structurally can't (see filterSemanticDuplicates' own header).
+  // Only reserves/spends an Anthropic call when there's at least one
+  // candidate actually worth checking — see findSemanticDedupTargets' own
+  // header for why the common case (nothing on file yet for this
+  // company+type) skips this entirely.
+  let newEntries = preSemanticCheck
+  if (findSemanticDedupTargets(preSemanticCheck, existingByCompanyType).length) {
+    if (await reserveAnthropicTokens(supabase, userId, SEMANTIC_DEDUP_MAX_TOKENS, anthropicCaps)) {
+      newEntries = await filterSemanticDuplicates(anthropicKey, preSemanticCheck, existingByCompanyType)
+    } else {
+      console.log('[scan-now] Anthropic daily token cap reached — skipping semantic dedup check for', userId, ', keeping candidates as-is (exact/fuzzy checks above still apply)')
+    }
+  }
   // locationHints lets enrichCompany prefer an Apollo org whose country
   // matches this customer's monitored markets when the company name alone
   // is ambiguous (e.g. "Stitch") and Apollo has no single exact-name match
@@ -1028,6 +1050,7 @@ export default async (req) => {
     // capped is empty (newEntries just resolves to []).
     const { rows, writeError } = await enrichAndWriteSignals(capped, {
       userId, apolloKey, companiesHouseKey, supabase, groups, broadened, locationHints: ob.locations || [], apolloContactRetry: tierConfig.apolloContactRetry, apolloCaps: resourceCaps.apollo, ob,
+      anthropicKey, anthropicCaps: resourceCaps.anthropicTokens,
     })
 
     // 2026-08-27: log this round's scan attempt regardless of outcome — see

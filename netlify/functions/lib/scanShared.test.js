@@ -11,6 +11,7 @@ import {
   THEIRSTACK_SENIORITIES,
   mapLocationsToAdzunaCountries, SIGNAL_TYPES, reserveApolloCredits, releaseApolloCredits,
   normalizeCompanyKey, extractFundingSignature, fundingFuzzyKey, dropGenericHiringWhereLiveJobsExist, verifyContact,
+  buildExistingByCompanyType, findSemanticDedupTargets, filterSemanticDuplicates,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, verifyContactsAcrossFunctions, createTimeoutFetch,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs, discoverHotCompanies,
@@ -854,6 +855,120 @@ describe('fundingFuzzyKey', () => {
     const seriesB = fundingFuzzyKey('Fasset', 'funding', 'Fasset raises $51M Series B for global expansion')
     const seriesC = fundingFuzzyKey('Fasset', 'funding', 'Dubai fintech raises $68M Series C, hits $1B valuation')
     expect(seriesB).not.toBe(seriesC)
+  })
+})
+
+// 2026-09-02, Michael, after seeing the real scale of this in production (a
+// direct data pull found 30+ duplicate groups across 7+ customer accounts,
+// spanning expansion/leadership_change/m_and_a — DIFC alone had 5 separate
+// rows for one real story): fundingFuzzyKey only covers funding, because
+// that's the one type with a clean, extractable fact a regex can compare.
+// Everything else needs an actual AI comparison — these are its supporting
+// pieces and the comparison itself.
+describe('buildExistingByCompanyType', () => {
+  it('groups existing headlines by company + signal type', () => {
+    const rows = [
+      { company_name: 'DIFC', signal_type: 'expansion', headline: 'DIFC targets 25,000 jobs' },
+      { company_name: 'DIFC', signal_type: 'expansion', headline: 'DIFC reports strong Q1 growth' },
+      { company_name: 'DIFC', signal_type: 'leadership_change', headline: 'DIFC appoints new COO' },
+    ]
+    const map = buildExistingByCompanyType(rows)
+    expect(map.get('difc::expansion')).toEqual(['DIFC targets 25,000 jobs', 'DIFC reports strong Q1 growth'])
+    expect(map.get('difc::leadership_change')).toEqual(['DIFC appoints new COO'])
+  })
+
+  it('skips a row missing company_name, signal_type, or headline rather than throwing', () => {
+    const rows = [{ company_name: 'DIFC', signal_type: 'expansion', headline: null }, { company_name: null, signal_type: 'expansion', headline: 'x' }]
+    expect(buildExistingByCompanyType(rows).size).toBe(0)
+  })
+
+  it('handles an empty/missing rows array', () => {
+    expect(buildExistingByCompanyType([]).size).toBe(0)
+    expect(buildExistingByCompanyType(null).size).toBe(0)
+  })
+})
+
+describe('findSemanticDedupTargets', () => {
+  it('returns only the candidates whose company+signalType already has existing headlines on file', () => {
+    const existing = buildExistingByCompanyType([{ company_name: 'DIFC', signal_type: 'expansion', headline: 'DIFC targets 25,000 jobs' }])
+    const candidates = [
+      { company: 'DIFC', signalType: 'expansion', headline: 'DIFC reports Q1 growth' },
+      { company: 'DIFC', signalType: 'leadership_change', headline: 'DIFC appoints new COO' }, // different type, no prior art
+      { company: 'Fasset', signalType: 'expansion', headline: 'Fasset opens Riyadh office' }, // different company, no prior art
+    ]
+    const targets = findSemanticDedupTargets(candidates, existing)
+    expect(targets).toHaveLength(1)
+    expect(targets[0].c.headline).toBe('DIFC reports Q1 growth')
+    expect(targets[0].existing).toEqual(['DIFC targets 25,000 jobs'])
+  })
+
+  it('returns an empty array when nothing has any prior art', () => {
+    const existing = buildExistingByCompanyType([])
+    expect(findSemanticDedupTargets([{ company: 'DIFC', signalType: 'expansion', headline: 'x' }], existing)).toEqual([])
+  })
+})
+
+describe('filterSemanticDuplicates', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('returns every candidate unfiltered, without calling the network, when none have prior art', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const candidates = [{ company: 'Acme', signalType: 'expansion', headline: 'Acme opens Dubai office' }]
+    const result = await filterSemanticDuplicates('key', candidates, buildExistingByCompanyType([]))
+    expect(result).toEqual(candidates)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('drops a candidate the model flags as a duplicate of an existing headline', async () => {
+    const existing = buildExistingByCompanyType([{ company_name: 'DIFC', signal_type: 'expansion', headline: 'DIFC targets 25,000 jobs in AI-native push' }])
+    const candidates = [
+      { company: 'DIFC', signalType: 'expansion', headline: 'DIFC to become world\'s first AI-native financial centre' },
+      { company: 'Fasset', signalType: 'funding', headline: 'Fasset raises new round' },
+    ]
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ content: [{ type: 'text', text: JSON.stringify([{ id: 0, duplicate: true }]) }] }),
+    }))
+    const result = await filterSemanticDuplicates('key', candidates, existing)
+    expect(result).toEqual([candidates[1]])
+  })
+
+  it('keeps a candidate the model says is a genuinely different event, not a duplicate', async () => {
+    const existing = buildExistingByCompanyType([{ company_name: 'Fasset', signal_type: 'funding', headline: 'Fasset raises $51M Series B' }])
+    const candidates = [{ company: 'Fasset', signalType: 'funding', headline: 'Fasset raises $68M Series C, hits $1B valuation' }]
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ content: [{ type: 'text', text: JSON.stringify([{ id: 0, duplicate: false }]) }] }),
+    }))
+    const result = await filterSemanticDuplicates('key', candidates, existing)
+    expect(result).toEqual(candidates)
+  })
+
+  it('fails open (keeps every candidate) when the call errors, rather than risk dropping a genuinely new signal', async () => {
+    const existing = buildExistingByCompanyType([{ company_name: 'DIFC', signal_type: 'expansion', headline: 'x' }])
+    const candidates = [{ company: 'DIFC', signalType: 'expansion', headline: 'y' }]
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
+    const result = await filterSemanticDuplicates('key', candidates, existing)
+    expect(result).toEqual(candidates)
+  })
+
+  it('fails open when the response is a non-ok HTTP status', async () => {
+    const existing = buildExistingByCompanyType([{ company_name: 'DIFC', signal_type: 'expansion', headline: 'x' }])
+    const candidates = [{ company: 'DIFC', signalType: 'expansion', headline: 'y' }]
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }))
+    const result = await filterSemanticDuplicates('key', candidates, existing)
+    expect(result).toEqual(candidates)
+  })
+
+  it('returns candidates unfiltered without calling the network when no API key is given', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const existing = buildExistingByCompanyType([{ company_name: 'DIFC', signal_type: 'expansion', headline: 'x' }])
+    const candidates = [{ company: 'DIFC', signalType: 'expansion', headline: 'y' }]
+    const result = await filterSemanticDuplicates(null, candidates, existing)
+    expect(result).toEqual(candidates)
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 })
 

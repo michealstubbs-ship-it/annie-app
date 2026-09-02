@@ -48,6 +48,7 @@ import { reserveAnthropicTokens } from './lib/aiUsage.js'
 import { getEntitlements, SCAN_TIER_CONFIG, resolveResourceCaps } from './lib/entitlements.js'
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, fundingFuzzyKey, extractJson, looksTruncatedByTokenLimit,
+  buildExistingByCompanyType, findSemanticDedupTargets, filterSemanticDuplicates, SEMANTIC_DEDUP_MAX_TOKENS,
   discoverAdzunaJobs, discoverTheirStackJobs, fetchWithRetry, alertIfConfigured,
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
   buildRegionalSourceHint,
@@ -340,6 +341,12 @@ async function fetchRecentCompanies(supabase, userId) {
 // later: a funding round this customer already has on file, rediscovered on
 // a LATER scan via a different article, used to write a second row instead
 // of matching as the same real event.
+//
+// 2026-09-02: also returns byCompanyType (buildExistingByCompanyType,
+// scanShared.js) — the same idea generalized past funding, for
+// filterSemanticDuplicates to check candidates against. See that function's
+// own header in scanShared.js for why funding gets a cheap regex signature
+// and every other type needs an actual AI comparison instead.
 async function fetchExistingDedupKeys(supabase, userId) {
   const { data: existingRows } = await supabase
     .from('intelligence_signals')
@@ -352,7 +359,8 @@ async function fetchExistingDedupKeys(supabase, userId) {
     const fuzzy = fundingFuzzyKey(r.company_name, r.signal_type, r.headline, r.why_it_matters)
     if (fuzzy) fuzzyKeys.add(fuzzy)
   }
-  return { dedupKeys, fuzzyKeys }
+  const byCompanyType = buildExistingByCompanyType(existingRows)
+  return { dedupKeys, fuzzyKeys, byCompanyType }
 }
 
 // Runs the full scan for one customer: recent-history lookups, the AI call,
@@ -387,7 +395,7 @@ async function scanOneCustomer(ob, ctx) {
   // falls straight through to the exact same discovery this function has
   // always run, with the partial pool hit merged in as a free bonus —
   // never a reason this customer gets less than today.
-  const { dedupKeys: existingKeys, fuzzyKeys: existingFuzzyKeys } = await fetchExistingDedupKeys(supabase, ob.user_id)
+  const { dedupKeys: existingKeys, fuzzyKeys: existingFuzzyKeys, byCompanyType: existingByCompanyType } = await fetchExistingDedupKeys(supabase, ob.user_id)
   const poolMatches = await fetchSignalPoolMatches(supabase, ob, existingKeys, MAX_SIGNALS_PER_RUN)
   let poolPersonalized = []
   if (poolMatches.length) {
@@ -485,13 +493,32 @@ async function scanOneCustomer(ob, ctx) {
     // 2026-09-01: the fuzzy check catches a funding round this customer
     // already has on file, rediscovered via a different article — see
     // fetchExistingDedupKeys' own comment for the real incident this closes.
-    newSignals = found
+    const preSemanticCheck = found
       .filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
       .filter(s => {
         const fuzzy = fundingFuzzyKey(s.company, s.signalType, s.headline, s.whyItMatters)
         return !(fuzzy && existingFuzzyKeys.has(fuzzy))
       })
-      .slice(0, MAX_SIGNALS_PER_RUN)
+
+    // 2026-09-02: the general-purpose successor to the fuzzy check above —
+    // catches the same "same real event, different article" case for every
+    // OTHER signal type (expansion, leadership_change, m_and_a), which the
+    // regex-based fuzzy check structurally can't (see
+    // filterSemanticDuplicates' own header in scanShared.js for why). Only
+    // reserves/spends an Anthropic call when findSemanticDedupTargets finds
+    // at least one candidate actually worth checking — the common case (a
+    // brand-new company/type combo) skips this entirely, so a normal run's
+    // added cost is close to zero.
+    let deduped = preSemanticCheck
+    if (findSemanticDedupTargets(preSemanticCheck, existingByCompanyType).length) {
+      if (await reserveAnthropicTokens(supabase, ob.user_id, SEMANTIC_DEDUP_MAX_TOKENS, resourceCaps.anthropicTokens)) {
+        deduped = await filterSemanticDuplicates(anthropicKey, preSemanticCheck, existingByCompanyType)
+      } else {
+        console.log('[intelligence-scan] Anthropic daily token cap reached — skipping semantic dedup check for', ob.user_id, ', keeping candidates as-is (exact/fuzzy checks above still apply)')
+      }
+    }
+
+    newSignals = deduped.slice(0, MAX_SIGNALS_PER_RUN)
   }
 
   if (!newSignals.length) {

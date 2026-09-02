@@ -453,6 +453,114 @@ export function fundingFuzzyKey(company, signalType, headline, whyItMatters) {
   return `${normalizeCompanyKey(company)}::funding::${sig}`
 }
 
+// 2026-09-02, Michael, after seeing the real scale of this (a production
+// data pull turned up 30+ duplicate groups across 7+ customer accounts,
+// spanning expansion/leadership_change/m_and_a, not just funding — DIFC had
+// 5 separate rows for one real AI-native-transformation story): builds the
+// lookup buildSemanticDedupCandidates/filterSemanticDuplicates below need —
+// every existing headline this customer already has on file for a given
+// company+signal_type, grouped so a new candidate can be checked against
+// exactly the prior art that could actually make it a duplicate (never
+// against a different company, and never against a different signal type —
+// a funding round can't be "the same event" as a leadership change).
+export function buildExistingByCompanyType(existingRows) {
+  const map = new Map()
+  for (const r of existingRows || []) {
+    if (!r?.company_name || !r?.signal_type || !r?.headline) continue
+    const key = `${normalizeCompanyKey(r.company_name)}::${r.signal_type}`
+    if (!map.has(key)) map.set(key, [])
+    map.get(key).push(r.headline)
+  }
+  return map
+}
+
+// Pure, free (no AI call) — which of these candidates have any existing
+// headline on file for the same company+signal_type, and are therefore
+// actually worth spending an AI call to compare. The overwhelming majority
+// of candidates on any given run are about a company/type combo with
+// nothing on file yet and can't possibly be a duplicate of anything, so
+// this is the gate callers use to decide whether filterSemanticDuplicates
+// below is worth calling (and worth reserving Anthropic token budget for)
+// at all — see both scan files' call sites.
+export function findSemanticDedupTargets(candidates, existingByCompanyType) {
+  return (candidates || [])
+    .map((c, i) => ({ c, i, existing: existingByCompanyType?.get(`${normalizeCompanyKey(c.company)}::${c.signalType}`) }))
+    .filter(({ existing }) => existing?.length)
+}
+
+// The general-purpose successor to fundingFuzzyKey above, for every signal
+// type fundingFuzzyKey can't cover. Funding has a clean, extractable fact
+// (round letter + dollar amount) a regex can compare directly; expansion,
+// leadership_change, and m_and_a headlines are freeform prose — "DIFC
+// appoints new CFO" and "DIFC names replacement finance chief" are the same
+// real event, but there's no reliable regex signature for that the way
+// there is for a dollar figure. That comparison — "do these two headlines
+// describe the same real thing" — is exactly the kind of judgment call an
+// LLM is suited for and a hand-written heuristic isn't, so this asks Claude
+// directly instead of guessing at keyword overlap.
+//
+// Deliberately cheap: only ever reaches the network when
+// findSemanticDedupTargets found at least one real candidate to check (see
+// that function's own header) — the common case (a brand-new company/type
+// combo) never spends anything here. One batched call covers every
+// candidate that needs checking this run, not one call per candidate. No
+// web_search tool (same reasoning as personalizePoolHits above) — this is a
+// closed comparison over text already in hand, never a research task.
+//
+// Deliberately does NOT reserve its own Anthropic token budget — same
+// convention as personalizePoolHits above, and for the same reason: this
+// module intentionally never imports aiUsage.js (aiUsage.js already imports
+// FROM this file — alertIfConfigured — so importing back would be
+// circular). Callers must check findSemanticDedupTargets and reserve
+// SEMANTIC_DEDUP_MAX_TOKENS themselves before calling this, exactly the
+// same shape every existing call to callAnthropic/personalizePoolHits
+// already follows.
+//
+// Fails OPEN on any error (network, malformed response) — returns every
+// candidate unfiltered rather than risk silently dropping a genuinely new
+// signal because this extra check itself broke. The exact-key and fuzzy
+// checks that already ran before this is called remain the hard guarantee;
+// this is a best-effort improvement on top, never a required gate.
+export const SEMANTIC_DEDUP_MAX_TOKENS = 1500
+
+export async function filterSemanticDuplicates(anthropicKey, candidates, existingByCompanyType) {
+  if (!anthropicKey || !candidates?.length) return candidates || []
+  const targets = findSemanticDedupTargets(candidates, existingByCompanyType)
+  if (!targets.length) return candidates
+
+  const prompt = `You check whether a newly-found news item about a company is describing the SAME real-world event as one already on file for that company — just reported by a different source, in different words — not whether the companies or topics are merely similar.
+
+For each pairing below, compare the NEW headline against the EXISTING headline(s) on file for that same company and signal type. Answer duplicate:true only when you are confident they describe the exact same real event (the same appointment, the same funding round, the same expansion announcement). A later, genuinely different event about the same company — a second funding round, a different hire, a follow-up expansion — is NOT a duplicate: answer false.
+
+${targets.map(({ c, i, existing }) => `Pairing ${i}: NEW headline for "${c.company}" (${c.signalType}): "${c.headline}"\nEXISTING headline(s) already on file for this exact company and signal type: ${existing.map(h => `"${h}"`).join('; ')}`).join('\n\n')}
+
+Return a JSON array, one object per pairing: { "id": <the pairing's number>, "duplicate": true or false }. Only return the JSON array, nothing else.`
+
+  try {
+    const resp = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: SEMANTIC_DEDUP_MAX_TOKENS,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    }, 20000, 1)
+    if (!resp.ok) {
+      console.error('[scanShared] semantic dedup call failed:', resp.status)
+      return candidates
+    }
+    const data = await resp.json()
+    const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
+    const parsed = extractJson(text)
+    const duplicateIds = new Set((parsed || []).filter(p => p?.duplicate === true).map(p => p.id))
+    return candidates.filter((c, i) => !duplicateIds.has(i))
+  } catch (err) {
+    console.error('[scanShared] semantic dedup call failed:', err.message)
+    return candidates
+  }
+}
+
 // Implements the "replace, don't supplement" product decision for Live
 // Jobs: when Annie found actual, specific open roles (live_job entries) at a
 // company, the generic "this company is hiring" narrative signal for that

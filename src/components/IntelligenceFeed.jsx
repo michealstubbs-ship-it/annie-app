@@ -9,6 +9,7 @@ import { logSignalOutcome } from '../lib/signalOutcomes'
 import { trackEvent } from '../lib/analytics'
 import { resolveSignalContact } from '../lib/resolveSignalContact'
 import { SIGNAL_TYPE_META as TYPE_META, RACY_SIGNAL_TYPES as RACY_TYPES, NEWS_SIGNAL_TYPES } from '../lib/signalTypes'
+import { collapseFeedDuplicates } from '../lib/intelligenceFeedDedup'
 import Spinner from './Spinner'
 import ErrorBanner from './ErrorBanner'
 
@@ -69,14 +70,25 @@ export default function IntelligenceFeed() {
     setFeedPageData(prev => ({ ...prev, signals: updater(prev.signals) }))
   }
 
-  const newCount = useMemo(() => signals.filter(s => s.status === 'new').length, [signals])
+  // 2026-09-02 audit fix, real report: "Intelligence feed is showing Fasset
+  // 3 times" — this page rendered every row straight from `signals` with no
+  // dedup of its own at all. scanShared.js's fundingFuzzyKey and
+  // filterSemanticDuplicates stop new duplicates being WRITTEN; this is the
+  // display-side backstop for what's already on file (or ever slips past
+  // those, for a signal type neither one catches) — see
+  // intelligenceFeedDedup.js's own header for the full reasoning. Every
+  // count/list below is derived from this collapsed view, not raw
+  // `signals`, so the "3 new" badge can never disagree with how many cards
+  // actually show.
+  const dedupedSignals = useMemo(() => collapseFeedDuplicates(signals), [signals])
+  const newCount = useMemo(() => dedupedSignals.filter(s => s.status === 'new').length, [dedupedSignals])
   const tabSignals = useMemo(
-    () => signals.filter(s => mainTab === 'news' ? NEWS_SIGNAL_TYPES.includes(s.signal_type) : !NEWS_SIGNAL_TYPES.includes(s.signal_type)),
-    [signals, mainTab],
+    () => dedupedSignals.filter(s => mainTab === 'news' ? NEWS_SIGNAL_TYPES.includes(s.signal_type) : !NEWS_SIGNAL_TYPES.includes(s.signal_type)),
+    [dedupedSignals, mainTab],
   )
   const visible = useMemo(() => typeFilter === 'all' ? tabSignals : tabSignals.filter(s => s.signal_type === typeFilter), [tabSignals, typeFilter])
   const presentTypes = useMemo(() => [...new Set(tabSignals.map(s => s.signal_type))], [tabSignals])
-  const newsCount = useMemo(() => signals.filter(s => NEWS_SIGNAL_TYPES.includes(s.signal_type)).length, [signals])
+  const newsCount = useMemo(() => dedupedSignals.filter(s => NEWS_SIGNAL_TYPES.includes(s.signal_type)).length, [dedupedSignals])
 
   // The type-filter chip only ever makes sense scoped to whichever tab is
   // active (no point offering an "M&A" chip while looking at the Signals
