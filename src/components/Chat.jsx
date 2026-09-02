@@ -11,6 +11,7 @@ import { describeChatFailure, describeStaleTab, isGenericNetworkFailure } from '
 import { isTabStale } from '../lib/staleBuild'
 import { recentHistory } from '../lib/chatHistory'
 import { reportClientError } from '../lib/errorReporting'
+import { stripChatMarkdown } from '../lib/textSanitize'
 
 // Security fix, 2026-08-27 audit: citation URLs come from Anthropic's own
 // web_search tool, so a malicious value getting into this field would be an
@@ -152,6 +153,21 @@ export default function Chat() {
       // rather than a support bot — numbered steps are allowed here since
       // drafting outreach genuinely is often a strict sequence, unlike
       // support's stricter "plain text" rule.
+      //
+      // 2026-09-02 follow-up, same real report recurring ("still too long to
+      // reply and stil using ** not natural chat"): the instruction above
+      // wasn't reliably followed. Two changes: the VOICE block below now
+      // includes a concrete before/after example of exactly this failure
+      // (a model follows a worked example more reliably than an abstract
+      // rule), and — since a prompt is still only ever a request, never a
+      // guarantee — stripChatMarkdown (textSanitize.js) now deterministically
+      // strips any bold/heading/bullet markdown the model writes anyway
+      // before it's ever rendered or saved, so the customer can no longer
+      // SEE raw "**" regardless of whether the model keeps writing it.
+      // Response length has no equivalent deterministic backstop — there's
+      // no safe way to mechanically shorten an AI-written answer without
+      // risking cutting real content — so that half still depends on the
+      // prompt actually landing.
       const systemPrompt = `You are Annie, an expert BD intelligence assistant for ${profile?.full_name || 'a recruiter'} at ${profile?.firm_name || 'their recruitment firm'}.
 Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
 Functions this recruiter places candidates into: ${onboarding?.functions?.join(', ') || 'All functions, no specific focus given'}.
@@ -181,9 +197,11 @@ pretend a lack of tracked-company data means a lack of an answer.
 
 === VOICE ===
 Write like a sharp, switched-on colleague typing quickly, not a business document.
-- Short sentences, usually one to three. Longer only for an actual draft (an email, a LinkedIn message) you're asked to write out in full.
+- Short sentences, usually one to three. Longer only for an actual draft (an email, a LinkedIn message) you're asked to write out in full. A question with several possible angles does NOT mean writing all of them out — pick the single strongest one and lead with that; if the recruiter wants the alternatives, they'll ask.
 - Answer first, context after. Never open with a preamble or restate the question back.
-- Plain text by default. No bold section headers, no bullet lists of options — write it as sentences. Numbered steps are fine ONLY for a real sequence someone follows in order (e.g. a 3-step outreach plan), never as a menu of unrelated ideas.
+- Plain text ONLY. Never write a single "**" or "##" character, ever, for any reason — no bold section headers, no bullet lists of options, not even for emphasis on one word. Write it as sentences, full stop. Numbered steps are fine ONLY for a real sequence someone follows in order (e.g. a 3-step outreach plan), never as a menu of unrelated ideas.
+  BAD (do not do this, this is a real example of the exact mistake to never repeat): "**Alternative: Real Estate Finance:** Retal and Ayyan Investment have secured financing... **GCC Play:** If they've worked at ADNOC... **The Angle:** The fact that..."
+  GOOD (this is the same content, done right): "Worth checking if they've touched real estate finance too. Retal and Ayyan Investment both secured financing recently, so anyone from that world already thinks in project-finance terms. Same goes for ADNOC or Aramco-adjacent infrastructure work."
 - One clarifying question at a time, never a numbered list of several at once — ask the single most useful one, get the answer, then ask the next if you still need it.
 - Contractions always — "you'll", "that's", "I've".
 - Never say "Great question!", "I'd be happy to help", "What's on your mind?", or close with "Let me know if you have any other questions!" or similar boilerplate.
@@ -218,7 +236,11 @@ Write like a sharp, switched-on colleague typing quickly, not a business documen
           onDelta: (_chunk, fullTextSoFar) => {
             setMessages(prev => {
               const next = [...prev]
-              next[assistantIndex] = { role: 'assistant', content: fullTextSoFar, streaming: true }
+              // 2026-09-02 audit fix: stripped here too, not just on the
+              // final text below — re-applied to the whole growing string
+              // on every chunk (cheap, idempotent) so raw markdown never
+              // even flashes on screen mid-stream, not just once it's done.
+              next[assistantIndex] = { role: 'assistant', content: stripChatMarkdown(fullTextSoFar), streaming: true }
               return next
             })
           },
@@ -282,6 +304,19 @@ Write like a sharp, switched-on colleague typing quickly, not a business documen
         })
         ;({ text, citations } = await callChat(chatPayload))
       }
+
+      // 2026-09-02 audit fix, real customer report ("still too long to
+      // reply and still using ** not natural chat"): the VOICE system
+      // prompt above tells the model not to write bold headers/bullet
+      // lists, but that's a soft ask it doesn't reliably follow — and
+      // Chat.jsx renders content as raw text with no markdown parser, so
+      // whatever markdown syntax the model writes anyway shows up as
+      // literal asterisks on screen. Stripped deterministically here
+      // (see textSanitize.js's own header) rather than trusting the prompt
+      // alone a second time. Applied to the text that gets SAVED too, not
+      // just the one render, so reloading chat history later shows the
+      // same clean text instead of raw markdown reappearing on refresh.
+      text = stripChatMarkdown(text)
 
       setMessages(prev => {
         const next = [...prev]

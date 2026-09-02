@@ -25,6 +25,41 @@ export function stripAiArtifacts(text) {
     .trim()
 }
 
+// 2026-09-02 audit fix, real customer report ("still too long to reply and
+// still using ** not natural chat"): Chat.jsx's system prompt already
+// instructs the model to write plain text, no bold headers, no bullet
+// lists — the exact same "=== VOICE ===" block used for Ask Annie — but
+// that's a soft ask the model doesn't reliably follow, the same lesson
+// scanShared.js already learned about "reads as agency-posted" (see
+// agencyMatch.js). Chat.jsx renders a message's content as raw text
+// (`whitespace-pre-wrap`, no markdown parser at all), so any bold/heading/
+// bullet markdown the model writes anyway shows up as literal asterisks and
+// hashes on screen, not formatting. This is the deterministic backstop:
+// strips markdown formatting characters from the model's own words rather
+// than the words themselves, so the customer never sees raw markdown
+// syntax again regardless of whether the model keeps ignoring the prompt.
+// This can't fix response LENGTH the same way — there's no safe mechanical
+// way to shorten an AI-written answer without risking cutting off real
+// content — so that part still depends on the prompt actually being
+// followed; see the VOICE block's own updated comment for that half.
+export function stripChatMarkdown(text) {
+  if (!text) return text
+  return text
+    // **bold** / __bold__ -> bold (keep the words, drop the markup)
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    // *italic* -> italic, but not a standalone "*" (e.g. multiplication,
+    // a bare bullet dash already handled below) and not "**" (handled above)
+    .replace(/(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)/g, '$1')
+    // markdown headers ("### Heading", "## Heading") -> just the text
+    .replace(/^#{1,6}\s+/gm, '')
+    // a bullet marker at the start of a line ("- item", "* item", "• item")
+    // -> just the line's text; numbered steps ("1. ") are left alone, the
+    // VOICE prompt explicitly allows those for a real sequence
+    .replace(/^[ \t]*[-*•][ \t]+/gm, '')
+    .trim()
+}
+
 // Cleans and bounds a list of AI-written short strings before it's stored —
 // used for candidateProfile's company-name arrays (directCompetitors,
 // similarIndustry, widerScope) and for a funding/expansion signal's

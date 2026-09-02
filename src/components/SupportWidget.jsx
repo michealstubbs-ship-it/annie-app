@@ -8,6 +8,7 @@ import { isTabStale } from '../lib/staleBuild'
 import { withTimeout } from '../lib/withTimeout'
 import { reportClientError } from '../lib/errorReporting'
 import { recentHistory } from '../lib/chatHistory'
+import { stripChatMarkdown } from '../lib/textSanitize'
 
 // Rewritten 2026-08-26 after a real production incident: the previous
 // version of this prompt described features that don't exist (a "target
@@ -290,7 +291,18 @@ export default function SupportWidget() {
         systemOverride: systemPrompt,
         maxTokens: 600,
       })
-      const { displayText, category } = parseEscalation(rawText)
+      // 2026-09-02 audit fix, same real report as Chat.jsx's identical fix
+      // (see its own header): this widget renders content as raw text with
+      // no markdown parser, so any bold/heading/bullet markdown the model
+      // writes anyway — despite the VOICE prompt below asking it not to —
+      // shows up as literal asterisks on screen. Michael confirmed this
+      // widget "reads fine" before, but nothing here ever actually stripped
+      // markdown; that was luck (support questions rarely provoke it), not
+      // a guarantee, and Chat.jsx just proved the same prompt-only approach
+      // isn't reliable. Stripped here too rather than waiting for it to
+      // actually happen on this widget before fixing it.
+      const { displayText: rawDisplayText, category } = parseEscalation(rawText)
+      const displayText = stripChatMarkdown(rawDisplayText)
       const assistantMsg = { role: 'assistant', content: displayText }
       setMessages(prev => [...prev, assistantMsg])
       await supabase.from('support_messages').insert({ user_id: user.id, role: 'assistant', content: displayText })
