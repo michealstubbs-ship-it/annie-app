@@ -17,6 +17,7 @@ import { normalizeCompanyName } from '../../../src/lib/companyMatch.js'
 import { extractJson } from '../../../src/lib/jsonExtract.js'
 import { SIGNAL_TYPES } from '../../../src/lib/signalTypes.js'
 import { stripAiArtifacts, sanitizeStringList } from '../../../src/lib/textSanitize.js'
+import { looksLikeStaffingAgencyName, isStaffingAgencyIndustry } from '../../../src/lib/agencyMatch.js'
 import { reportServerError } from './reportError.js'
 import { parseIntEnv } from './env.js'
 
@@ -25,7 +26,7 @@ import { parseIntEnv } from './env.js'
 // now live in src/lib because they're genuinely shared with the frontend
 // too, not backend-only. See jsonExtract.js, signalTypes.js and
 // textSanitize.js for why.
-export { extractJson, SIGNAL_TYPES, stripAiArtifacts }
+export { extractJson, SIGNAL_TYPES, stripAiArtifacts, looksLikeStaffingAgencyName, isStaffingAgencyIndustry }
 
 // 2026-08-26, Michael: built while investigating whether raising
 // anthropicMaxTokens (see SCAN_TIER_CONFIG in entitlements.js) would
@@ -212,38 +213,10 @@ export function looksLikeJobPostingUrl(url) {
   }
 }
 
-// 2026-09-02, Michael, real report: a live_job lead ("Private Equity -
-// Investment Associate (Remote)" at "Quik Hire Staffing") turned out to be
-// posted BY another recruitment/staffing firm on behalf of an anonymous
-// client, not a genuine hiring company — the "contact" Annie surfaced (the
-// agency's own founder) is a rival recruiter, not a hiring manager, so
-// there's no real BD opportunity there the way there is for a company
-// actually filling its own seat. Both scan prompts already tell the AI to
-// skip anything that "reads as agency-posted" (see their live_job
-// instructions), but that's a soft ask the model doesn't reliably follow —
-// this exact case had the word "Staffing" right in the company name and
-// still got through. Two deterministic backstops, checked in
-// buildEnrichedSignalRow below rather than left to the prompt alone: a
-// keyword check on the company name (catches the obvious cases, no Apollo
-// call needed, checked first so those never even spend an enrichment
-// credit), and Apollo's own industry classification (catches an agency
-// whose name gives no hint at all — Apollo/LinkedIn's taxonomy classifies a
-// real staffing/recruitment business by industry, this isn't a guess from
-// text, it's the same real company_industry field already stored on every
-// signal).
-const STAFFING_AGENCY_NAME_PATTERN = /\b(staffing|recruitment|recruiting|recruiters?|talent (partners|solutions|acquisition)|search (partners|group)|headhunt(ing|ers?)|executive search|manpower)\b/i
-
-export function looksLikeStaffingAgencyName(companyName) {
-  if (!companyName) return false
-  return STAFFING_AGENCY_NAME_PATTERN.test(companyName)
-}
-
-const STAFFING_AGENCY_INDUSTRY_PATTERN = /staffing|recruiting|recruitment/i
-
-export function isStaffingAgencyIndustry(industry) {
-  if (!industry) return false
-  return STAFFING_AGENCY_INDUSTRY_PATTERN.test(industry)
-}
+// looksLikeStaffingAgencyName / isStaffingAgencyIndustry: see the header
+// comment at the top of this file (imported from src/lib/agencyMatch.js) —
+// moved there so sourcedPool.js/relationshipPool.js can apply the identical
+// check as a read-time backstop, not just at write time here.
 
 // Best-effort ops alert for the one failure mode retries can't fix: every
 // customer in a run coming back with zero new signals, which almost always

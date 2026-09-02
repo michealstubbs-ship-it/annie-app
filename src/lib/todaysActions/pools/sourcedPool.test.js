@@ -143,3 +143,29 @@ describe('buildSourcedPool — collapses multiple signals about the same company
     expect(buildSourcedPool(signals, [])).toHaveLength(2)
   })
 })
+
+// 2026-09-02 audit fix, real report: a "Quik Hire Staffing" live_job lead
+// kept surfacing after the write-time agency check (scanShared.js) shipped,
+// because that check only stops a NEW bad signal from being written — a
+// stale row already in the table from before the fix never gets retired on
+// its own. Same check now applied here too, so it can never resurface
+// regardless of when the row was written.
+describe('buildSourcedPool — drops a live_job lead posted by a staffing/recruitment agency', () => {
+  it('drops a live_job signal whose company name reads as a staffing agency', () => {
+    expect(buildSourcedPool([baseSignal({ company_name: 'Quik Hire Staffing' })], [])).toEqual([])
+  })
+
+  it('drops a live_job signal whose company_industry reads as staffing/recruiting, even with an innocuous name', () => {
+    expect(buildSourcedPool([baseSignal({ company_name: 'Meridian Partners', company_industry: 'Staffing & Recruiting' })], [])).toEqual([])
+  })
+
+  it('does not drop a non-live_job signal from the same agency-named company', () => {
+    const signals = [baseSignal({ signal_type: 'funding', company_name: 'Quik Hire Staffing' })]
+    expect(buildSourcedPool(signals, [])).toHaveLength(1)
+  })
+
+  it('does not drop a genuine live_job lead with no agency signal in name or industry', () => {
+    const signals = [baseSignal({ company_name: 'DP World', company_industry: 'Logistics' })]
+    expect(buildSourcedPool(signals, [])).toHaveLength(1)
+  })
+})

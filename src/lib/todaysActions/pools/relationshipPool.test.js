@@ -105,4 +105,28 @@ describe('buildRelationshipPool', () => {
       expect(pool).toHaveLength(2)
     })
   })
+
+  // 2026-09-02 audit fix — see the identical fix and full reasoning in
+  // sourcedPool.test.js: a stale live_job row from before the write-time
+  // agency check shipped never gets retired on its own, so it's checked
+  // again here too.
+  describe('drops a live_job lead posted by a staffing/recruitment agency', () => {
+    const agencyContacts = [{ id: 1, company: 'Quik Hire Staffing', status: 'warm' }]
+
+    it('drops a live_job signal whose company name reads as a staffing agency', () => {
+      const signals = [{ id: 's1', company_name: 'Quik Hire Staffing', status: 'new', signal_type: 'live_job', found_at: daysAgoIso(1) }]
+      expect(buildRelationshipPool(signals, agencyContacts)).toEqual([])
+    })
+
+    it('drops a live_job signal whose company_industry reads as staffing/recruiting, even with an innocuous name', () => {
+      const innocuousContacts = [{ id: 1, company: 'Meridian Partners', status: 'warm' }]
+      const signals = [{ id: 's1', company_name: 'Meridian Partners', company_industry: 'Staffing & Recruiting', status: 'new', signal_type: 'live_job', found_at: daysAgoIso(1) }]
+      expect(buildRelationshipPool(signals, innocuousContacts)).toEqual([])
+    })
+
+    it('does not drop a non-live_job signal from the same agency-named company', () => {
+      const signals = [{ id: 's1', company_name: 'Quik Hire Staffing', status: 'new', signal_type: 'funding', found_at: daysAgoIso(1) }]
+      expect(buildRelationshipPool(signals, agencyContacts)).toHaveLength(1)
+    })
+  })
 })
