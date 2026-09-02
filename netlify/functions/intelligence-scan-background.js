@@ -49,7 +49,7 @@ import { getEntitlements, SCAN_TIER_CONFIG, resolveResourceCaps } from './lib/en
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, fundingFuzzyKey, extractJson, looksTruncatedByTokenLimit,
   buildExistingByCompanyType, findSemanticDedupTargets, filterSemanticDuplicates, SEMANTIC_DEDUP_MAX_TOKENS,
-  discoverAdzunaJobs, discoverTheirStackJobs, fetchWithRetry, alertIfConfigured,
+  discoverAdzunaJobs, discoverTheirStackJobs, pickLiveJobEntryFromLeads, fetchWithRetry, alertIfConfigured,
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
   buildRegionalSourceHint,
   buildLiveJobBoardHint,
@@ -65,6 +65,9 @@ import {
   logMarketCoverage,
   getCustomerWatchlistCompanies,
   buildCustomerWatchlistHint,
+  buildPriorityDiscoveryPrompt,
+  PRIORITY_DISCOVERY_MAX_TOKENS,
+  PRIORITY_DISCOVERY_MAX_USES,
 } from './lib/scanShared.js'
 
 const INTERNAL_SCAN_SECRET = process.env.INTERNAL_SCAN_SECRET
@@ -294,6 +297,44 @@ async function callAnthropic(apiKey, systemPrompt, supabase, { maxTokens = 4096,
   return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
 }
 
+// 2026-09-02, Michael: "definitely make live jobs and leadership the
+// priority" — runs the dedicated, narrow priority-discovery pass
+// (buildPriorityDiscoveryPrompt, scanShared.js) UNCONDITIONALLY every single
+// call this file makes, on both of this account's daily fires, regardless
+// of whether the pool-hit branch or the full-discovery branch ran above.
+// Never throws: a cap hit or transient failure here should cost this
+// customer the (small) bonus this pass offers, never the rest of their scan.
+// Guarantees at least an attempt at a real live_job even when the AI itself
+// found nothing this round, by falling back to the same raw-API pick
+// (pickLiveJobEntryFromLeads) the old pool-full branch used to rely on
+// exclusively — reusing the SAME adzunaLeads/theirStackLeads this run
+// already fetched, not a second API call.
+async function runPriorityDiscovery(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }, existingKeys, ctx) {
+  const { anthropicKey, supabase, resourceCaps } = ctx
+  let priorityFound = []
+  try {
+    const priorityText = await callAnthropic(
+      anthropicKey,
+      buildPriorityDiscoveryPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }),
+      supabase,
+      { maxTokens: PRIORITY_DISCOVERY_MAX_TOKENS, maxUses: PRIORITY_DISCOVERY_MAX_USES, userId: ob.user_id, anthropicCaps: resourceCaps.anthropicTokens },
+    )
+    const { learned: priorityLearned, rest } = splitLearnedEntries(extractJson(priorityText))
+    // Fire-and-forget, same as the main pass's own learned-discoveries write
+    // just below in scanOneCustomer — Annie's research memory, no bearing on
+    // this customer's signals.
+    if (priorityLearned.length) recordLearnedDiscoveries(supabase, priorityLearned).catch(() => {})
+    priorityFound = rest
+  } catch (err) {
+    console.log('[intelligence-scan] priority discovery call failed for', ob.user_id, '- continuing with the rest of this scan:', err.message)
+  }
+  if (!priorityFound.some(s => s.entryType === 'live_job')) {
+    const fallback = pickLiveJobEntryFromLeads(theirStackLeads, adzunaLeads, existingKeys)
+    if (fallback) priorityFound.push(fallback)
+  }
+  return priorityFound
+}
+
 // How long this run is allowed to spend working through customers before it
 // stops starting new ones and returns cleanly. Netlify's background-function
 // budget is 15 minutes; this stops well short of that so an in-flight
@@ -396,6 +437,19 @@ async function scanOneCustomer(ob, ctx) {
   // always run, with the partial pool hit merged in as a free bonus —
   // never a reason this customer gets less than today.
   const { dedupKeys: existingKeys, fuzzyKeys: existingFuzzyKeys, byCompanyType: existingByCompanyType } = await fetchExistingDedupKeys(supabase, ob.user_id)
+
+  // 2026-09-02: fetched unconditionally now, up front — both branches below
+  // (the pool-full early path AND the ordinary full-discovery path) and the
+  // new priority-discovery pass further down all need the same leads/
+  // learned-sources/watchlist. Previously these were fetched only inside the
+  // full-discovery branch, which is exactly why a full pool hit used to skip
+  // Adzuna/TheirStack entirely (see pickLiveJobEntryFromLeads's own header
+  // in scanShared.js for the real incident this closes).
+  const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
+  const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, ob.user_id, resourceCaps.theirStack)
+  const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
+  const watchlist = await getCustomerWatchlistCompanies(supabase, ob)
+
   const poolMatches = await fetchSignalPoolMatches(supabase, ob, existingKeys, MAX_SIGNALS_PER_RUN)
   let poolPersonalized = []
   if (poolMatches.length) {
@@ -412,18 +466,21 @@ async function scanOneCustomer(ob, ctx) {
 
   let newSignals
   if (poolPersonalized.length >= MAX_SIGNALS_PER_RUN) {
-    newSignals = poolPersonalized.slice(0, MAX_SIGNALS_PER_RUN)
+    // 2026-09-02 audit fix (real report: "why has Annie not found one live
+    // job — this is always a gap") — see pickLiveJobEntryFromLeads's own
+    // header in scanShared.js. A full pool hit used to skip Adzuna/
+    // TheirStack entirely, the only real live_job source for a niche
+    // market like UAE/GCC, so this branch could otherwise go every single
+    // run without even attempting one. Prepended, not appended, so it
+    // always wins a slot rather than being crowded out by the cap — pool
+    // hits (plentiful, free) fill whatever's left. (adzunaLeads/
+    // theirStackLeads are now fetched unconditionally above, not specially
+    // for this branch — see that fetch's own comment.)
+    const guaranteedLiveJob = pickLiveJobEntryFromLeads(theirStackLeads, adzunaLeads, existingKeys)
+    newSignals = guaranteedLiveJob
+      ? [guaranteedLiveJob, ...poolPersonalized].slice(0, MAX_SIGNALS_PER_RUN)
+      : poolPersonalized.slice(0, MAX_SIGNALS_PER_RUN)
   } else {
-    const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
-    // TheirStack fills the gap Adzuna leaves for UAE/GCC — see
-    // discoverTheirStackJobs's own header in scanShared.js. Only ever spends
-    // a credit for a customer whose locations actually include a market
-    // THEIRSTACK_COUNTRY_MAP covers, same "only pay for what's real" guard
-    // reserveApolloCredits already has for Apollo.
-    const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, ob.user_id, resourceCaps.theirStack)
-    const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
-    const watchlist = await getCustomerWatchlistCompanies(supabase, ob)
-
     // 2026-09-01, Michael: applied to every recurring scan now, not just the
     // one-off onboarding scan — explicit call after seeing the real added
     // Anthropic cost (~$4-8.50/customer/month if run on every fire, roughly
@@ -519,6 +576,31 @@ async function scanOneCustomer(ob, ctx) {
     }
 
     newSignals = deduped.slice(0, MAX_SIGNALS_PER_RUN)
+  }
+
+  // 2026-09-02, Michael: "definitely make live jobs and leadership the
+  // priority. Do the build" — see runPriorityDiscovery's own header just
+  // above for what this does and why it's unconditional. Additive to
+  // newSignals, NOT counted against MAX_SIGNALS_PER_RUN — that cap exists to
+  // bound Apollo enrichment spend on the ordinary funding/expansion/M&A
+  // sweep, not to let these two explicitly-prioritized types get crowded
+  // out of a slot by whatever the pool or the general sweep already filled.
+  const priorityFound = await runPriorityDiscovery(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }, existingKeys, { anthropicKey, supabase, resourceCaps })
+  if (priorityFound.length) {
+    const newSignalKeys = new Set(newSignals.map(s => normalizeKey(s.company, s.headline, s.sourceUrl)))
+    const newPriority = priorityFound.filter(s => {
+      if (!s.company || !s.headline) return false
+      const key = normalizeKey(s.company, s.headline, s.sourceUrl)
+      if (newSignalKeys.has(key) || existingKeys.has(key)) return false
+      const fuzzy = fundingFuzzyKey(s.company, s.signalType, s.headline, s.whyItMatters)
+      if (fuzzy && existingFuzzyKeys.has(fuzzy)) return false
+      newSignalKeys.add(key)
+      return true
+    })
+    if (newPriority.length) {
+      newSignals = dropGenericHiringWhereLiveJobsExist([...newSignals, ...newPriority])
+      console.log(`[intelligence-scan] priority discovery contributed ${newPriority.length} additional signal(s) for`, ob.user_id)
+    }
   }
 
   if (!newSignals.length) {

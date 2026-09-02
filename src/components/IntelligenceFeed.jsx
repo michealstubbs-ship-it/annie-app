@@ -27,10 +27,14 @@ function timeAgo(dateStr) {
   return new Date(dateStr).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
 
-// live_job rows are excluded from `signals` by listActiveSignals itself —
-// they're specific open roles behind a hiring push, Today's Actions only,
-// per the product decision: they replace the generic hiring_activity
-// narrative signal there rather than appearing in both places.
+// 2026-09-02, Michael: live_job rows used to be excluded from `signals` by
+// listActiveSignals itself — Today's Actions only. Reversed per Michael's
+// own direction (see listActiveSignals' own header in lib/data/signals.js) —
+// live_job now flows through here like any other signal_type, and gets its
+// own "Live roles" 💼 chip automatically via presentTypes below the moment a
+// live_job row exists (SIGNAL_TYPE_META.live_job, signalTypes.js). It's
+// never a NEWS_SIGNAL_TYPES member, so it always lands in the main "signals"
+// tab, not the News tab, same as funding/expansion/leadership_change.
 async function loadFeedPageData(userId) {
   const signals = await listActiveSignals(userId)
   return { signals }

@@ -34,7 +34,7 @@ import { getEntitlements, SCAN_TIER_CONFIG, resolveResourceCaps } from './lib/en
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, fundingFuzzyKey, splitToKeywords, extractJson, looksTruncatedByTokenLimit,
   buildExistingByCompanyType, findSemanticDedupTargets, filterSemanticDuplicates, SEMANTIC_DEDUP_MAX_TOKENS,
-  discoverHotCompanies, discoverAdzunaJobs, discoverTheirStackJobs, fetchWithRetry, mapLocationsToAdzunaCountries,
+  discoverHotCompanies, discoverAdzunaJobs, discoverTheirStackJobs, pickLiveJobEntryFromLeads, fetchWithRetry, mapLocationsToAdzunaCountries,
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
   buildRegionalSourceHint,
   buildLiveJobBoardHint,
@@ -50,6 +50,9 @@ import {
   logMarketCoverage,
   getCustomerWatchlistCompanies,
   buildCustomerWatchlistHint,
+  buildPriorityDiscoveryPrompt,
+  PRIORITY_DISCOVERY_MAX_TOKENS,
+  PRIORITY_DISCOVERY_MAX_USES,
 } from './lib/scanShared.js'
 
 // How many sector groups to research in parallel.
@@ -344,6 +347,42 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
   return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
 }
 
+// 2026-09-02, Michael: "definitely make live jobs and leadership the
+// priority. Do the build" — same dedicated, narrow priority-discovery pass
+// as intelligence-scan-background.js's own runPriorityDiscovery (see that
+// file's header for the full reasoning), run once per round-1 research
+// phase here (this file's onboarding/"Scan Now" round 1, not every chained
+// round — round 1 is the one guaranteed to run on every trigger). Never
+// throws: a cap hit or transient failure here costs this account only the
+// small bonus this pass offers, never the rest of its scan. Falls back to
+// the same raw-API pick (pickLiveJobEntryFromLeads) the old
+// discoverGuaranteedLiveJobEntry-based pool-full branch used to rely on
+// exclusively, reusing the SAME adzunaLeads/theirStackLeads this round
+// already fetched rather than spending a second API call.
+async function runPriorityDiscovery(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }, existingKeys, ctx) {
+  const { anthropicKey, supabase, userId, resourceCaps } = ctx
+  let priorityFound = []
+  try {
+    const priorityText = await callAnthropic(
+      anthropicKey,
+      buildPriorityDiscoveryPrompt(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }),
+      { supabase, maxTokens: PRIORITY_DISCOVERY_MAX_TOKENS, maxUses: PRIORITY_DISCOVERY_MAX_USES, userId, anthropicCaps: resourceCaps.anthropicTokens },
+    )
+    const { learned: priorityLearned, rest } = splitLearnedEntries(extractJson(priorityText))
+    // Fire-and-forget, same as this round's own learned-discoveries write —
+    // Annie's research memory, no bearing on this customer's own signals.
+    if (priorityLearned.length) recordLearnedDiscoveries(supabase, priorityLearned).catch(() => {})
+    priorityFound = rest
+  } catch (err) {
+    console.log('[scan-now] priority discovery call failed for', userId, '- continuing with the rest of this scan:', err.message)
+  }
+  if (!priorityFound.some(s => s.entryType === 'live_job')) {
+    const fallback = pickLiveJobEntryFromLeads(theirStackLeads, adzunaLeads, existingKeys)
+    if (fallback) priorityFound.push(fallback)
+  }
+  return priorityFound
+}
+
 // 2026-08-24 Task 2 (refactor, no behavior change): the default handler
 // below used to run its research phase (parallel sector-group calls plus
 // the optional broaden pass) and its enrich-and-write phase inline, as part
@@ -440,35 +479,27 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   // gets LESS than it would have gotten today.
   const { data: existingRows } = await supabase.from('intelligence_signals').select('dedup_key').eq('user_id', userId)
   const existingKeys = new Set((existingRows || []).map(r => r.dedup_key))
-  const poolMatches = await fetchSignalPoolMatches(supabase, ob, existingKeys, tierConfig.feedSignalTarget)
-  let poolPersonalized = []
-  if (poolMatches.length) {
-    const reserved = await reserveAnthropicTokens(supabase, userId, POOL_PERSONALIZE_MAX_TOKENS, resourceCaps.anthropicTokens)
-    if (reserved) {
-      poolPersonalized = (await personalizePoolHits(anthropicKey, poolMatches, ob)).map(e => ({ ...e, fromPool: true }))
-      if (poolPersonalized.length) {
-        console.log(`[scan-now] signal pool contributed ${poolPersonalized.length} pre-verified signal(s) for`, userId, '- skipping fresh discovery for those')
-      }
-    } else {
-      console.log('[scan-now] Anthropic daily token cap reached — skipping pool personalization for', userId, ', falling back to fresh discovery only')
-    }
-  }
-  if (poolPersonalized.length >= tierConfig.feedSignalTarget) {
-    const capped = dropGenericHiringWhereLiveJobsExist(poolPersonalized).slice(0, MAX_TOTAL_SIGNALS)
-    return { groups: [ob.sectors || []], capped, broadened: false, broadenPreview: null, noAdzunaCoverage, poolContribution: poolPersonalized.length }
-  }
 
-  // Fetched once per scan, reused across every sector-group call and the
-  // broaden pass below — see getLearnedSources's own header for why this
-  // is a single shared, cross-account table rather than a per-call lookup.
+  // 2026-09-02: fetched unconditionally now, up front — the pool-full early
+  // return below, the ordinary full-discovery path further down, AND the new
+  // priority-discovery pass (runPriorityDiscovery, above) all need the same
+  // leads/learned-sources/watchlist. Previously these were only fetched
+  // after the pool-full early return, which is exactly why that branch used
+  // to skip Adzuna/TheirStack entirely (see pickLiveJobEntryFromLeads's own
+  // header in scanShared.js for the real incident this closes). Full-profile
+  // (ob.sectors, not narrowed to one sector group) — the per-sector-group
+  // calls further down still do their own narrower discoverAdzunaJobs call
+  // for their own prompt; this is a separate, whole-profile fetch.
+  const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
+  // Fetched once per scan, reused across every sector-group call, the
+  // broaden pass, and the priority-discovery pass below — see
+  // getLearnedSources's own header for why this is a single shared,
+  // cross-account table rather than a per-call lookup.
   const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
   // Same "fetch once, reuse across every call" shape as `learned` above —
   // see getCustomerWatchlistCompanies's own header for why this is
   // personal-to-this-account rather than shared.
   const watchlist = await getCustomerWatchlistCompanies(supabase, ob)
-  const learnedEntries = []
-
-  const groups = chunkSectors(ob.sectors, MAX_SECTOR_GROUPS)
   // 2026-08-31 audit fix: fetched ONCE here, reused across every sector-group
   // call below — same "fetch once, reuse across groups" shape as
   // `learned`/`watchlist` just above, and matches how the daily cron
@@ -484,6 +515,38 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   // instead of once per narrower group — this just brings scan-now's
   // TheirStack cost in line with what a routine daily scan already costs.
   const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, userId, resourceCaps.theirStack)
+
+  const poolMatches = await fetchSignalPoolMatches(supabase, ob, existingKeys, tierConfig.feedSignalTarget)
+  let poolPersonalized = []
+  if (poolMatches.length) {
+    const reserved = await reserveAnthropicTokens(supabase, userId, POOL_PERSONALIZE_MAX_TOKENS, resourceCaps.anthropicTokens)
+    if (reserved) {
+      poolPersonalized = (await personalizePoolHits(anthropicKey, poolMatches, ob)).map(e => ({ ...e, fromPool: true }))
+      if (poolPersonalized.length) {
+        console.log(`[scan-now] signal pool contributed ${poolPersonalized.length} pre-verified signal(s) for`, userId, '- skipping fresh discovery for those')
+      }
+    } else {
+      console.log('[scan-now] Anthropic daily token cap reached — skipping pool personalization for', userId, ', falling back to fresh discovery only')
+    }
+  }
+  if (poolPersonalized.length >= tierConfig.feedSignalTarget) {
+    // 2026-09-02, Michael: "definitely make live jobs and leadership the
+    // priority. Do the build" — this early return used to only ever attempt
+    // a live_job via the raw-API fallback (discoverGuaranteedLiveJobEntry).
+    // Now also runs the full priority-discovery pass (real AI research, not
+    // just a raw-API pick) so a pool-full account still gets a genuine shot
+    // at a fresh leadership_change too, not only whatever the pool itself
+    // happened to already have. Prepended, not appended, so these always win
+    // a slot instead of being crowded out by the cap.
+    const priorityFound = await runPriorityDiscovery(ob, [], { adzunaLeads, theirStackLeads, learned, watchlist }, existingKeys, { anthropicKey, supabase, userId, resourceCaps })
+    const merged = dropGenericHiringWhereLiveJobsExist([...priorityFound, ...poolPersonalized])
+    const capped = merged.slice(0, MAX_TOTAL_SIGNALS)
+    return { groups: [ob.sectors || []], capped, broadened: false, broadenPreview: null, noAdzunaCoverage, poolContribution: poolPersonalized.length }
+  }
+
+  const learnedEntries = []
+
+  const groups = chunkSectors(ob.sectors, MAX_SECTOR_GROUPS)
   // Runs alongside the sector-group calls below, not after them — additive,
   // same wall-clock cost as adding one more sector group (see
   // runCrossIndustryFunctionPass's own header). Returns null (nothing to
@@ -497,7 +560,12 @@ async function runResearchPhase(ob, tierConfig, ctx) {
       return { sectorGroup: ['cross-industry-by-function'], found: [], rawText: '', error: err.message }
     }
   })()
-  const [sectorGroupResults, crossIndustryResult] = await Promise.all([
+  // 2026-09-02: runs alongside the sector-group calls and the cross-industry
+  // pass, not after them — same "additive, not a serial extra step" shape as
+  // crossIndustryPromise just above. See runPriorityDiscovery's own header
+  // for what this does and why it's unconditional on every round-1 scan.
+  const priorityDiscoveryPromise = runPriorityDiscovery(ob, [], { adzunaLeads, theirStackLeads, learned, watchlist }, existingKeys, { anthropicKey, supabase, userId, resourceCaps })
+  const [sectorGroupResults, crossIndustryResult, priorityFound] = await Promise.all([
     Promise.all(groups.map(async (sectorGroup) => {
       const groupSectors = sectorGroup?.length ? sectorGroup : ob.sectors
       const [apolloLeads, adzunaLeads] = await Promise.all([
@@ -534,6 +602,7 @@ async function runResearchPhase(ob, tierConfig, ctx) {
       }
     })),
     crossIndustryPromise,
+    priorityDiscoveryPromise,
   ])
   if (crossIndustryResult) learnedEntries.push(...(crossIndustryResult.learnedFound || []))
   const groupResults = crossIndustryResult ? [...sectorGroupResults, crossIndustryResult] : sectorGroupResults
@@ -605,6 +674,31 @@ async function runResearchPhase(ob, tierConfig, ctx) {
     console.log(`[scan-now] truncated ${merged.length} genuine signals down to ${capped.length} for`, userId, '(MAX_TOTAL_SIGNALS cap)')
   }
 
+  // 2026-09-02, Michael: "definitely make live jobs and leadership the
+  // priority. Do the build" — appended AFTER the MAX_TOTAL_SIGNALS slice
+  // above, deliberately: that cap exists to bound Apollo enrichment spend on
+  // the ordinary funding/expansion/M&A/hiring sweep, not to let these two
+  // explicitly-prioritized types get crowded out of this account's first
+  // dashboard by whatever the sector-group/broaden passes already filled.
+  // (existingKeys/fuzzy/semantic dedup against this account's actual DB
+  // history all still happen once, downstream, in enrichAndWriteSignals —
+  // this is only deduping against what's already in this round's own list.)
+  let finalCapped = capped
+  if (priorityFound?.length) {
+    const cappedKeys = new Set(capped.map(s => normalizeKey(s.company, s.headline, s.sourceUrl)))
+    const newPriority = priorityFound.filter(s => {
+      if (!s.company || !s.headline) return false
+      const key = normalizeKey(s.company, s.headline, s.sourceUrl)
+      if (cappedKeys.has(key)) return false
+      cappedKeys.add(key)
+      return true
+    })
+    if (newPriority.length) {
+      finalCapped = dropGenericHiringWhereLiveJobsExist([...capped, ...newPriority])
+      console.log(`[scan-now] priority discovery contributed ${newPriority.length} additional signal(s) for`, userId)
+    }
+  }
+
   // Fire-and-forget on purpose (not awaited) — this is Annie's own research
   // memory growing for NEXT time, it has zero bearing on this customer's
   // signals or their first dashboard, so it should never be able to slow
@@ -614,7 +708,7 @@ async function runResearchPhase(ob, tierConfig, ctx) {
     recordLearnedDiscoveries(supabase, learnedEntries).catch(() => {})
   }
 
-  return { groups, capped, broadened, broadenPreview, noAdzunaCoverage, poolContribution: poolPersonalized.length }
+  return { groups, capped: finalCapped, broadened, broadenPreview, noAdzunaCoverage, poolContribution: poolPersonalized.length }
 }
 
 // Real, current progress for this account against its tier's targets —

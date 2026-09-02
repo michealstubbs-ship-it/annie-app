@@ -29,14 +29,19 @@ beforeEach(() => {
 })
 
 describe('listActiveSignals', () => {
-  it('is personal to the caller (explicit user_id filter), excludes actioned and live_job rows, newest first, capped at 200', async () => {
+  it('is personal to the caller (explicit user_id filter), excludes actioned rows, newest first, capped at 200 — live_job rows now included (2026-09-02)', async () => {
     builder = makeBuilder({ data: [{ id: 's1' }], error: null })
     fromMock.mockReturnValue(builder)
     const result = await listActiveSignals('user_1')
     expect(fromMock).toHaveBeenCalledWith('intelligence_signals')
     expect(builder.eq).toHaveBeenCalledWith('user_id', 'user_1')
     expect(builder.neq).toHaveBeenCalledWith('status', 'actioned')
-    expect(builder.neq).toHaveBeenCalledWith('signal_type', 'live_job')
+    // live_job used to be excluded here (Today's Actions only) — Michael's
+    // direction reversed that, live_job now flows through the Feed like any
+    // other signal_type (see listActiveSignals' own header for the full
+    // reasoning), so `neq('signal_type', 'live_job')` must NOT be called.
+    expect(builder.neq).not.toHaveBeenCalledWith('signal_type', 'live_job')
+    expect(builder.neq).toHaveBeenCalledTimes(1)
     expect(builder.order).toHaveBeenCalledWith('found_at', { ascending: false })
     expect(builder.limit).toHaveBeenCalledWith(200)
     expect(result).toEqual([{ id: 's1' }])

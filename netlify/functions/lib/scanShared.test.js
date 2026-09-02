@@ -14,7 +14,8 @@ import {
   buildExistingByCompanyType, findSemanticDedupTargets, filterSemanticDuplicates,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, looksLikeStaffingAgencyName, isStaffingAgencyIndustry, verifyContactsAcrossFunctions, resolveContactForSignal, createTimeoutFetch,
-  mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs, discoverHotCompanies,
+  mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs, discoverGuaranteedLiveJobEntry, discoverHotCompanies,
+  pickLiveJobEntryFromLeads, isMegaEmployer, MEGA_EMPLOYER_HEADCOUNT_THRESHOLD, buildPriorityDiscoveryPrompt,
   looksTruncatedByTokenLimit, getLearnedSources, recordLearnedDiscoveries, isJunkLearnedSourceValue,
   normalizeLearnedLocation,
   writeToSignalPool, fetchSignalPoolMatches, personalizePoolHits,
@@ -657,6 +658,110 @@ describe('discoverTheirStackJobs', () => {
   })
 })
 
+// 2026-09-02 audit fix, real report ("why has Annie not found one live job —
+// this is always a gap"): both scan files used to skip discoverAdzunaJobs/
+// discoverTheirStackJobs entirely whenever the cross-customer signal pool
+// alone covered a run's quota — the only real live_job source for UAE/GCC,
+// silently starved for however many days the pool kept winning. This is the
+// guaranteed-attempt fallback called from that branch.
+describe('discoverGuaranteedLiveJobEntry', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('returns a deterministic live_job entry built from a real TheirStack lead, no AI call needed', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ job_title: 'Head of Product', company: 'Skyro', location: 'Dubai', url: 'https://www.naukrigulf.com/head-of-product-jobs-in-dubai-jid-1', salary_string: '15000-20000 AED' }] }),
+    }))
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: 'ok', error: null }) }
+    const ob = { user_id: 'u1', sectors: ['Financial Services'], functions: [], locations: ['UAE / GCC'] }
+    const entry = await discoverGuaranteedLiveJobEntry('', '', 'ts-key', ob, new Set(), supabase)
+    expect(entry).toMatchObject({
+      entryType: 'live_job',
+      signalType: 'live_job',
+      company: 'Skyro',
+      sourceUrl: 'https://www.naukrigulf.com/head-of-product-jobs-in-dubai-jid-1',
+      sourceLabel: 'naukrigulf.com',
+      titleKeywords: ['Head of Product'],
+    })
+    expect(entry.headline).toContain('Head of Product')
+    expect(entry.headline).toContain('Skyro')
+    expect(entry.whyItMatters).toContain('Dubai')
+  })
+
+  it('falls back to an Adzuna lead when TheirStack has nothing', async () => {
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      if (url.includes('theirstack.com')) return Promise.resolve({ ok: true, json: async () => ({ data: [] }) })
+      return Promise.resolve({ ok: true, json: async () => ({ results: [{ title: 'Finance Director', company: { display_name: 'Acme Ltd' }, location: { display_name: 'London' }, redirect_url: 'https://www.adzuna.co.uk/jobs/1' }] }) })
+    }))
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: 'ok', error: null }) }
+    const ob = { user_id: 'u1', sectors: ['Financial Services'], functions: [], locations: ['United Kingdom'] }
+    const entry = await discoverGuaranteedLiveJobEntry('adz-id', 'adz-key', 'ts-key', ob, new Set(), supabase)
+    expect(entry).toMatchObject({ entryType: 'live_job', company: 'Acme Ltd', sourceUrl: 'https://www.adzuna.co.uk/jobs/1' })
+  })
+
+  it('skips a lead whose dedup key this customer already has on file, rather than re-adding it', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ job_title: 'Head of Product', company: 'Skyro', url: 'https://www.naukrigulf.com/head-of-product-jobs-in-dubai-jid-1' }] }),
+    }))
+    const supabase = { rpc: vi.fn().mockResolvedValue({ data: 'ok', error: null }) }
+    const ob = { user_id: 'u1', sectors: [], functions: [], locations: ['UAE / GCC'] }
+    const existingKeys = new Set([normalizeKey('Skyro', 'Head of Product', 'https://www.naukrigulf.com/head-of-product-jobs-in-dubai-jid-1')])
+    expect(await discoverGuaranteedLiveJobEntry('', '', 'ts-key', ob, existingKeys, supabase)).toBeNull()
+  })
+
+  it('returns null when neither source has anything real (missing title/company/url) — never throws', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [] }) }))
+    const ob = { user_id: 'u1', sectors: [], functions: [], locations: ['UAE / GCC'] }
+    expect(await discoverGuaranteedLiveJobEntry('', '', '', ob, new Set(), { rpc: vi.fn() })).toBeNull()
+  })
+})
+
+// 2026-09-02: pure, no-fetch successor pulled out of discoverGuaranteedLiveJobEntry
+// above — see its own header in scanShared.js. Both scan files now fetch
+// leads once, unconditionally, and reuse them here directly (the priority-
+// discovery pass's own live_job fallback), rather than each caller
+// re-fetching via discoverGuaranteedLiveJobEntry.
+describe('pickLiveJobEntryFromLeads', () => {
+  it('prefers a TheirStack lead over an Adzuna one when both have something real', () => {
+    const entry = pickLiveJobEntryFromLeads(
+      [{ title: 'Head of Product', company: 'Skyro', url: 'https://www.naukrigulf.com/head-of-product-1', location: 'Dubai' }],
+      [{ title: 'Finance Director', company: 'Acme Ltd', url: 'https://www.adzuna.co.uk/jobs/1' }],
+      new Set(),
+    )
+    expect(entry).toMatchObject({ entryType: 'live_job', signalType: 'live_job', company: 'Skyro', sourceUrl: 'https://www.naukrigulf.com/head-of-product-1', sourceLabel: 'naukrigulf.com' })
+  })
+
+  it('falls back to an Adzuna lead when TheirStack is empty', () => {
+    const entry = pickLiveJobEntryFromLeads([], [{ title: 'Finance Director', company: 'Acme Ltd', url: 'https://www.adzuna.co.uk/jobs/1' }], new Set())
+    expect(entry).toMatchObject({ company: 'Acme Ltd', sourceUrl: 'https://www.adzuna.co.uk/jobs/1' })
+  })
+
+  it('skips a lead this customer already has on file and moves to the next real one', () => {
+    const existingKeys = new Set([normalizeKey('Skyro', 'Head of Product', 'https://www.naukrigulf.com/head-of-product-1')])
+    const entry = pickLiveJobEntryFromLeads(
+      [{ title: 'Head of Product', company: 'Skyro', url: 'https://www.naukrigulf.com/head-of-product-1' }],
+      [{ title: 'Finance Director', company: 'Acme Ltd', url: 'https://www.adzuna.co.uk/jobs/1' }],
+      existingKeys,
+    )
+    expect(entry).toMatchObject({ company: 'Acme Ltd' })
+  })
+
+  it('skips a lead missing title, company, or url rather than returning a broken entry', () => {
+    const entry = pickLiveJobEntryFromLeads(
+      [{ title: '', company: 'Skyro', url: 'https://x.com/1' }, { title: 'Finance Director', company: '', url: 'https://x.com/2' }],
+      [{ title: 'Ops Manager', company: 'Acme Ltd', url: '' }],
+      new Set(),
+    )
+    expect(entry).toBeNull()
+  })
+
+  it('returns null when both lead lists are empty — never throws', () => {
+    expect(pickLiveJobEntryFromLeads([], [], new Set())).toBeNull()
+    expect(pickLiveJobEntryFromLeads(undefined, undefined, new Set())).toBeNull()
+  })
+})
+
 // 2026-09-01 audit fix: found while checking how Sector and Function actually
 // scope the live market — this call's own q_organization_job_titles used to
 // be built from splitToKeywords(functions), the exact category error the
@@ -1206,6 +1311,75 @@ describe('buildEnrichedSignalRow', () => {
     })
   })
 
+  // 2026-09-02, Michael: "you can't say google is hiring this role spec to
+  // them" — a mega-employer runs hiring almost entirely in-house, so a live
+  // opening there isn't a real lead for an external recruiter even though
+  // it's the easiest one to find. Headcount-based (Apollo's own
+  // estimated_num_employees, captured/cached by enrichCompany), not a
+  // hand-maintained company list — see isMegaEmployer's own header.
+  describe('drops a live_job entry at a mega-employer (headcount-based, no company list)', () => {
+    it('drops it when Apollo reports a headcount at/above MEGA_EMPLOYER_HEADCOUNT_THRESHOLD', async () => {
+      vi.stubGlobal('fetch', vi.fn(async (url) => {
+        if (url.includes('mixed_companies/search')) {
+          return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Global MegaCorp', industry: 'technology', primary_domain: 'megacorp.com', estimated_num_employees: MEGA_EMPLOYER_HEADCOUNT_THRESHOLD }] }) }
+        }
+        return { ok: true, text: async () => '' }
+      }))
+      const row = await buildEnrichedSignalRow(
+        { entryType: 'live_job', signalType: 'hiring_activity', company: 'Global MegaCorp', headline: 'Senior Software Engineer', sourceUrl: 'https://linkedin.com/jobs/view/456' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase: makeTableAwareSupabase(), logPrefix: '[test]' },
+      )
+      expect(row).toBeNull()
+      vi.unstubAllGlobals()
+    })
+
+    it('does not drop a mid-market company below the threshold', async () => {
+      vi.stubGlobal('fetch', vi.fn(async (url) => {
+        if (url.includes('mixed_companies/search')) {
+          return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', industry: 'technology', primary_domain: 'acme.com', estimated_num_employees: 250 }] }) }
+        }
+        return { ok: true, text: async () => '' }
+      }))
+      const row = await buildEnrichedSignalRow(
+        { entryType: 'live_job', signalType: 'hiring_activity', company: 'Acme Ltd', headline: 'Senior Software Engineer', sourceUrl: 'https://linkedin.com/jobs/view/789' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase: makeTableAwareSupabase(), logPrefix: '[test]' },
+      )
+      expect(row).not.toBeNull()
+      expect(row.signal_type).toBe('live_job')
+      vi.unstubAllGlobals()
+    })
+
+    it('only applies to live_job entries — an ordinary signal about a mega-employer is not dropped', async () => {
+      vi.stubGlobal('fetch', vi.fn(async (url) => {
+        if (url.includes('mixed_companies/search')) {
+          return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Global MegaCorp', industry: 'technology', primary_domain: 'megacorp.com', estimated_num_employees: 50000 }] }) }
+        }
+        return { ok: true, text: async () => '' }
+      }))
+      const row = await buildEnrichedSignalRow(
+        { entryType: 'signal', signalType: 'expansion', company: 'Global MegaCorp', headline: 'Opens new regional HQ' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase: makeTableAwareSupabase(), logPrefix: '[test]' },
+      )
+      expect(row).not.toBeNull()
+      expect(row.company_name).toBe('Global MegaCorp')
+      vi.unstubAllGlobals()
+    })
+
+    it('does not drop when Apollo has no headcount estimate at all (unmatched or missing field)', async () => {
+      vi.stubGlobal('fetch', vi.fn(async (url) => {
+        if (url.includes('mixed_companies/search')) return { ok: true, json: async () => ({ organizations: [] }) }
+        if (url.includes('autocomplete.clearbit.com')) return { ok: true, json: async () => ([]) }
+        return { ok: true, text: async () => '' }
+      }))
+      const row = await buildEnrichedSignalRow(
+        { entryType: 'live_job', signalType: 'hiring_activity', company: 'Unknown Startup', headline: 'Senior Software Engineer', sourceUrl: 'https://linkedin.com/jobs/view/999' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase: makeTableAwareSupabase(), logPrefix: '[test]' },
+      )
+      expect(row).not.toBeNull()
+      vi.unstubAllGlobals()
+    })
+  })
+
   it('resolves signal_type through resolveSignalType for an ordinary signal entry', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => '' }))
     const supabase = makeCacheSupabase({ matched: false, contact_verified: false, contact_checked_at: new Date().toISOString() })
@@ -1625,6 +1799,73 @@ describe('enrichCompany — logo resolution fallback chain', () => {
   })
 })
 
+// 2026-09-02, Michael: powers the mega-employer live_job filter
+// (MEGA_EMPLOYER_HEADCOUNT_THRESHOLD/isMegaEmployer above) — Apollo's own
+// estimated_num_employees, already fetched on the same companies/search
+// call enrichCompany always makes, just not previously captured or cached.
+describe('enrichCompany — employee_count capture and cache round-trip (2026-09-02)', () => {
+  it("captures Apollo's estimated_num_employees as `employees` on a fresh (uncached) lookup", async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) {
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Global MegaCorp', primary_domain: 'megacorp.com', estimated_num_employees: 25000 }] }) }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    const result = await enrichCompany('apollo-key', 'Global MegaCorp', supabase)
+    expect(result.employees).toBe(25000)
+    vi.unstubAllGlobals()
+  })
+
+  it('writes employee_count into the company_enrichment cache upsert so a later lookup can read it back with no new network call', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) {
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', primary_domain: 'acme.com', estimated_num_employees: 400 }] }) }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    await enrichCompany('apollo-key', 'Acme Ltd', supabase)
+    vi.unstubAllGlobals()
+
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const cachedResult = await enrichCompany('apollo-key', 'Acme Ltd', supabase)
+    expect(cachedResult.employees).toBe(400)
+    expect(fetchSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it('returns employees: null rather than throwing when Apollo gives no headcount estimate at all', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) {
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', primary_domain: 'acme.com' }] }) }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
+    const result = await enrichCompany('apollo-key', 'Acme Ltd', supabase)
+    expect(result.employees).toBeNull()
+    vi.unstubAllGlobals()
+  })
+
+  it('a pre-existing cache row written before this column existed reads back employees: null, not an error', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const supabase = makeTableAwareSupabase()
+    await supabase.from('company_enrichment').upsert({
+      company_name_key: 'legacy co', company_name: 'Legacy Co',
+      domain: 'legacy.com', matched: true, logo_url: null, apollo_org_id: 'org_9',
+      // deliberately no employee_count field — simulates a row written
+      // before the 2026-09-02 migration added the column.
+    })
+    const result = await enrichCompany('apollo-key', 'Legacy Co', supabase)
+    expect(result.employees).toBeNull()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+})
+
 // 2026-08-25 — a real, customer-facing bug: a signal genuinely about
 // "Stitch" (a small GCC fintech) got Apollo contact data for "Stitch Fix"
 // (an unrelated, much larger US public company) because enrichCompany used
@@ -1945,6 +2186,30 @@ describe('isStaffingAgencyIndustry (live_job agency-posting backstop)', () => {
     expect(isStaffingAgencyIndustry('')).toBe(false)
     expect(isStaffingAgencyIndustry(null)).toBe(false)
     expect(isStaffingAgencyIndustry(undefined)).toBe(false)
+  })
+})
+
+// 2026-09-02, Michael: "you can't say google is hiring this role spec to
+// them" — a single global numeric threshold on Apollo's own headcount
+// estimate, not a hand-maintained per-sector/market company list (Michael's
+// own words: "I can't give you a list of companies, that is impossible").
+describe('isMegaEmployer (headcount-based mega-employer filter)', () => {
+  it('flags a company at or above MEGA_EMPLOYER_HEADCOUNT_THRESHOLD', () => {
+    expect(isMegaEmployer(MEGA_EMPLOYER_HEADCOUNT_THRESHOLD)).toBe(true)
+    expect(isMegaEmployer(MEGA_EMPLOYER_HEADCOUNT_THRESHOLD + 50000)).toBe(true)
+  })
+
+  it('does not flag a company below the threshold', () => {
+    expect(isMegaEmployer(MEGA_EMPLOYER_HEADCOUNT_THRESHOLD - 1)).toBe(false)
+    expect(isMegaEmployer(250)).toBe(false)
+    expect(isMegaEmployer(0)).toBe(false)
+  })
+
+  it('treats a missing/non-numeric headcount as "not a known mega-employer", never as an error', () => {
+    expect(isMegaEmployer(null)).toBe(false)
+    expect(isMegaEmployer(undefined)).toBe(false)
+    expect(isMegaEmployer('10000')).toBe(false)
+    expect(isMegaEmployer(NaN)).toBe(false)
   })
 })
 
@@ -2857,6 +3122,71 @@ describe('buildCustomerWatchlistHint', () => {
     expect(hint).toContain('Beta Industries')
     expect(hint).toContain('competitors')
     expect(hint).toContain('In addition to the sector/location/function-driven search above')
+  })
+})
+
+// 2026-09-02, Michael: "definitely make live jobs and leadership the
+// priority. Do the build" — the dedicated, narrow priority-discovery prompt.
+// Content assertions only (same style as buildScanPrompt's own tests
+// elsewhere) — the actual API call/parsing is exercised via
+// intelligence-scan-background.test.js/scan-now-background.test.js's own
+// runPriorityDiscovery coverage, not here.
+describe('buildPriorityDiscoveryPrompt', () => {
+  const ob = { sectors: ['Financial Services'], functions: ['Finance & Accounting'], locations: ['UAE / GCC'], tone: 'professional' }
+
+  it('restricts scope to only live_job and leadership_change, explicitly excluding the types the main scan already covers', () => {
+    const prompt = buildPriorityDiscoveryPrompt(ob, [])
+    expect(prompt).toContain('Do NOT report funding, expansion, M&A, regulatory news, or general commentary here')
+    expect(prompt).toContain('at most one live_job, at most one leadership_change')
+  })
+
+  it('caps the ask at one of each, never asking to pad either one out', () => {
+    const prompt = buildPriorityDiscoveryPrompt(ob, [])
+    expect(prompt).toContain('Return up to ONE genuinely good live_job entry AND up to ONE genuinely good leadership_change entry')
+    expect(prompt).toContain('never pad either one out just to return something')
+  })
+
+  it('includes the mega-employer bias instruction with the in-house-recruiting reasoning', () => {
+    const prompt = buildPriorityDiscoveryPrompt(ob, [])
+    expect(prompt).toContain('Bias hard against household-name, mega-employer companies')
+    expect(prompt).toContain('runs hiring almost entirely in-house')
+  })
+
+  it('folds in Adzuna/TheirStack leads as hints when provided', () => {
+    const prompt = buildPriorityDiscoveryPrompt(ob, [], {
+      adzunaLeads: [{ title: 'Finance Director', company: 'Acme Ltd', url: 'https://www.adzuna.co.uk/jobs/1' }],
+      theirStackLeads: [{ title: 'Head of Product', company: 'Skyro', url: 'https://www.naukrigulf.com/head-of-product-1' }],
+    })
+    expect(prompt).toContain('Finance Director')
+    expect(prompt).toContain('Acme Ltd')
+    expect(prompt).toContain('Head of Product')
+    expect(prompt).toContain('Skyro')
+    expect(prompt).toContain("TheirStack (covers UAE/GCC, where Adzuna has no coverage)")
+  })
+
+  it('says nothing about leads at all when none are passed, rather than an empty/broken sentence', () => {
+    const prompt = buildPriorityDiscoveryPrompt(ob, [])
+    expect(prompt).not.toContain('undefined')
+  })
+
+  it('defines the full live_job and leadership_change field shapes the rest of the pipeline expects', () => {
+    const prompt = buildPriorityDiscoveryPrompt(ob, [])
+    expect(prompt).toContain('entryType: "live_job"')
+    expect(prompt).toContain('entryType: "signal"')
+    expect(prompt).toContain('signalType: "leadership_change"')
+    expect(prompt).toContain('appointedName: the full name of the person actually appointed')
+    expect(prompt).toContain('candidateProfile')
+  })
+
+  it('lists recently-surfaced companies as still worth a fresh check, not something to avoid entirely', () => {
+    const prompt = buildPriorityDiscoveryPrompt(ob, ['Acme Ltd', 'Beta Industries'])
+    expect(prompt).toContain('Acme Ltd, Beta Industries')
+    expect(prompt).toContain('still worth checking for a fresh live opening or a fresh appointment')
+  })
+
+  it('accepts an introMessageField override instead of importing a shared instruction (avoids new cross-file duplication)', () => {
+    const prompt = buildPriorityDiscoveryPrompt(ob, [], { introMessageField: 'CUSTOM_INTRO_INSTRUCTION' })
+    expect(prompt).toContain('CUSTOM_INTRO_INSTRUCTION')
   })
 })
 

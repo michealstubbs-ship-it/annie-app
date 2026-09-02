@@ -218,6 +218,28 @@ export function looksLikeJobPostingUrl(url) {
 // moved there so sourcedPool.js/relationshipPool.js can apply the identical
 // check as a read-time backstop, not just at write time here.
 
+// 2026-09-02, Michael: a live_job entry at a mega-employer (Google, ADNOC,
+// Emirates — thousands of employees) isn't a real BD lead even though it's
+// real and easy to find: a company that size staffs almost entirely
+// through its own in-house TA org and essentially never engages an
+// external agency recruiter for a role like this, so surfacing it wastes
+// the recruiter's attention on a contact with close to zero real chance of
+// leading to a placement. Michael was explicit he can't hand-maintain a
+// per-market list of which names to exclude (unlike the staffing-agency
+// check above, "who's a giant" has no fixed vocabulary to pattern-match
+// on) — so this is a numeric proxy instead: Apollo's own headcount
+// estimate, already fetched on the exact same companies/search call
+// enrichCompany makes for every entry (see that function's own header),
+// just not previously captured. A single global threshold rather than a
+// per-sector one, on purpose — matches the "no upkeep" requirement, and
+// "runs hiring entirely in-house" is roughly the same headcount
+// regardless of which sector the giant is in.
+export const MEGA_EMPLOYER_HEADCOUNT_THRESHOLD = 10000
+
+export function isMegaEmployer(employeeCount) {
+  return typeof employeeCount === 'number' && employeeCount >= MEGA_EMPLOYER_HEADCOUNT_THRESHOLD
+}
+
 // Best-effort ops alert for the one failure mode retries can't fix: every
 // customer in a run coming back with zero new signals, which almost always
 // means a systemic problem (a suspended key, an outage) rather than every
@@ -1168,6 +1190,81 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
   }
 }
 
+// 2026-09-02 audit fix, real report ("why has Annie not found one live
+// job — this is always a gap"): both scan files skip fresh discovery
+// ENTIRELY — including this exact call and discoverAdzunaJobs above —
+// whenever the cross-customer signal pool alone already covers a run's
+// whole quota (see the "poolPersonalized.length >= target" branch in
+// intelligence-scan-background.js/scan-now-background.js). That's the
+// right call for funding/expansion/leadership_change, which stay relevant
+// to every similarly-profiled customer for weeks and so accumulate
+// genuinely in the pool — but a specific open role is exactly the kind of
+// signal the pool structurally can't substitute for: it's too time-
+// sensitive and company-specific to still be sitting in another
+// customer's contribution days later, and live_job pool matches
+// additionally require a function overlap (see fetchSignalPoolMatches),
+// narrowing them further. Verified live against Michael's own account via
+// theirstack_usage: zero credits spent on either of the two most recent
+// days, both days the pool alone filled his quota — two straight days of
+// zero live_job attempts, not zero live_job results.
+//
+// Called only from that pool-satisfied branch, to guarantee at least one
+// genuine attempt every run regardless of pool fill. Effectively no added
+// cost: Adzuna is free, TheirStack spends from the same daily budget that
+// sat completely unused those two days (this doesn't raise any cap). No
+// incremental Anthropic call either — a real job lead's own fields
+// (title, company, url, salary) are already exactly the grounded facts a
+// signal row needs, so this builds the row deterministically; the normal
+// buildEnrichedSignalRow staffing-agency/job-posting-shape checks and
+// Apollo contact resolution then apply exactly as they would for any
+// AI-found or Adzuna-found live_job entry — no special-casing downstream.
+// Returns at most one entry (the first genuinely new lead found, checked
+// against this customer's own dedup keys) — this guarantees an attempt,
+// it doesn't try to replace the richer multi-lead path the "pool doesn't
+// cover quota" branch already runs.
+// Pure — no fetching, so a caller that already has today's Adzuna/
+// TheirStack leads in hand (the ordinary case now that both scan files
+// fetch them unconditionally every run, not just when this fallback is
+// needed — see the "priority discovery" pass in intelligence-scan-
+// background.js/scan-now-background.js) can reuse them here instead of
+// spending a second, duplicate API call just to get a pickable entry.
+// Still exported and used directly by discoverGuaranteedLiveJobEntry below
+// for any caller that doesn't already have leads on hand.
+export function pickLiveJobEntryFromLeads(theirStackLeads, adzunaLeads, existingKeys) {
+  for (const lead of [...(theirStackLeads || []), ...(adzunaLeads || [])]) {
+    if (!lead.title || !lead.company || !lead.url) continue
+    if (existingKeys?.has(normalizeKey(lead.company, lead.title, lead.url))) continue
+    let sourceLabel = ''
+    try { sourceLabel = new URL(lead.url).hostname.replace(/^www\./, '') } catch { /* keep '' */ }
+    return {
+      entryType: 'live_job',
+      company: lead.company,
+      signalType: 'live_job',
+      headline: `${lead.title} — live opening at ${lead.company}`,
+      whyItMatters: `A genuine, currently open ${lead.title} posting${lead.location ? ` in ${lead.location}` : ''}${lead.salary ? `, salary ${lead.salary}` : ''} — a real, time-sensitive hiring need right now.`,
+      sourceUrl: lead.url,
+      sourceLabel,
+      eventDate: null,
+      titleKeywords: [lead.title],
+      whoToApproach: '',
+      introMessage: '',
+      candidateAngle: '',
+      benchStrengthAngle: '',
+      candidateProfile: null,
+      likelyRoles: [],
+    }
+  }
+  return null
+}
+
+export async function discoverGuaranteedLiveJobEntry(adzunaAppId, adzunaAppKey, theirStackApiKey, ob, existingKeys, supabase, caps = {}) {
+  const [adzunaLeads, theirStackLeads] = await Promise.all([
+    discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }),
+    discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, ob.user_id, caps),
+  ])
+  return pickLiveJobEntryFromLeads(theirStackLeads, adzunaLeads, existingKeys)
+}
+
 // Apollo tracks real job postings directly, it isn't guessing from news.
 // Querying it BEFORE the AI call gives the AI a head start of real,
 // independently-confirmed leads rather than relying purely on whatever
@@ -1727,7 +1824,7 @@ export async function enrichCompany(apolloKey, company, supabase, locationHints 
       // cached got re-enriched (and re-charged an Apollo credit) anyway.
       const { data: cached, error } = await supabase
         .from('company_enrichment')
-        .select('domain, industry, city, state, country, logo_url, matched, apollo_org_id')
+        .select('domain, industry, city, state, country, logo_url, matched, apollo_org_id, employee_count')
         .eq('company_name_key', cacheKey)
         .maybeSingle()
       if (error) console.error(`[scanShared] company_enrichment cache lookup failed for "${company}":`, error.message)
@@ -1747,6 +1844,15 @@ export async function enrichCompany(apolloKey, company, supabase, locationHints 
           domain: cached.domain, industry: cached.industry, city: cached.city, state: cached.state,
           country: cached.country, logo_url: cached.logo_url, apolloOrgId: cached.apollo_org_id || null,
           matched: cached.matched,
+          // 2026-09-02: added alongside the mega-employer live_job filter —
+          // see MEGA_EMPLOYER_HEADCOUNT_THRESHOLD's own header. A cache row
+          // written before this column existed just carries null here,
+          // same as apollo_org_id's own backfill-on-next-lookup behavior,
+          // except employee_count isn't required to trust the rest of the
+          // cached row (unlike apollo_org_id above), so this doesn't force
+          // a re-lookup — it's backfilled naturally next time this
+          // company's cache row is written for any other reason.
+          employees: cached.employee_count ?? null,
         }
       }
     } catch (err) {
@@ -1793,6 +1899,12 @@ export async function enrichCompany(apolloKey, company, supabase, locationHints 
             // spends also resolves people search, instead of a second,
             // separate lookup for the same company.
             apolloOrgId: org.id || org.organization_id || null,
+            // 2026-09-02: captured for the mega-employer live_job filter
+            // (see MEGA_EMPLOYER_HEADCOUNT_THRESHOLD's own header) — Apollo
+            // already returns this on the exact same companies/search call
+            // discoverHotCompanies already reads it from elsewhere in this
+            // file, so this is data already being fetched, not a new call.
+            employees: org.estimated_num_employees ?? null,
           }
         }
       }
@@ -1826,6 +1938,7 @@ export async function enrichCompany(apolloKey, company, supabase, locationHints 
         country: result?.country || null,
         logo_url: logoUrl,
         apollo_org_id: result?.apolloOrgId || null,
+        employee_count: result?.employees ?? null,
         matched: !!result,
         enriched_at: new Date().toISOString(),
       }, { onConflict: 'company_name_key' })
@@ -1850,6 +1963,7 @@ export async function enrichCompany(apolloKey, company, supabase, locationHints 
     country: result?.country || null,
     logo_url: logoUrl,
     apolloOrgId: result?.apolloOrgId || null,
+    employees: result?.employees ?? null,
     matched: !!result,
   }
 }
@@ -2053,6 +2167,17 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
   // an extra credit finding a "contact" who'd just be a rival recruiter.
   if (isLiveJob && isStaffingAgencyIndustry(companyInfo?.industry)) {
     console.log(`${logPrefix} live_job entry for "${s.company}" dropped — Apollo classifies this company's industry as "${companyInfo.industry}" (staffing/recruiting), not a genuine hiring employer`)
+    return null
+  }
+
+  // 2026-09-02: see MEGA_EMPLOYER_HEADCOUNT_THRESHOLD's own header — a
+  // household-name giant runs hiring entirely in-house, so a live opening
+  // there has close to zero real chance of turning into a placement for an
+  // external recruiter, real and easy-to-find as it is. Checked here (same
+  // spot as the staffing-agency industry check just above) so a mega-
+  // employer doesn't cost an extra Apollo contact-lookup credit either.
+  if (isLiveJob && isMegaEmployer(companyInfo?.employees)) {
+    console.log(`${logPrefix} live_job entry for "${s.company}" dropped — Apollo estimates ${companyInfo.employees} employees, at or above the mega-employer threshold (${MEGA_EMPLOYER_HEADCOUNT_THRESHOLD}); an external recruiter has essentially no real shot there`)
     return null
   }
 
@@ -3380,4 +3505,113 @@ export async function getCustomerWatchlistCompanies(supabase, ob, limit = WATCHL
 export function buildCustomerWatchlistHint(companies) {
   if (!companies?.length) return ''
   return `\nThis recruiter has personally added the following companies to their own CRM — as a client, a prospect, or as a candidate's current employer, either one at a time or via a bulk CSV/LinkedIn import: ${companies.join(', ')}. In addition to the sector/location/function-driven search above, specifically check each of these companies, AND any genuine, real direct competitors of theirs that you know to be active in the same space, for the same kind of BD signal (funding, expansion, leadership change, live hiring, M&A) — even one that might not otherwise have surfaced from a general search. Only name a competitor you're confident is real and genuinely comparable, never a guess.\n`
+}
+
+// Deliberately smaller than POOL_PERSONALIZE_MAX_TOKENS/the main scan's own
+// budget above — this prompt asks for at most 3 entries total (1 live_job, 1
+// leadership_change, plus any incidental annie_learned finds) against a
+// narrow, single-purpose brief, not the main scan's "up to 5-8, mixed
+// types" sweep. maxUses (web-search round-trips) similarly scaled down: a
+// handful of targeted lookups per type, not the wider budget a general
+// sweep needs to cover funding/expansion/M&A/regulatory/live_job/leadership
+// all in one call.
+export const PRIORITY_DISCOVERY_MAX_TOKENS = 2000
+export const PRIORITY_DISCOVERY_MAX_USES = 6
+
+// 2026-09-02, Michael: real report — "why has Annie not found one live
+// job" and, separately, "why is leadership so thin". Root cause for both,
+// confirmed live: buildScanPrompt's one combined call treats funding,
+// expansion, leadership_change and live_job as equal peers in a single
+// "return up to 5, mixed" sweep, and (for live_job specifically) only ever
+// runs at all when the cross-customer signal pool doesn't already cover
+// the day's quota — see the "priority discovery" call in intelligence-
+// scan-background.js/scan-now-background.js for the fix. Funding and
+// expansion are, in Michael's own words, "the easiest to find" — genuinely
+// abundant, well-covered by ordinary news search and the shared pool — so
+// they don't need a dedicated pass. Live_job and leadership_change are the
+// two he singled out as the actual priority: a live job needs no
+// speculation (a specific person, at a specific company, hiring right
+// now) and a leadership change is one of the highest-intent moments to
+// reach out (someone new is about to evaluate their team) — but neither
+// gets any proactive per-company check today, only whatever a company
+// happens to already have on file from the general sweep's target-firm
+// anchors (funding/expansion's own mechanism, not built for these two).
+//
+// This prompt is deliberately narrow: it asks for AT MOST ONE live_job
+// entry and AT MOST ONE leadership_change entry per call, never both
+// padded to hit a count — called on both of this account's two daily
+// scan fires (see MAX_SIGNALS_PER_RUN's own 12-hourly cadence), so "up to
+// 1 per call, twice a day" is what actually delivers Michael's stated
+// target of up to 2 good ones a day for each, without inventing a
+// separate once-a-day rate-limit mechanism to enforce it. Runs
+// unconditionally, every single call, regardless of whether the shared
+// signal pool already covers the rest of that run's quota — see this
+// pass's own caller for why these two are additional to, not competing
+// against, the ordinary per-run cap the rest of buildScanPrompt's output
+// is still subject to.
+export function buildPriorityDiscoveryPrompt(onboarding, recentCompanies, opts = {}) {
+  const functions = onboarding?.functions?.length ? onboarding.functions.join(', ') : null
+  return `You are Annie, an expert BD researcher for a recruitment firm.
+Sectors: ${onboarding?.sectors?.join(', ') || 'General recruitment'}.
+Functions this recruiter places candidates into: ${functions || 'All functions, no specific focus given'}.
+Markets: ${onboarding?.locations?.join(', ') || 'UK and international'}.
+Communication tone: ${onboarding?.tone || 'professional'}.
+${onboarding?.writing_style ? `The recruiter's real writing style, follow this closely when writing introMessage/candidateAngle/benchStrengthAngle:\n${onboarding.writing_style}\n` : ''}
+This is a dedicated, focused pass for exactly the two things this recruiter has said matter most: a genuine, currently open, specific job, and a genuine, named leadership appointment. Do NOT report funding, expansion, M&A, regulatory news, or general commentary here — those are covered by a separate pass. Only ever return a live_job entry or a leadership_change entry, and only when it's real and well-sourced.
+
+Bias hard against household-name, mega-employer companies (thousands of employees) — a company that size runs hiring almost entirely in-house and essentially never engages an external agency recruiter, so a live opening or a new appointment there isn't a real lead for this recruiter even though it's the easiest one to find. The real value is in genuine mid-market and emerging companies actively hiring or promoting right now, even if they're less famous.
+
+${opts.adzunaLeads?.length ? `Adzuna's live jobs board shows these real, recent postings that may match: ${opts.adzunaLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. If one of these reads as posted directly by the company itself (no agency name, no "on behalf of our client" language), it's a candidate for your one live_job entry below.\n` : ''}${opts.theirStackLeads?.length ? `TheirStack (covers UAE/GCC, where Adzuna has no coverage) shows these real, recent postings: ${opts.theirStackLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. Same rule as the Adzuna leads above.\n` : ''}
+For the live job: beyond the leads above, actively search this recruiter's own named regional job boards and LinkedIn Jobs posts, and check each target firm below's own careers page directly, for a real, specific, currently open vacancy in this recruiter's target functions — never a "company X is hiring" narrative with no actual posting to cite.
+${buildLiveJobBoardHint(onboarding?.locations, onboarding?.sectors)}
+For the leadership appointment: actively search this recruiter's own named regional press below and LinkedIn for someone who has genuinely, recently (within the last ${SIGNAL_LOOKBACK_DAYS} days) joined, been appointed, or been promoted into a senior role — ideally at one of the target firms below, or at a company already on this recruiter's radar (listed below), though a genuine appointment anywhere in this recruiter's sectors/markets counts. Naming the actual person is strongly preferred but not required if your source doesn't name them.
+${buildRegionalSourceHint(onboarding?.locations, onboarding?.sectors, opts.learned)}
+${buildTargetFirmHint(onboarding?.sectors, opts.learned, onboarding?.locations)}
+${buildCustomerWatchlistHint(opts.watchlist)}
+Companies already surfaced recently — still worth checking for a fresh live opening or a fresh appointment even though they've come up before: ${recentCompanies.join(', ') || 'None yet'}.
+
+Return up to ONE genuinely good live_job entry AND up to ONE genuinely good leadership_change entry. An empty result for one or both is a completely normal, honest outcome if nothing genuinely clears the bar right now — never pad either one out just to return something.
+
+For the live job, if you found one, use this exact shape:
+- entryType: "live_job"
+- company: the company name
+- headline: the exact, specific role title (e.g. "Senior Finance Manager", not "Hiring across Finance")
+- whyItMatters: 1 sentence, plain natural prose, on why this specific open role is a genuine BD opportunity right now. No citation markup or bracketed references.
+- sourceUrl: the real posting URL — never a news article that merely mentions the company is hiring
+- sourceLabel: short label, e.g. adzuna.com, bayt.com, or the company's own domain
+- eventDate: the posting date if you can tell, else your best estimate, as YYYY-MM-DD
+- whoToApproach: the specific person or role to approach about this exact opening
+- titleKeywords: 2-4 likely job title strings for the right decision-maker, used afterwards to look up a real verified contact
+- introMessage: ${opts.introMessageField || 'the ready-to-send outreach message body, in this recruiter\'s tone, tailored to this exact role'}
+- candidateAngle: a specific, credible candidate pitch to lead with. Leave blank if it doesn't call for one.
+- benchStrengthAngle: a positioning pitch naming 1-2 real, specific peer companies, never vague. Leave blank if you cannot confidently name genuine peers.
+- candidateProfile: an object with exactly these keys: { "yearsMin": <number>, "yearsMax": <number>, "functionalExperience": "<specific phrase>", "directCompetitors": [<0-3 real company names>], "similarIndustry": [<0-3 real company names>], "widerScope": [<0-2 real company names>] }. Leave arrays empty and functionalExperience blank rather than inventing anything.
+
+For the leadership appointment, if you found one, use this exact shape:
+- entryType: "signal"
+- signalType: "leadership_change"
+- company: the company name
+- headline: max 10 words
+- whyItMatters: 1-2 sentences, plain prose, on what this appointment likely means for this recruiter's business right now (a new leader typically reassesses their team). No citation markup or bracketed references.
+- sourceUrl: the real URL you found this from
+- sourceLabel: short label, e.g. techcrunch.com
+- eventDate: your best estimate of when this happened, as YYYY-MM-DD
+- whoToApproach: the specific person or role to approach
+- appointedName: the full name of the person actually appointed/promoted, exactly as reported by your source. Leave blank only if no source actually names them.
+- titleKeywords: 2-4 likely job title strings for the right decision-maker
+- introMessage: ${opts.introMessageField || 'the ready-to-send outreach message body, in this recruiter\'s tone, congratulating them on the new role'}
+- candidateAngle: leave blank unless there's an obvious opening this appointment creates.
+- benchStrengthAngle: a positioning pitch naming 1-2 real, specific peer companies, never vague. Leave blank if you cannot confidently name genuine peers.
+- candidateProfile: same structure and rules as the live_job field above.
+
+For each genuinely new company or source you noticed while checking the named sources above that isn't already listed there, you may also return a third kind of entry:
+- entryType: "annie_learned"
+- kind: "company" or "source"
+- sector: the exact sector label this belongs to, from this recruiter's own list above
+- value: the company name, or the source's name/domain
+- foundVia: the specific named source you found it on, never blank
+- location: which market this belongs to — one of exactly [${onboarding?.locations?.join(', ') || 'this recruiter\'s selected markets'}], or "Global" only for a genuinely global resource with no single home market
+Only include this when you actually found something real this way — never invent one to pad the response.
+
+Return a single JSON array mixing entryTypes as they apply (0-3 entries: at most one live_job, at most one leadership_change signal, plus any annie_learned entries). Only return the JSON array, nothing else. If nothing genuinely good was found for either, return an empty array.`
 }
