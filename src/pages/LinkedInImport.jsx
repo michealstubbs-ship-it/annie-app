@@ -397,30 +397,46 @@ export default function LinkedInImport({ embedded = false }) {
 
       const alreadyImportedCount = toImport.filter(isAlreadyImported).length
 
+      // 2026-09-02 audit fix: every imported contact used to be forced into
+      // status 'hot' or 'warm' based purely on a title-keyword match, with
+      // no third option -- so a bulk import handed the whole action engine
+      // hundreds of contacts flagged as if they were real, screened leads,
+      // when nothing had actually happened with them yet (no meeting, no
+      // reply, no engagement of any kind). Status is a manual, human
+      // judgment everywhere else in the app (see ContactFormModal.jsx); a
+      // bulk import shouldn't be the one place that fakes it. Every import
+      // now lands as 'cold' -- unscreened, in the CRM, nothing more claimed
+      // -- and the user promotes contacts themselves as they actually work
+      // them. The seniority match is still real signal, so it's kept for
+      // the completion-screen count below, just no longer written as a
+      // status.
       const toInsert = toImport
         .filter(c => !isAlreadyImported(c))
         .map(c => {
           const text = `${c.title || ''}`.toLowerCase()
           const isSenior = seniorKeywords.some(k => keywordMatches(text, k))
           return {
-            user_id: user.id,
-            name: c.name,
-            email: c.email || null,
-            company: c.company || null,
-            company_id: c.company ? (companyMap[normalizeCompany(c.company)] || null) : null,
-            title: c.title || null,
-            linkedin_url: c.linkedin_url || null,
-            status: isSenior ? 'hot' : 'warm',
-            tags: ['linkedin-import'],
+            row: {
+              user_id: user.id,
+              name: c.name,
+              email: c.email || null,
+              company: c.company || null,
+              company_id: c.company ? (companyMap[normalizeCompany(c.company)] || null) : null,
+              title: c.title || null,
+              linkedin_url: c.linkedin_url || null,
+              status: 'cold',
+              tags: ['linkedin-import'],
+            },
+            isSenior,
           }
         })
 
       if (toInsert.length) {
-        const { error: insertErr } = await supabase.from('contacts').insert(toInsert)
+        const { error: insertErr } = await supabase.from('contacts').insert(toInsert.map(c => c.row))
         if (insertErr) throw insertErr
       }
 
-      const targetCount = toInsert.filter(c => c.status === 'hot').length
+      const targetCount = toInsert.filter(c => c.isSenior).length
 
       // 2026-08-26 audit fix: this update's result was never checked — a
       // real failure (an RLS denial, a dropped connection) would silently
@@ -492,9 +508,15 @@ export default function LinkedInImport({ embedded = false }) {
             {/* 2026-08-26 audit fix: "at your target companies" described a
                 target-company-list concept that was removed from the
                 product — done.targets is really just a seniority/title tag
-                (hot = C-Suite/Partner/MD-level), unrelated to any company
-                list. Reworded to say what it actually is. */}
-            {done.targets > 0 && <>, <span className="font-semibold text-gold">{done.targets} tagged hot as senior decision-makers</span></>}.
+                (senior = C-Suite/Partner/MD-level), unrelated to any company
+                list. Reworded to say what it actually is.
+                2026-09-02 audit fix: this used to also claim they were
+                "tagged hot" — imports no longer set status to hot/warm (see
+                the audit-fix comment above toInsert), so the copy no longer
+                claims a status that was never actually applied. Everything
+                imported lands as cold, full stop; this count is purely
+                informational, about title seniority, not CRM status. */}
+            {done.targets > 0 && <>, <span className="font-semibold text-gold">{done.targets} flagged as senior decision-makers by title</span></>}. All imported as cold — review and warm up the ones you want to work.
             {done.newCompanies > 0 && <> She also created <span className="font-semibold text-navy">{done.newCompanies} new compan{done.newCompanies === 1 ? 'y' : 'ies'}</span> in your Companies list, linked to their contacts.</>}
             {/* 2026-08-26 audit fix: re-uploading the same or a refreshed
                 export used to silently duplicate every contact still in the
