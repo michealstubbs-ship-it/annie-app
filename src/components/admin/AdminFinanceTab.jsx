@@ -3,26 +3,17 @@ import ErrorBanner from '../ErrorBanner'
 import Spinner from '../Spinner'
 import { loadAdminFinanceTab } from '../../lib/data/adminDashboard'
 import { TIERS } from '../../lib/pricing'
+import { estimateVendorSpend } from '../../lib/adminOverviewHelpers'
 import { StatTile, SectionTitle, BarRow, Pill } from './adminUi'
 
 const money = (n) => `$${Math.round(n).toLocaleString('en-US')}`
-
-// The one real, confirmed $/credit rate in this codebase — Michael checked
-// TheirStack's own pricing page directly (see Annie-Cost-Analysis-50-100-
-// Clients.md, "Resolved this session: TheirStack is live"): the 20,000-
-// credits/month tier costs $240/mo flat, i.e. $12/1,000 credits. Apollo and
-// Anthropic have NO equally-confirmed $/unit rate anywhere in this codebase
-// — the cost-analysis doc's Apollo/Anthropic figures are modeled call-
-// volume estimates, not a clean per-credit/per-token rate that could be
-// multiplied against a live usage count. Rather than guess at one (which
-// would silently present an invented number as if it were live data), this
-// tab shows Apollo/Anthropic usage in their own native units and only
-// converts TheirStack to real dollars.
-const THEIRSTACK_COST_PER_CREDIT = 0.012
+const moneyPrecise = (n) => `$${n.toFixed(2)}`
 
 // Modeled per-account unit economics from Annie-Cost-Analysis-50-100-
-// Clients.md (dated 26 Aug 2026) — NOT live-tracked, because that would
-// need the same missing Apollo/Anthropic $/unit rate above. Shown as a
+// Clients.md (dated 26 Aug 2026) — still NOT live-tracked: this table needs
+// modeled per-account call volumes the app doesn't record anywhere (how
+// many Apollo/Anthropic calls one account makes), which is a different
+// missing input than the vendor-wide $/unit rates used above. Shown as a
 // clearly-dated reference figure, never mixed into a number presented as
 // live, so it can never be mistaken for real-time data.
 const MODELED_UNIT_ECONOMICS = {
@@ -61,7 +52,13 @@ export default function AdminFinanceTab() {
     theirstack: acc.theirstack + (Number(d.theirstack_credits) || 0),
     anthropic: acc.anthropic + (Number(d.anthropic_tokens) || 0),
   }), { apollo: 0, theirstack: 0, anthropic: 0 })
-  const theirStackSpend30d = opex30dTotals.theirstack * THEIRSTACK_COST_PER_CREDIT
+  const spend30d = estimateVendorSpend({
+    apolloCredits: opex30dTotals.apollo,
+    theirstackCredits: opex30dTotals.theirstack,
+    anthropicTokens: opex30dTotals.anthropic,
+  })
+  const theirStackSpend30d = spend30d.theirstack.amount
+  const totalVendorSpend30d = spend30d.apollo.amount + spend30d.theirstack.amount + spend30d.anthropic.amount
   const caps = resourceCaps || { apollo: 1, theirStack: 1, anthropicTokens: 1 }
   const maxUsage = Math.max(opex30dTotals.apollo, opex30dTotals.theirstack, opex30dTotals.anthropic / 1000, 1)
 
@@ -70,17 +67,19 @@ export default function AdminFinanceTab() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatTile label="MRR" value={money(accounts.mrr)} />
         <StatTile label="Active accounts" value={accounts.activeAccounts} />
-        <StatTile label="TheirStack spend (30d)" value={money(theirStackSpend30d)} sub="the one vendor with a confirmed $/credit rate" />
+        <StatTile label="Vendor spend (30d, est.)" value={money(totalVendorSpend30d)} sub="TheirStack confirmed rate + Apollo/Anthropic estimated" />
         <StatTile label="Seats live" value={accounts.seatsLive} />
       </div>
 
       <div className="grid md:grid-cols-2 gap-3">
         <div className="card p-4">
           <h2 className="text-sm font-bold text-navy mb-3">Vendor usage, last 30 days</h2>
-          <BarRow label="Apollo" pct={Math.min((opex30dTotals.apollo / maxUsage) * 100, 100)} value={`${Math.round(opex30dTotals.apollo).toLocaleString()} cr`} color="bg-series-1" />
-          <BarRow label="TheirStack" pct={Math.min((opex30dTotals.theirstack / maxUsage) * 100, 100)} value={`${money(theirStackSpend30d)}`} color="bg-gold" />
-          <BarRow label="Anthropic" pct={Math.min(((opex30dTotals.anthropic / 1000) / maxUsage) * 100, 100)} value={`${(opex30dTotals.anthropic / 1e6).toFixed(2)}M tok`} color="bg-series-3" />
-          <p className="text-[11.5px] text-gray-400 mt-2.5">Apollo and Anthropic shown in native usage units — no confirmed $/unit rate for either exists yet to convert them to real dollars (see this card's own note in code). Netlify &amp; Supabase plan fees aren't tracked here at all; they're flat monthly fees, not usage-metered.</p>
+          <BarRow label="Apollo" pct={Math.min((opex30dTotals.apollo / maxUsage) * 100, 100)} value={`${moneyPrecise(spend30d.apollo.amount)} est.`} color="bg-series-1" />
+          <BarRow label="TheirStack" pct={Math.min((opex30dTotals.theirstack / maxUsage) * 100, 100)} value={money(theirStackSpend30d)} color="bg-gold" />
+          <BarRow label="Anthropic" pct={Math.min(((opex30dTotals.anthropic / 1000) / maxUsage) * 100, 100)} value={`${moneyPrecise(spend30d.anthropic.amount)} est.`} color="bg-series-3" />
+          <p className="text-[11.5px] text-gray-400 mt-2.5">
+            TheirStack is a confirmed rate ($12/1,000 credits, checked against their pricing page). Apollo ($0.0495/credit, the Professional plan's effective rate) and Anthropic (Claude Haiku's own $1/$5 per-million input/output rate, blended ~85/15) are real published rates, not Michael's actual negotiated cost — labeled "est." rather than shown as confirmed. Raw usage: {Math.round(opex30dTotals.apollo).toLocaleString()} Apollo credits, {(opex30dTotals.anthropic / 1e6).toFixed(2)}M Anthropic tokens. Netlify &amp; Supabase plan fees aren't tracked here at all; they're flat monthly fees, not usage-metered.
+          </p>
         </div>
 
         <div className="card p-4">
@@ -124,7 +123,7 @@ export default function AdminFinanceTab() {
               </tbody>
             </table>
           </div>
-          <p className="text-[11.5px] text-gray-400 mt-2.5">*Modeled estimate from Annie-Cost-Analysis-50-100-Clients.md (26 Aug 2026), not live-tracked — Apollo/Anthropic have no confirmed $/unit rate yet to compute this in real time (see above). Accounts/Price/MRR columns are real, live data.</p>
+          <p className="text-[11.5px] text-gray-400 mt-2.5">*Modeled estimate from Annie-Cost-Analysis-50-100-Clients.md (26 Aug 2026), not live-tracked — per-account call volume isn't recorded anywhere to compute this from real usage (see vendor $/unit rates above, which are real). Accounts/Price/MRR columns are real, live data.</p>
         </div>
       </div>
     </div>

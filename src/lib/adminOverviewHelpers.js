@@ -6,6 +6,58 @@
 // candidateMatch.js), and there's no reason for the admin dashboard to be
 // the one place that breaks that pattern.
 
+// Vendor $/unit rates behind estimateVendorSpend below. Two different
+// confidence levels, kept explicit rather than blurred into one column:
+//
+// - THEIRSTACK_COST_PER_CREDIT is CONFIRMED — Michael checked TheirStack's
+//   own pricing page directly (Annie-Cost-Analysis-50-100-Clients.md,
+//   "Resolved this session: TheirStack is live"): the 20,000-credits/month
+//   tier costs $240/mo flat, i.e. $12/1,000 credits.
+// - APOLLO_COST_PER_CREDIT and the two ANTHROPIC_COST_PER_MILLION_* rates
+//   are PUBLISHED LIST rates, not confirmed against Michael's actual
+//   invoice the way TheirStack's is — real numbers from the vendors' own
+//   published pricing (checked 2026-09-02), but his actual negotiated/
+//   effective rate could differ, same caveat the original cost-analysis
+//   doc raised about TheirStack before it was confirmed.
+//   - Apollo: no single published $/credit rate exists — apollo.io's own
+//     pricing page doesn't disclose credit costs directly. Using the
+//     Professional plan's effective rate (2,000 export credits included
+//     in a $99/mo plan) as the representative self-serve figure: $99/2,000
+//     = $0.0495/credit. Basic ($59/1,000 = $0.059) and Organization
+//     ($149/4,000 = $0.03725) bracket this; Professional is the middle
+//     estimate, not a confirmed number for Annie's specific plan.
+//   - Anthropic: Claude Haiku 4.5's published API rate is $1/million input
+//     tokens, $5/million output tokens (anthropic.com/claude/haiku,
+//     checked 2026-09-02) — a real, current, asymmetric rate. The
+//     anthropic_usage/anthropic_usage_platform tables only ever record a
+//     single combined tokens_used figure, not input vs. output separately,
+//     so there's no way to apply the exact split to real usage data. The
+//     blended rate below assumes roughly an 85/15 input/output mix, typical
+//     of this app's calls (a large system-prompt-plus-context input, a much
+//     shorter structured JSON/text output) — an estimate, not a precise
+//     conversion, and called out as such everywhere it's shown.
+export const THEIRSTACK_COST_PER_CREDIT = 0.012
+export const APOLLO_COST_PER_CREDIT = 0.0495
+const ANTHROPIC_COST_PER_MILLION_INPUT = 1
+const ANTHROPIC_COST_PER_MILLION_OUTPUT = 5
+const ANTHROPIC_ASSUMED_INPUT_SHARE = 0.85
+export const ANTHROPIC_BLENDED_COST_PER_MILLION_TOKENS =
+  ANTHROPIC_ASSUMED_INPUT_SHARE * ANTHROPIC_COST_PER_MILLION_INPUT +
+  (1 - ANTHROPIC_ASSUMED_INPUT_SHARE) * ANTHROPIC_COST_PER_MILLION_OUTPUT
+
+// Real vendor usage totals (credits/tokens) -> a real dollar estimate for
+// each. Every figure here is a genuine, cited rate — see the constants'
+// own comments above for exactly which are confirmed vs. published-list —
+// never an invented number. `confidence` lets the caller distinguish the
+// one confirmed rate from the two estimated ones in how it's rendered.
+export function estimateVendorSpend({ apolloCredits = 0, theirstackCredits = 0, anthropicTokens = 0 } = {}) {
+  return {
+    apollo: { amount: apolloCredits * APOLLO_COST_PER_CREDIT, confidence: 'estimated' },
+    theirstack: { amount: theirstackCredits * THEIRSTACK_COST_PER_CREDIT, confidence: 'confirmed' },
+    anthropic: { amount: (anthropicTokens / 1_000_000) * ANTHROPIC_BLENDED_COST_PER_MILLION_TOKENS, confidence: 'estimated' },
+  }
+}
+
 // Real month-over-month delta from the daily metrics-snapshot history —
 // "vs ~30 days ago" using the closest available real comparison point,
 // never a fabricated "vs last calendar month" (nothing here tracks

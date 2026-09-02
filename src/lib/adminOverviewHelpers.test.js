@@ -9,6 +9,10 @@ import {
   countEscalationsFromChurnedAccounts,
   countChurnedWithinDays,
   filterAccountRows,
+  estimateVendorSpend,
+  THEIRSTACK_COST_PER_CREDIT,
+  APOLLO_COST_PER_CREDIT,
+  ANTHROPIC_BLENDED_COST_PER_MILLION_TOKENS,
 } from './adminOverviewHelpers.js'
 
 describe('trendDelta', () => {
@@ -177,6 +181,38 @@ describe('countChurnedWithinDays', () => {
       { status: 'active', subscription_updated_at: new Date(now).toISOString() },
     ]
     expect(countChurnedWithinDays(rows, 90)).toBe(1)
+  })
+})
+
+describe('estimateVendorSpend', () => {
+  it('converts TheirStack credits to real dollars at the confirmed $12/1,000 rate, marked confirmed', () => {
+    const result = estimateVendorSpend({ theirstackCredits: 1000 })
+    expect(result.theirstack).toEqual({ amount: 1000 * THEIRSTACK_COST_PER_CREDIT, confidence: 'confirmed' })
+    expect(result.theirstack.amount).toBeCloseTo(12, 5)
+  })
+
+  it('converts Apollo credits to dollars at the published-list rate, marked estimated (not confirmed)', () => {
+    const result = estimateVendorSpend({ apolloCredits: 2000 })
+    expect(result.apollo).toEqual({ amount: 2000 * APOLLO_COST_PER_CREDIT, confidence: 'estimated' })
+    expect(result.apollo.amount).toBeCloseTo(99, 5) // 2,000 credits ≈ Apollo's own Professional-plan allotment at $99/mo
+  })
+
+  it('converts Anthropic tokens to dollars using the blended input/output rate, marked estimated', () => {
+    const result = estimateVendorSpend({ anthropicTokens: 2_000_000 })
+    expect(result.anthropic).toEqual({ amount: 2 * ANTHROPIC_BLENDED_COST_PER_MILLION_TOKENS, confidence: 'estimated' })
+  })
+
+  it('defaults every usage figure to 0 rather than throwing when called with no data yet', () => {
+    expect(estimateVendorSpend()).toEqual({
+      apollo: { amount: 0, confidence: 'estimated' },
+      theirstack: { amount: 0, confidence: 'confirmed' },
+      anthropic: { amount: 0, confidence: 'estimated' },
+    })
+  })
+
+  it('the blended Anthropic rate sits between the published input-only and output-only rates', () => {
+    expect(ANTHROPIC_BLENDED_COST_PER_MILLION_TOKENS).toBeGreaterThan(1)
+    expect(ANTHROPIC_BLENDED_COST_PER_MILLION_TOKENS).toBeLessThan(5)
   })
 })
 
