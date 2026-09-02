@@ -17,7 +17,17 @@ export async function resolveSignalContact(signalId) {
     const { data: { session } } = await withTimeout(supabase.auth.getSession(), 8000, 'resolve-signal-contact-session')
     const token = session?.access_token
     if (!token) return { found: false, error: 'Your session has expired. Please log in again.' }
-    const res = await fetch('/.netlify/functions/resolve-signal-contact', {
+    // 2026-09-02 audit fix: resolve-signal-contact.js declares a custom
+    // Netlify Functions path (config.path = '/api/resolve-signal-contact'),
+    // which per Netlify's own routing rules means the default
+    // '/.netlify/functions/resolve-signal-contact' alias no longer resolves
+    // at all once a custom path is set. This was calling the default path,
+    // so "Add to Today's BD Actions" on a contact-less signal silently hit
+    // Netlify's SPA fallback (HTML, not JSON) every time and degraded to
+    // the honest-looking "found: false" outcome instead of ever finding a
+    // real contact. Same class of bug already fixed in callChat.js/
+    // Billing.jsx/LinkedInImport.jsx/adminDashboard.js.
+    const res = await fetch('/api/resolve-signal-contact', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ signalId }),

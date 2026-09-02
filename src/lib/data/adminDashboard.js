@@ -244,7 +244,17 @@ export async function getAdminFeatureAdoption() {
   const { data: { session } } = await supabase.auth.getSession()
   const token = session?.access_token
   if (!token) throw new Error('Your session has expired. Please log in again.')
-  const res = await fetch('/.netlify/functions/admin-feature-adoption', {
+  // 2026-09-02 audit fix, real report ("Product & Engineering is still
+  // broken"): admin-feature-adoption.js declares a custom Netlify
+  // Functions path (config.path = '/api/admin-feature-adoption'), which
+  // per Netlify's own routing rules means the default
+  // '/.netlify/functions/admin-feature-adoption' alias no longer resolves
+  // at all once a custom path is set — only '/api/admin-feature-adoption'
+  // does. This was calling the default path, so every load hit Netlify's
+  // SPA fallback (index.html) instead of the function, and res.json()
+  // failed on the HTML with "Unexpected token '<'". Same class of bug
+  // already fixed in callChat.js/Billing.jsx/LinkedInImport.jsx.
+  const res = await fetch('/api/admin-feature-adoption', {
     headers: { Authorization: `Bearer ${token}` },
   })
   const body = await res.json()

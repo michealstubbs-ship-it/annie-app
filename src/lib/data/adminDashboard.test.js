@@ -364,7 +364,10 @@ describe('getAdminFeatureAdoption', () => {
   it('calls the admin-feature-adoption endpoint with the caller\'s own session token', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ configured: true, pages: [], events: [] }) })
     const result = await getAdminFeatureAdoption()
-    expect(global.fetch).toHaveBeenCalledWith('/.netlify/functions/admin-feature-adoption', {
+    // admin-feature-adoption.js declares config.path = '/api/admin-feature-adoption',
+    // which means only that path resolves — not the default
+    // '/.netlify/functions/admin-feature-adoption' alias (2026-09-02 audit fix).
+    expect(global.fetch).toHaveBeenCalledWith('/api/admin-feature-adoption', {
       headers: { Authorization: 'Bearer tok_admin' },
     })
     expect(result).toEqual({ configured: true, pages: [], events: [] })
