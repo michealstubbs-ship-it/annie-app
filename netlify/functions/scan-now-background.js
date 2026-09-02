@@ -489,20 +489,14 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   // header in scanShared.js for the real incident this closes). Full-profile
   // (ob.sectors, not narrowed to one sector group) — the per-sector-group
   // calls further down still do their own narrower discoverAdzunaJobs call
-  // for their own prompt; this is a separate, whole-profile fetch.
-  const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
-  // Fetched once per scan, reused across every sector-group call, the
-  // broaden pass, and the priority-discovery pass below — see
-  // getLearnedSources's own header for why this is a single shared,
-  // cross-account table rather than a per-call lookup.
-  const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
-  // Same "fetch once, reuse across every call" shape as `learned` above —
-  // see getCustomerWatchlistCompanies's own header for why this is
-  // personal-to-this-account rather than shared.
-  const watchlist = await getCustomerWatchlistCompanies(supabase, ob)
-  // 2026-08-31 audit fix: fetched ONCE here, reused across every sector-group
-  // call below — same "fetch once, reuse across groups" shape as
-  // `learned`/`watchlist` just above, and matches how the daily cron
+  // for their own prompt; this is a separate, whole-profile fetch. Run in
+  // parallel — these four are fully independent, no reason to pay their
+  // latency serially, especially now that they run on every scan
+  // unconditionally rather than only inside the full-discovery path.
+  //
+  // theirStackLeads specifically: fetched ONCE here, reused across every
+  // sector-group call below — same "fetch once, reuse across groups" shape
+  // as `learned`/`watchlist`, and matches how the daily cron
   // (intelligence-scan-background.js) calls this: one TheirStack search per
   // scan, full sectors: ob.sectors — instead of one per sector group. This
   // used to run INSIDE the groups.map below, so a single manual "Scan now"
@@ -514,7 +508,12 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   // no real quality loss from asking once with the full sector profile
   // instead of once per narrower group — this just brings scan-now's
   // TheirStack cost in line with what a routine daily scan already costs.
-  const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, userId, resourceCaps.theirStack)
+  const [adzunaLeads, learned, watchlist, theirStackLeads] = await Promise.all([
+    discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }),
+    getLearnedSources(supabase, ob.sectors, ob.locations),
+    getCustomerWatchlistCompanies(supabase, ob),
+    discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, userId, resourceCaps.theirStack),
+  ])
 
   const poolMatches = await fetchSignalPoolMatches(supabase, ob, existingKeys, tierConfig.feedSignalTarget)
   let poolPersonalized = []

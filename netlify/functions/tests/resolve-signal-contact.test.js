@@ -60,7 +60,11 @@ beforeEach(async () => {
   mockGetAuthedUser.mockResolvedValue({ user: { id: 'user_123' }, error: null })
   mockSignalSelect.mockResolvedValue({ data: BASE_SIGNAL, error: null })
   mockSignalUpdate.mockResolvedValue({ error: null })
-  mockEnrichmentSelect.mockResolvedValue({ data: { domain: 'acme.com', industry: null, city: null, state: null, country: null, logo_url: null, matched: true, apollo_org_id: 'org_1' } })
+  // employee_count/enriched_at (post-cutoff) included so this cached row
+  // reads as already backfilled for the mega-employer filter (scanShared.js
+  // — enrichCompany's needsEmployeeCountBackfill check) and doesn't trigger
+  // an unexpected live re-lookup this test suite isn't set up to answer.
+  mockEnrichmentSelect.mockResolvedValue({ data: { domain: 'acme.com', industry: null, city: null, state: null, country: null, logo_url: null, matched: true, apollo_org_id: 'org_1', employee_count: 500, enriched_at: new Date().toISOString() } })
   mockRpc.mockResolvedValue({ data: 'ok', error: null })
   global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ people: [] }) })
 

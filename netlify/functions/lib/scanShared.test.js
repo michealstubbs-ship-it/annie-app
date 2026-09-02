@@ -1849,17 +1849,56 @@ describe('enrichCompany — employee_count capture and cache round-trip (2026-09
     vi.unstubAllGlobals()
   })
 
-  it('a pre-existing cache row written before this column existed reads back employees: null, not an error', async () => {
-    const fetchSpy = vi.fn()
-    vi.stubGlobal('fetch', fetchSpy)
+  // 2026-09-02 follow-up audit fix: a matched company cached BEFORE the
+  // mega-employer filter shipped (no enriched_at at/after
+  // EMPLOYEE_COUNT_BACKFILL_CUTOFF) would otherwise return employees: null
+  // FOREVER, since a cache hit short-circuits before ever reaching Apollo
+  // again — exactly the class of already-known company (a household name
+  // someone scanned before today) this filter exists to catch. This forces
+  // ONE fresh re-check instead of trusting the stale null.
+  it('forces one fresh re-check for a pre-existing matched row with no employee_count, rather than trusting a stale null forever', async () => {
     const supabase = makeTableAwareSupabase()
     await supabase.from('company_enrichment').upsert({
       company_name_key: 'legacy co', company_name: 'Legacy Co',
       domain: 'legacy.com', matched: true, logo_url: null, apollo_org_id: 'org_9',
-      // deliberately no employee_count field — simulates a row written
-      // before the 2026-09-02 migration added the column.
+      // deliberately no employee_count/enriched_at — simulates a row
+      // written before the 2026-09-02 mega-employer filter existed.
     })
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_companies/search')) {
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_9', name: 'Legacy Co', primary_domain: 'legacy.com', estimated_num_employees: 50000 }] }) }
+      }
+      throw new Error(`unexpected fetch in this test: ${url}`)
+    }))
     const result = await enrichCompany('apollo-key', 'Legacy Co', supabase)
+    expect(result.employees).toBe(50000)
+    vi.unstubAllGlobals()
+  })
+
+  it('does NOT re-check a company already backfilled since the cutoff, even when Apollo genuinely has no headcount for it', async () => {
+    const supabase = makeTableAwareSupabase()
+    await supabase.from('company_enrichment').upsert({
+      company_name_key: 'no headcount co', company_name: 'No Headcount Co',
+      domain: 'noheadcount.com', matched: true, logo_url: null, apollo_org_id: 'org_7',
+      employee_count: null, enriched_at: new Date().toISOString(), // checked AFTER the cutoff, genuinely no data
+    })
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const result = await enrichCompany('apollo-key', 'No Headcount Co', supabase)
+    expect(result.employees).toBeNull()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it('does not force a re-check for an unmatched company (no employee_count possible for a company Apollo never matched)', async () => {
+    const supabase = makeTableAwareSupabase()
+    await supabase.from('company_enrichment').upsert({
+      company_name_key: 'unknown co', company_name: 'Unknown Co',
+      domain: null, matched: false, logo_url: 'https://logo.clearbit.com/unknown.com', apollo_org_id: null,
+    })
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const result = await enrichCompany('apollo-key', 'Unknown Co', supabase)
     expect(result.employees).toBeNull()
     expect(fetchSpy).not.toHaveBeenCalled()
     vi.unstubAllGlobals()

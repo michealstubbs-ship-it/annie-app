@@ -240,6 +240,21 @@ export function isMegaEmployer(employeeCount) {
   return typeof employeeCount === 'number' && employeeCount >= MEGA_EMPLOYER_HEADCOUNT_THRESHOLD
 }
 
+// 2026-09-02, Michael, follow-up audit: the mega-employer filter above only
+// works if employee_count is actually populated. company_enrichment has no
+// expiry — a company matched and cached BEFORE this filter shipped would
+// otherwise return employees: null forever, since a cache hit short-
+// circuits before ever reaching Apollo again. That's the exact class of
+// company this filter exists to catch (a household name someone already
+// has on file from an earlier scan), so it can't be left unfixed. See
+// enrichCompany's own cache-hit check for how this is used: bounded to one
+// forced re-check per company, using the ALREADY-WRITTEN enriched_at
+// timestamp as "have we looked at this company since the filter existed" —
+// no new column needed. Once a company is re-checked after this cutoff,
+// employees: null is trusted as "Apollo genuinely has no headcount data for
+// this company" and never forces another re-check.
+export const EMPLOYEE_COUNT_BACKFILL_CUTOFF = new Date('2026-09-02T00:00:00Z')
+
 // Best-effort ops alert for the one failure mode retries can't fix: every
 // customer in a run coming back with zero new signals, which almost always
 // means a systemic problem (a suspended key, an outage) rather than every
@@ -1824,7 +1839,7 @@ export async function enrichCompany(apolloKey, company, supabase, locationHints 
       // cached got re-enriched (and re-charged an Apollo credit) anyway.
       const { data: cached, error } = await supabase
         .from('company_enrichment')
-        .select('domain, industry, city, state, country, logo_url, matched, apollo_org_id, employee_count')
+        .select('domain, industry, city, state, country, logo_url, matched, apollo_org_id, employee_count, enriched_at')
         .eq('company_name_key', cacheKey)
         .maybeSingle()
       if (error) console.error(`[scanShared] company_enrichment cache lookup failed for "${company}":`, error.message)
@@ -1834,24 +1849,28 @@ export async function enrichCompany(apolloKey, company, supabase, locationHints 
       // returning apolloOrgId: null forever and silently breaking
       // verifyContact for every company enriched before today's fix.
       //
+      // 2026-09-02 audit fix: same idea, applied to employee_count — a
+      // matched row cached before the mega-employer filter existed never
+      // captured a headcount, and without this check would return
+      // employees: null forever (see EMPLOYEE_COUNT_BACKFILL_CUTOFF's own
+      // header for the full reasoning: this is the exact class of company
+      // the filter exists to catch). Bounded to one forced re-check per
+      // company via enriched_at, so a company Apollo genuinely has no
+      // headcount for doesn't get re-spent on every single scan forever.
+      const needsEmployeeCountBackfill = cached?.matched && cached?.apollo_org_id &&
+        cached?.employee_count == null &&
+        (!cached.enriched_at || new Date(cached.enriched_at) < EMPLOYEE_COUNT_BACKFILL_CUTOFF)
+      //
       // Always returns an object now, even for an unmatched company — a
       // cached row still carries whatever best-effort logo_url was resolved
       // below the first time this company was looked up, and "no company
       // shown without a logo" has to hold on a cache hit too, not just a
       // fresh lookup.
-      if (cached && (!cached.matched || cached.apollo_org_id)) {
+      if (cached && (!cached.matched || cached.apollo_org_id) && !needsEmployeeCountBackfill) {
         return {
           domain: cached.domain, industry: cached.industry, city: cached.city, state: cached.state,
           country: cached.country, logo_url: cached.logo_url, apolloOrgId: cached.apollo_org_id || null,
           matched: cached.matched,
-          // 2026-09-02: added alongside the mega-employer live_job filter —
-          // see MEGA_EMPLOYER_HEADCOUNT_THRESHOLD's own header. A cache row
-          // written before this column existed just carries null here,
-          // same as apollo_org_id's own backfill-on-next-lookup behavior,
-          // except employee_count isn't required to trust the rest of the
-          // cached row (unlike apollo_org_id above), so this doesn't force
-          // a re-lookup — it's backfilled naturally next time this
-          // company's cache row is written for any other reason.
           employees: cached.employee_count ?? null,
         }
       }

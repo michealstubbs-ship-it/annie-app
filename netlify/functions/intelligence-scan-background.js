@@ -444,11 +444,27 @@ async function scanOneCustomer(ob, ctx) {
   // learned-sources/watchlist. Previously these were fetched only inside the
   // full-discovery branch, which is exactly why a full pool hit used to skip
   // Adzuna/TheirStack entirely (see pickLiveJobEntryFromLeads's own header
-  // in scanShared.js for the real incident this closes).
-  const adzunaLeads = await discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations })
-  const theirStackLeads = await discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, ob.user_id, resourceCaps.theirStack)
-  const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
-  const watchlist = await getCustomerWatchlistCompanies(supabase, ob)
+  // in scanShared.js for the real incident this closes). Run in parallel —
+  // these four are fully independent of each other, no reason to pay their
+  // latency serially, especially now that they run on EVERY customer, not
+  // just the full-discovery branch.
+  const [adzunaLeads, theirStackLeads, learned, watchlist] = await Promise.all([
+    discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }),
+    discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, ob.user_id, resourceCaps.theirStack),
+    getLearnedSources(supabase, ob.sectors, ob.locations),
+    getCustomerWatchlistCompanies(supabase, ob),
+  ])
+
+  // 2026-09-02: kicked off here, not awaited until after the branch below —
+  // this is a genuinely separate Anthropic web-search call (its own 90s
+  // timeout, own retry), and this whole function runs sequentially, one
+  // customer at a time, across every customer in a single run (see
+  // RUN_BUDGET_MS's own header on the scaling risk that already exists).
+  // Starting it here lets it run CONCURRENTLY with the branch's own work
+  // below (the pool check, or the sector-scoped + cross-industry Anthropic
+  // calls) instead of adding its full duration serially on top of every
+  // single customer, every single run.
+  const priorityPromise = runPriorityDiscovery(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }, existingKeys, { anthropicKey, supabase, resourceCaps })
 
   const poolMatches = await fetchSignalPoolMatches(supabase, ob, existingKeys, MAX_SIGNALS_PER_RUN)
   let poolPersonalized = []
@@ -540,42 +556,46 @@ async function scanOneCustomer(ob, ctx) {
       const preview = (text || '').trim().slice(0, 400)
       const truncated = looksTruncatedByTokenLimit(text)
       console.log('[intelligence-scan] nothing found for', ob.user_id, truncated ? '| LIKELY TRUNCATED BY max_tokens (raise anthropicMaxTokens for this tier if this keeps happening)' : '', '| raw response preview:', preview || '(empty response)')
-      // 2026-08-27: log every scan attempt, found-something or not — the
-      // zero-result runs are exactly what a genuinely thin market looks
-      // like over time (see getMarketCoverageReport's own header).
-      await logMarketCoverage(supabase, ob, 0)
-      return 0
-    }
+      // 2026-09-02: this used to return 0 here directly — but the priority
+      // discovery pass (below) can still have found a genuine live_job or
+      // leadership_change this same run even when the ordinary sweep found
+      // nothing at all, and silently discarding that would undermine the
+      // very guarantee it exists to provide. Falls through with an empty
+      // newSignals instead, so the priority merge below still gets a
+      // chance; the final "nothing at all" check further down covers the
+      // genuinely-empty case for both passes combined.
+      newSignals = []
+    } else {
+      // 2026-09-01: the fuzzy check catches a funding round this customer
+      // already has on file, rediscovered via a different article — see
+      // fetchExistingDedupKeys' own comment for the real incident this closes.
+      const preSemanticCheck = found
+        .filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
+        .filter(s => {
+          const fuzzy = fundingFuzzyKey(s.company, s.signalType, s.headline, s.whyItMatters)
+          return !(fuzzy && existingFuzzyKeys.has(fuzzy))
+        })
 
-    // 2026-09-01: the fuzzy check catches a funding round this customer
-    // already has on file, rediscovered via a different article — see
-    // fetchExistingDedupKeys' own comment for the real incident this closes.
-    const preSemanticCheck = found
-      .filter(s => s.company && s.headline && !existingKeys.has(normalizeKey(s.company, s.headline, s.sourceUrl)))
-      .filter(s => {
-        const fuzzy = fundingFuzzyKey(s.company, s.signalType, s.headline, s.whyItMatters)
-        return !(fuzzy && existingFuzzyKeys.has(fuzzy))
-      })
-
-    // 2026-09-02: the general-purpose successor to the fuzzy check above —
-    // catches the same "same real event, different article" case for every
-    // OTHER signal type (expansion, leadership_change, m_and_a), which the
-    // regex-based fuzzy check structurally can't (see
-    // filterSemanticDuplicates' own header in scanShared.js for why). Only
-    // reserves/spends an Anthropic call when findSemanticDedupTargets finds
-    // at least one candidate actually worth checking — the common case (a
-    // brand-new company/type combo) skips this entirely, so a normal run's
-    // added cost is close to zero.
-    let deduped = preSemanticCheck
-    if (findSemanticDedupTargets(preSemanticCheck, existingByCompanyType).length) {
-      if (await reserveAnthropicTokens(supabase, ob.user_id, SEMANTIC_DEDUP_MAX_TOKENS, resourceCaps.anthropicTokens)) {
-        deduped = await filterSemanticDuplicates(anthropicKey, preSemanticCheck, existingByCompanyType)
-      } else {
-        console.log('[intelligence-scan] Anthropic daily token cap reached — skipping semantic dedup check for', ob.user_id, ', keeping candidates as-is (exact/fuzzy checks above still apply)')
+      // 2026-09-02: the general-purpose successor to the fuzzy check above —
+      // catches the same "same real event, different article" case for every
+      // OTHER signal type (expansion, leadership_change, m_and_a), which the
+      // regex-based fuzzy check structurally can't (see
+      // filterSemanticDuplicates' own header in scanShared.js for why). Only
+      // reserves/spends an Anthropic call when findSemanticDedupTargets finds
+      // at least one candidate actually worth checking — the common case (a
+      // brand-new company/type combo) skips this entirely, so a normal run's
+      // added cost is close to zero.
+      let deduped = preSemanticCheck
+      if (findSemanticDedupTargets(preSemanticCheck, existingByCompanyType).length) {
+        if (await reserveAnthropicTokens(supabase, ob.user_id, SEMANTIC_DEDUP_MAX_TOKENS, resourceCaps.anthropicTokens)) {
+          deduped = await filterSemanticDuplicates(anthropicKey, preSemanticCheck, existingByCompanyType)
+        } else {
+          console.log('[intelligence-scan] Anthropic daily token cap reached — skipping semantic dedup check for', ob.user_id, ', keeping candidates as-is (exact/fuzzy checks above still apply)')
+        }
       }
-    }
 
-    newSignals = deduped.slice(0, MAX_SIGNALS_PER_RUN)
+      newSignals = deduped.slice(0, MAX_SIGNALS_PER_RUN)
+    }
   }
 
   // 2026-09-02, Michael: "definitely make live jobs and leadership the
@@ -585,7 +605,9 @@ async function scanOneCustomer(ob, ctx) {
   // bound Apollo enrichment spend on the ordinary funding/expansion/M&A
   // sweep, not to let these two explicitly-prioritized types get crowded
   // out of a slot by whatever the pool or the general sweep already filled.
-  const priorityFound = await runPriorityDiscovery(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }, existingKeys, { anthropicKey, supabase, resourceCaps })
+  // Started concurrently with the branch above (see priorityPromise's own
+  // comment) — usually already settled by the time we reach this await.
+  const priorityFound = await priorityPromise
   if (priorityFound.length) {
     const newSignalKeys = new Set(newSignals.map(s => normalizeKey(s.company, s.headline, s.sourceUrl)))
     const newPriority = priorityFound.filter(s => {
