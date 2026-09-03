@@ -570,8 +570,22 @@ export default function Overview() {
           `loading` now, same as "Needs your attention" just below already
           was — a pulsing placeholder bar in place of each number, rather
           than a number that's simply wrong for a second. */}
+      {/* 2026-09-04, Michael: "all the titles should be interactive... you
+          should be able to click on that and it takes you to that
+          information" — these four were plain static divs with no
+          onClick/Link/navigate at all. Each now routes to the page that
+          actually explains the number: Pipeline for the deal value,
+          Jobs for open roles, Candidates for who's in play, the
+          Intelligence Feed for signals. A real `<button>` (not the div
+          itself getting an onClick) so this stays keyboard-reachable and
+          reads correctly to a screen reader as an actionable control, not
+          just a data tile. */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
-        <div className="bg-white rounded-xl border border-gray-100 p-4">
+        <button
+          type="button"
+          onClick={() => navigate('/dashboard/pipeline')}
+          className="bg-white rounded-xl border border-gray-100 p-4 text-left hover:border-gold/50 hover:shadow-sm transition-all cursor-pointer"
+        >
           <div className="text-xs text-gray-400 font-medium mb-1.5">Active pipeline</div>
           {loading ? (
             <>
@@ -584,8 +598,12 @@ export default function Overview() {
               <div className="text-[11px] text-gray-400 mt-1">{jobStats.active.length} active mandate{jobStats.active.length === 1 ? '' : 's'}</div>
             </>
           )}
-        </div>
-        <div className="bg-white rounded-xl border border-gray-100 p-4">
+        </button>
+        <button
+          type="button"
+          onClick={() => navigate('/dashboard/jobs')}
+          className="bg-white rounded-xl border border-gray-100 p-4 text-left hover:border-gold/50 hover:shadow-sm transition-all cursor-pointer"
+        >
           <div className="text-xs text-gray-400 font-medium mb-1.5">Open jobs</div>
           {loading ? (
             <>
@@ -598,8 +616,12 @@ export default function Overview() {
               <div className="text-[11px] text-gray-400 mt-1">{jobStats.active.length} active &middot; {jobStats.onhold.length} on hold</div>
             </>
           )}
-        </div>
-        <div className="bg-white rounded-xl border border-gray-100 p-4">
+        </button>
+        <button
+          type="button"
+          onClick={() => navigate('/dashboard/candidates')}
+          className="bg-white rounded-xl border border-gray-100 p-4 text-left hover:border-gold/50 hover:shadow-sm transition-all cursor-pointer"
+        >
           <div className="text-xs text-gray-400 font-medium mb-1.5">Candidates in play</div>
           {loading ? (
             <>
@@ -612,8 +634,12 @@ export default function Overview() {
               <div className="text-[11px] text-gray-400 mt-1">{candidateStats.interviewing} interviewing</div>
             </>
           )}
-        </div>
-        <div className="bg-white rounded-xl border border-gray-100 p-4">
+        </button>
+        <button
+          type="button"
+          onClick={() => navigate('/dashboard/intelligence-feed')}
+          className="bg-white rounded-xl border border-gray-100 p-4 text-left hover:border-gold/50 hover:shadow-sm transition-all cursor-pointer"
+        >
           {/* 2026-08-26 audit fix: label was "New signals" but newSignalsCount
               (below) has no status filter — it counts every signal found in
               7 days, including ones already dismissed — while the Feed's
@@ -635,7 +661,7 @@ export default function Overview() {
               <div className="text-[11px] text-gray-400 mt-1">{urgentCount} need action</div>
             </>
           )}
-        </div>
+        </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1.5fr_1fr] gap-4">

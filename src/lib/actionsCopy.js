@@ -8,6 +8,29 @@ const CATEGORY_LABEL = {
   new_client: 'new client',
 }
 
+// Real evidence that a conversation with this person actually happened is a
+// genuine logged note — nothing less. A `status` (hot/warm), a
+// `last_contacted` date, or simply having existed in the CRM a while (a
+// "dormant" contact is, by definition, one who was only ever added, not
+// necessarily one who was ever actually reached) all describe OUR own
+// activity or bookkeeping, never what the other person said or how any
+// conversation went. This used to only be computed for 'relationship' items
+// (2026-09-02 audit fix, see below); every other category passed no
+// evidence fields at all, which is exactly how Annie ended up telling
+// Michael "Mohammad is receptive" about a contact he had never actually
+// spoken to (2026-09-04 real report). Now shared across every category so
+// the same three fields — and the same "don't invent it" prompt rule below —
+// apply uniformly, not just to items labeled "relationship".
+function contactEvidence(contact) {
+  const hasRealEvidence = !!(contact && contact.notes && contact.notes.trim())
+  return {
+    priorContactName: hasRealEvidence ? contact.name : null,
+    priorNote: hasRealEvidence ? contact.notes : null,
+    priorNoteDate: hasRealEvidence ? (contact.last_contacted || null) : null,
+    priorContactStatus: hasRealEvidence ? contact.status : null,
+  }
+}
+
 // Exported (2026-09-01): this is exactly the data that drives the AI's
 // enrichment output for a given item, so it doubles as the content
 // signature for useTodaysActions.js's copy cache (see copyCache.js) — if
@@ -16,10 +39,10 @@ const CATEGORY_LABEL = {
 export function describeItem(item) {
   const base = { category: item.category, signals: item.signals }
   if (item.category === 'dormant') {
-    return { ...base, name: item.contact.name, company: item.contact.company, title: item.contact.title }
+    return { ...base, name: item.contact.name, company: item.contact.company, title: item.contact.title, ...contactEvidence(item.contact) }
   }
   if (item.category === 'meeting') {
-    return { ...base, company: item.deal.company, role: item.deal.role, contactName: item.contact?.name }
+    return { ...base, company: item.deal.company, role: item.deal.role, contactName: item.contact?.name, ...contactEvidence(item.contact) }
   }
   if (item.category === 'relationship') {
     // 2026-09-02 audit fix, real report: a company having ANY contact row in
@@ -34,19 +57,15 @@ export function describeItem(item) {
     // with a status showing real engagement — not just a row existing.
     // Only pass that evidence through when it's genuinely there; the prompt
     // below is told never to assume a relationship otherwise.
-    const hasRealEvidence = !!(item.contact && item.contact.notes && item.contact.notes.trim())
     return {
       ...base,
       company: item.signal.company_name,
       signalTitle: item.signal.headline,
-      priorContactName: hasRealEvidence ? item.contact.name : null,
-      priorNote: hasRealEvidence ? item.contact.notes : null,
-      priorNoteDate: hasRealEvidence ? (item.contact.last_contacted || null) : null,
-      priorContactStatus: hasRealEvidence ? item.contact.status : null,
+      ...contactEvidence(item.contact),
     }
   }
   if (item.category === 'new_client') {
-    return { ...base, name: item.contact.name, company: item.contact.company, title: item.contact.title }
+    return { ...base, name: item.contact.name, company: item.contact.company, title: item.contact.title, ...contactEvidence(item.contact) }
   }
   return base
 }
@@ -65,7 +84,11 @@ For every item, write:
 - headline: max 8 words, specific
 - detail: 1-2 sentences, what to do and why, grounded in the given signals
 - moveForward: an array of 2-3 distinct, genuinely tactical options for what to actually try next. Never restate the signals data back, that's already visible. For "dormant" and "new_client" items, give real drafted opening angles (one referencing something specific if possible, one leading with value, one solid fallback). For "meeting" items, give distinct re-engagement tactics (switching channel, adding a fresh hook, opening a second contact at the same company). For "relationship" items, write it with EXACTLY the same substance and directness as a brand-new company approach — a company merely having a contact row in the CRM is NOT a relationship and is NOT a reason to go softer or lighter-touch; treat it as a cold approach by default.
-  2026-09-02 audit fix, real report: "relationship" items used to be written as a soft, light-touch nudge purely because some contact at that company already existed in the CRM — often just an unengaged, cold LinkedIn import, not anyone the recruiter has actually spoken to. That's wrong: never assume a relationship, never soften the approach, and never imply "you already know someone here" UNLESS this item's data includes priorContactName/priorNote/priorNoteDate — those three appearing together is the only real evidence of an actual prior conversation. When they ARE present, you may reference that specifically and naturally, e.g. "I can see you've previously spoken with priorContactName here, based on a note from priorNoteDate" — and if priorContactStatus is "warm" or "hot", say it's worth reaching back out to that same person; otherwise treat it as background color, not a reason to soften the ask. When those fields are absent (the ordinary case), write the SAME kind of direct, substantive approach you'd write for a brand-new company — never invent or imply a relationship that isn't evidenced.
+
+THIS RULE APPLIES TO EVERY ITEM, WHATEVER ITS CATEGORY — not just ones labeled "relationship": never state or imply that the other person is receptive, interested, positive, engaged, or that ANY conversation with them has already taken place, UNLESS this item's data includes priorContactName, priorNote, AND priorNoteDate together — those three appearing together are the only real evidence an actual prior exchange happened. A contact's status (hot/warm), a last_contacted date on its own, a "dormant" label, or simply having existed in the CRM a while are NOT that evidence — they describe our own bookkeeping, never what the other person said or how any conversation went. A "meeting" item whose own signals literally say "Reply so far: None logged" is a fact, not color to soften away.
+  When priorContactName/priorNote/priorNoteDate ARE present: reference it specifically and factually, close to how the recruiter would put it themselves — e.g. "I see you've spoken with priorContactName before, based on a note from priorNoteDate — worth reaching out to them again." Describe THAT a prior exchange happened; never claim or guess how it went, how receptive they were, or their mood, unless priorNote itself says so in as many words. Only when priorContactStatus is "warm" or "hot" is it fair to frame reaching back out as worth it; otherwise treat the prior exchange as background color, not a reason to soften or brighten the ask.
+  When those fields are absent (the ordinary case — including most "dormant" contacts, who were often only ever added, not actually reached): write the SAME kind of direct, substantive, cold-approach copy you'd write for a brand-new company. Never invent or imply a relationship, a prior conversation, or the other person's disposition that isn't evidenced this way.
+  2026-09-02 audit fix, real report: "relationship" items used to be written as a soft, light-touch nudge purely because some contact at that company already existed in the CRM — often just an unengaged, cold LinkedIn import, not anyone the recruiter has actually spoken to. 2026-09-04 audit fix, real report (Michael: "the contact... says 'Mohammad is receptive'. This is not true as I have never spoken to him"): the same fabrication was happening for every OTHER category too, since only "relationship" items ever had an evidence check at all — the two fixes are now one and the same rule, applied everywhere.
 
 Every item needs real, specific headline/detail/moveForward, whatever its category. Do not skip or thin out an item just because it's labeled "relationship" — that label describes where Annie found the signal, not how confidently you should approach the company.
 

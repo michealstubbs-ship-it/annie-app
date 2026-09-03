@@ -31,8 +31,20 @@ describe('buildEnrichmentPrompt', () => {
 
   it('tells the model it may reference a real prior contact only when priorNote/priorNoteDate evidence is present', () => {
     const prompt = buildEnrichmentPrompt([{ category: 'relationship', signals: {}, signal: { company_name: 'Zenith', headline: 'x' }, contact: {} }], null, null)
-    expect(prompt).toMatch(/priorContactName\/priorNote\/priorNoteDate/)
-    expect(prompt).toMatch(/never invent or imply a relationship that isn't evidenced/i)
+    expect(prompt).toMatch(/priorContactName, priorNote, AND priorNoteDate together/)
+    expect(prompt).toMatch(/never invent or imply a relationship, a prior conversation, or the other person's disposition that isn't evidenced/i)
+  })
+
+  // 2026-09-04 audit fix, real report (Michael: "the contact... says
+  // 'Mohammad is receptive'. This is not true as I have never spoken to
+  // him"): this evidence rule used to only ever be stated for items
+  // labeled "relationship" — every other category had no such instruction
+  // at all, so nothing stopped the model from inventing the other side's
+  // mood or claiming a conversation that never happened.
+  it('applies the same evidence rule to every category, not just items labeled "relationship"', () => {
+    const prompt = buildEnrichmentPrompt([{ category: 'dormant', signals: {}, contact: { name: 'Mohammad' } }], null, null)
+    expect(prompt).toMatch(/APPLIES TO EVERY ITEM, WHATEVER ITS CATEGORY/)
+    expect(prompt).toMatch(/never state or imply that the other person is receptive/i)
   })
 })
 
@@ -67,6 +79,43 @@ describe('describeItem — relationship evidence', () => {
 
   it('treats a whitespace-only note as no real evidence', () => {
     const item = { category: 'relationship', signals: {}, signal: { company_name: 'Mal', headline: 'x' }, contact: { name: 'A', notes: '   ' } }
+    expect(describeItem(item).priorContactName).toBeNull()
+  })
+})
+
+// 2026-09-04 audit fix, real report (Michael: "the contact... says
+// 'Mohammad is receptive'. This is not true as I have never spoken to
+// him"): the relationship-only evidence check above used to be the ONLY
+// place this gating existed — a "dormant" contact (often only ever added,
+// never actually reached), a "new_client" contact whose hot/warm status
+// came from something other than a logged conversation, or a "meeting"
+// item whose own signals literally say "Reply so far: None logged" all
+// used to pass zero evidence fields at all, so nothing in the data itself
+// stopped the model from inventing the other side's receptiveness.
+describe('describeItem — evidence gating now applies to every category', () => {
+  it('dormant: passes no prior-contact evidence when the contact was only ever added, never actually reached', () => {
+    const item = { category: 'dormant', signals: {}, contact: { name: 'Mohammad', company: 'Acme', title: 'CFO' } }
+    const d = describeItem(item)
+    expect(d.priorContactName).toBeNull()
+    expect(d.priorNote).toBeNull()
+    expect(d.priorNoteDate).toBeNull()
+    expect(d.priorContactStatus).toBeNull()
+  })
+
+  it('dormant: passes real evidence through when a genuine note is actually on file', () => {
+    const item = { category: 'dormant', signals: {}, contact: { name: 'Mohammad', company: 'Acme', title: 'CFO', notes: 'Called 2026-03-01, said to check back in Q3', last_contacted: '2026-03-01', status: 'warm' } }
+    const d = describeItem(item)
+    expect(d.priorContactName).toBe('Mohammad')
+    expect(d.priorNote).toBe('Called 2026-03-01, said to check back in Q3')
+  })
+
+  it('meeting: passes no prior-contact evidence when there is no linked contact or no note on it', () => {
+    expect(describeItem({ category: 'meeting', signals: {}, deal: { company: 'Acme', role: 'CFO' }, contact: null }).priorContactName).toBeNull()
+    expect(describeItem({ category: 'meeting', signals: {}, deal: { company: 'Acme', role: 'CFO' }, contact: { name: 'A', notes: '' } }).priorContactName).toBeNull()
+  })
+
+  it('new_client: passes no prior-contact evidence just because status is hot/warm — that is not a logged conversation', () => {
+    const item = { category: 'new_client', signals: {}, contact: { name: 'Mohammad', company: 'Acme', title: 'CFO', status: 'hot' } }
     expect(describeItem(item).priorContactName).toBeNull()
   })
 })

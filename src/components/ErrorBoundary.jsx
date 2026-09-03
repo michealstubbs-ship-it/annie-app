@@ -1,5 +1,6 @@
 import React from 'react'
 import { reportClientError } from '../lib/errorReporting'
+import { hasAlreadyAttemptedChunkReload, markChunkReloadAttempted } from '../lib/chunkReloadGuard.js'
 
 // Every dashboard sub-page is React.lazy-loaded (see Dashboard.jsx), and
 // Vite doesn't keep old build output around after a new deploy. A customer
@@ -19,12 +20,13 @@ import { reportClientError } from '../lib/errorReporting'
 // for something that isn't actually broken.
 const CHUNK_LOAD_ERROR_RE = /Failed to fetch dynamically imported module|Loading chunk .* failed|error loading dynamically imported module|Importing a module script failed/i
 
-// One auto-reload per browser tab, not per error: if the reload doesn't
-// clear it (a real network problem, not a stale chunk), retrying forever
-// would loop the tab instead of ever showing the customer anything.
-// sessionStorage (not a module-level variable) survives the reload itself,
-// which is the whole point of needing a flag at all.
-const AUTO_RELOAD_KEY = 'annie_chunk_reload_attempted'
+// The one-shot auto-reload guard itself (set/read here, cleared from
+// main.jsx on successful boot) lives in lib/chunkReloadGuard.js — see that
+// file's header for the full "why clear it, not just set it" story
+// (2026-09-04, Michael: "I get the 'something went wrong' message a lot
+// between different tabs"). Split out purely so it's unit-testable without
+// dragging this component's Supabase-touching imports into a test that has
+// nothing to do with them.
 
 // Catches render-time errors that the global window handlers in
 // errorReporting.js can't (React swallows those instead of letting them
@@ -45,10 +47,8 @@ export default class ErrorBoundary extends React.Component {
     reportClientError(error.message, error, { kind: 'react-render', componentStack: info?.componentStack })
 
     if (CHUNK_LOAD_ERROR_RE.test(error?.message || '')) {
-      let alreadyTried = false
-      try { alreadyTried = sessionStorage.getItem(AUTO_RELOAD_KEY) === '1' } catch {}
-      if (!alreadyTried) {
-        try { sessionStorage.setItem(AUTO_RELOAD_KEY, '1') } catch {}
+      if (!hasAlreadyAttemptedChunkReload()) {
+        markChunkReloadAttempted()
         window.location.reload()
         return
       }

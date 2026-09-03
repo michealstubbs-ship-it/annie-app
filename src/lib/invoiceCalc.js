@@ -55,12 +55,24 @@ export function computeInvoiceTotals(lineItems, taxRatePercent) {
 // with GBP/EUR covering an invoice in a currency Annie has no other use
 // for yet. Anything more exotic should come from a direct request rather
 // than guessing at every world currency up front.
+// 2026-09-04, Michael (candidate salary currency question, "1 and 2" —
+// both match the existing list AND add the full GCC set): the live_job
+// sourcing side of the product already covers every GCC market (AE, SA,
+// QA, KW, BH, OM — see THEIRSTACK_COUNTRY_MAP in scanShared.js), but this
+// list only ever covered 2 of those 6 (AED, SAR). Rounded it out to match,
+// since a candidate's salary is just as likely to be quoted in QAR/KWD/
+// BHD/OMR as AED/SAR for a firm actually working those markets, same
+// reasoning as AED/SAR being here at all.
 export const CURRENCY_OPTIONS = [
   { code: 'AED', symbol: 'AED', label: 'UAE Dirham (AED)' },
   { code: 'GBP', symbol: '£', label: 'British Pound (GBP)' },
   { code: 'USD', symbol: '$', label: 'US Dollar (USD)' },
   { code: 'EUR', symbol: '€', label: 'Euro (EUR)' },
   { code: 'SAR', symbol: 'SAR', label: 'Saudi Riyal (SAR)' },
+  { code: 'QAR', symbol: 'QAR', label: 'Qatari Riyal (QAR)' },
+  { code: 'KWD', symbol: 'KWD', label: 'Kuwaiti Dinar (KWD)' },
+  { code: 'BHD', symbol: 'BHD', label: 'Bahraini Dinar (BHD)' },
+  { code: 'OMR', symbol: 'OMR', label: 'Omani Rial (OMR)' },
 ]
 
 export function currencySymbol(code) {

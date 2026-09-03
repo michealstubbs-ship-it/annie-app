@@ -31,6 +31,14 @@ describe('searchCandidates', () => {
   it('does not throw on a candidate with null fields', () => {
     expect(searchCandidates(CANDIDATES, 'evan').map(c => c.id)).toEqual(['5'])
   })
+
+  // 2026-09-04, Michael: "for candidate, we need to add a nationality
+  // function" — same free-text field as location/industry, same search
+  // treatment.
+  it('matches on nationality', () => {
+    const withNationality = [...CANDIDATES, { id: '6', name: 'Farah Noor', role: 'CTO', company: 'Delta', location: 'Doha', industry: 'Tech', nationality: 'Emirati', email: 'farah@delta.com', status: 'sourced', want_sal: 100000 }]
+    expect(searchCandidates(withNationality, 'emirati').map(c => c.id)).toEqual(['6'])
+  })
 })
 
 describe('filterCandidatesByStage', () => {

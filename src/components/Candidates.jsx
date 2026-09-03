@@ -13,6 +13,7 @@ import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
 import { useMarketCurrency } from '../lib/useMarketCurrency'
+import { CURRENCY_OPTIONS, currencySymbol } from '../lib/invoiceCalc'
 
 const STAGE_COLOR = {
   sourced: 'bg-slate-100 text-slate-600',
@@ -27,9 +28,21 @@ const STAGE_COLOR = {
 }
 
 const EMPTY = {
-  name: '', role: '', company: '', location: '', industry: '', email: '', phone: '',
-  curr_sal: '', want_sal: '', notice_period: '', availability: '', linkedin_url: '',
+  name: '', role: '', company: '', location: '', industry: '', nationality: '', email: '', phone: '',
+  curr_sal: '', curr_sal_currency: '', want_sal: '', want_sal_currency: '', notice_period: '', availability: '', linkedin_url: '',
   status: 'sourced', source: '', follow_up_date: '', notes: '', job_id: '',
+}
+
+// A candidate's own quoted salary currency can differ from the firm's own
+// market/invoicing default (useMarketCurrency) — a firm working the UK and
+// UAE both might have one candidate quoting a GBP salary and another an
+// AED one, same day. Same space-vs-no-space convention useMarketCurrency
+// already settled on ("AED 300,000" vs "£300,000"), just resolved per
+// candidate instead of once for the whole page.
+function salaryPrefix(code, fallbackPrefix) {
+  if (!code) return fallbackPrefix
+  const symbol = currencySymbol(code)
+  return symbol.length > 1 ? `${symbol} ` : symbol
 }
 
 function initials(name) {
@@ -38,7 +51,14 @@ function initials(name) {
 
 export default function Candidates() {
   // 2026-08-30: was a hardcoded 'AED' on the card and both salary labels.
-  const { currencyPrefix, currencyLabel } = useMarketCurrency()
+  // 2026-09-04, Michael: "Need to be able to change the currency on Current
+  // salary and desired salary" — currencyCode is now only the DEFAULT a
+  // new candidate's salary fields start on (a firm working one market at a
+  // time still gets it pre-filled correctly with zero extra clicks); each
+  // candidate can now say a different one, stored per-row (see
+  // curr_sal_currency/want_sal_currency below) rather than always reading
+  // the firm's own single market/invoicing default.
+  const { currencyPrefix, currencyLabel, currencyCode } = useMarketCurrency()
   const { user } = useAuth()
   const navigate = useNavigate()
   const [candidates, setCandidates] = useState([])
@@ -105,11 +125,12 @@ export default function Candidates() {
   const sorted = useMemo(() => sortCandidates(stageFiltered, sortBy), [stageFiltered, sortBy])
   const groups = filter === 'all' ? groupCandidatesByStage(sorted) : null
 
-  function openAdd() { setForm(EMPTY); setEditId(null); setCvFile(null); setExistingCvPath(null); setError(''); setShowModal(true) }
+  function openAdd() { setForm({ ...EMPTY, curr_sal_currency: currencyCode, want_sal_currency: currencyCode }); setEditId(null); setCvFile(null); setExistingCvPath(null); setError(''); setShowModal(true) }
   function openEdit(c) {
     setForm({
-      name: c.name || '', role: c.role || '', company: c.company || '', location: c.location || '', industry: c.industry || '',
-      email: c.email || '', phone: c.phone || '', curr_sal: c.curr_sal || '', want_sal: c.want_sal || '',
+      name: c.name || '', role: c.role || '', company: c.company || '', location: c.location || '', industry: c.industry || '', nationality: c.nationality || '',
+      email: c.email || '', phone: c.phone || '', curr_sal: c.curr_sal || '', curr_sal_currency: c.curr_sal_currency || currencyCode,
+      want_sal: c.want_sal || '', want_sal_currency: c.want_sal_currency || currencyCode,
       notice_period: c.notice_period || '', availability: c.availability || '', linkedin_url: c.linkedin_url || '',
       status: c.status || 'sourced', source: c.source || '', follow_up_date: c.follow_up_date || '', notes: c.notes || '', job_id: c.job_id || '',
     })
@@ -160,7 +181,9 @@ export default function Candidates() {
       const row = {
         ...form,
         curr_sal: form.curr_sal ? parseInt(form.curr_sal) : null,
+        curr_sal_currency: form.curr_sal ? (form.curr_sal_currency || currencyCode) : null,
         want_sal: form.want_sal ? parseInt(form.want_sal) : null,
+        want_sal_currency: form.want_sal ? (form.want_sal_currency || currencyCode) : null,
         follow_up_date: form.follow_up_date || null,
         job_id: form.job_id || null,
         cv_path: cvPath,
@@ -226,7 +249,7 @@ export default function Candidates() {
                 <p className="text-xs text-gray-500 mt-0.5">{[c.role, c.company].filter(Boolean).join(' · ')}</p>
               </div>
               <div className="text-right flex-shrink-0">
-                {c.want_sal && <div className="text-xs font-bold text-navy">{currencyPrefix}{Number(c.want_sal).toLocaleString()}</div>}
+                {c.want_sal && <div className="text-xs font-bold text-navy">{salaryPrefix(c.want_sal_currency, currencyPrefix)}{Number(c.want_sal).toLocaleString()}</div>}
                 {c.notice_period && <div className="text-[11px] text-gray-400">{c.notice_period} notice</div>}
               </div>
             </div>
@@ -237,6 +260,7 @@ export default function Candidates() {
             <div className="flex items-center gap-2 flex-wrap mt-2.5" onClick={e => e.stopPropagation()}>
               {c.location && <span className="text-[10px] bg-page-bg text-gray-500 px-2 py-1 rounded-md">📍 {c.location}</span>}
               {c.industry && <span className="text-[10px] bg-page-bg text-gray-500 px-2 py-1 rounded-md">🏢 {c.industry}</span>}
+              {c.nationality && <span className="text-[10px] bg-page-bg text-gray-500 px-2 py-1 rounded-md">🌍 {c.nationality}</span>}
               {c.linkedin_url && (
                 <a href={c.linkedin_url.startsWith('http') ? c.linkedin_url : `https://${c.linkedin_url}`} target="_blank" rel="noreferrer" className="text-[10px] font-semibold px-2 py-1 rounded-md bg-[#0077b5] text-white">LinkedIn</a>
               )}
@@ -386,6 +410,10 @@ export default function Candidates() {
                 <input id="candidate-industry" className="input" value={form.industry} onChange={e => setForm(p => ({ ...p, industry: e.target.value }))} />
               </div>
               <div>
+                <label className="label" htmlFor="candidate-nationality">Nationality</label>
+                <input id="candidate-nationality" className="input" value={form.nationality} onChange={e => setForm(p => ({ ...p, nationality: e.target.value }))} />
+              </div>
+              <div>
                 <label className="label" htmlFor="candidate-email">Email</label>
                 <input id="candidate-email" className="input" type="email" value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} />
               </div>
@@ -394,12 +422,34 @@ export default function Candidates() {
                 <input id="candidate-phone" className="input" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} />
               </div>
               <div>
-                <label className="label" htmlFor="candidate-curr-sal">Current salary ({currencyLabel})</label>
-                <input id="candidate-curr-sal" className="input" type="number" value={form.curr_sal} onChange={e => setForm(p => ({ ...p, curr_sal: e.target.value }))} />
+                <label className="label" htmlFor="candidate-curr-sal">Current salary</label>
+                <div className="flex gap-1.5">
+                  <select
+                    id="candidate-curr-sal-currency"
+                    aria-label="Current salary currency"
+                    className="input w-[5.5rem] flex-shrink-0 px-1.5"
+                    value={form.curr_sal_currency || currencyCode}
+                    onChange={e => setForm(p => ({ ...p, curr_sal_currency: e.target.value }))}
+                  >
+                    {CURRENCY_OPTIONS.map(c => <option key={c.code} value={c.code}>{c.code}</option>)}
+                  </select>
+                  <input id="candidate-curr-sal" className="input flex-1 min-w-0" type="number" value={form.curr_sal} onChange={e => setForm(p => ({ ...p, curr_sal: e.target.value }))} />
+                </div>
               </div>
               <div>
-                <label className="label" htmlFor="candidate-want-sal">Desired salary ({currencyLabel})</label>
-                <input id="candidate-want-sal" className="input" type="number" value={form.want_sal} onChange={e => setForm(p => ({ ...p, want_sal: e.target.value }))} />
+                <label className="label" htmlFor="candidate-want-sal">Desired salary</label>
+                <div className="flex gap-1.5">
+                  <select
+                    id="candidate-want-sal-currency"
+                    aria-label="Desired salary currency"
+                    className="input w-[5.5rem] flex-shrink-0 px-1.5"
+                    value={form.want_sal_currency || currencyCode}
+                    onChange={e => setForm(p => ({ ...p, want_sal_currency: e.target.value }))}
+                  >
+                    {CURRENCY_OPTIONS.map(c => <option key={c.code} value={c.code}>{c.code}</option>)}
+                  </select>
+                  <input id="candidate-want-sal" className="input flex-1 min-w-0" type="number" value={form.want_sal} onChange={e => setForm(p => ({ ...p, want_sal: e.target.value }))} />
+                </div>
               </div>
               <div>
                 <label className="label" htmlFor="candidate-notice-period">Notice period</label>
