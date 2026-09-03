@@ -17,8 +17,12 @@
 // the subset the AI prompt is allowed to choose for itself — live_job rows
 // are forced in code from a separate entryType field, never left to the
 // AI's own signalType choice. See scan-now-background.js / intelligence-
-// scan.js's row-building, and IntelligenceFeed.jsx's query (which excludes
-// live_job rows from that feed entirely — Today's Actions only).
+// scan.js's row-building. IntelligenceFeed.jsx's query used to exclude
+// live_job rows entirely (Today's Actions only) but that was reversed
+// 2026-09-02 per Michael's own direction; as of 2026-09-03 live_job rows
+// flow into the Feed and get their own always-visible "Live roles" tab
+// there (see IntelligenceFeed.jsx), separate from the "Signals" tab that
+// funding/expansion/leadership_change use.
 // `chipLabel` is the short form the Feed's filter chip bar uses (the mock
 // keeps that row terse, e.g. "Leadership" rather than the fuller
 // "Leadership change" the per-post topic pill spells out) — omit it and the

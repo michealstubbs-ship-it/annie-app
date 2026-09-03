@@ -27,14 +27,19 @@ function timeAgo(dateStr) {
   return new Date(dateStr).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
 
-// 2026-09-02, Michael: live_job rows used to be excluded from `signals` by
-// listActiveSignals itself — Today's Actions only. Reversed per Michael's
-// own direction (see listActiveSignals' own header in lib/data/signals.js) —
-// live_job now flows through here like any other signal_type, and gets its
-// own "Live roles" 💼 chip automatically via presentTypes below the moment a
-// live_job row exists (SIGNAL_TYPE_META.live_job, signalTypes.js). It's
-// never a NEWS_SIGNAL_TYPES member, so it always lands in the main "signals"
-// tab, not the News tab, same as funding/expansion/leadership_change.
+// 2026-09-03, Michael: live_job used to only ever get a conditional filter
+// chip inside the "Signals" tab (only appearing at all once presentTypes
+// had more than one type present) — not what Michael actually asked for
+// back on 2026-09-02 ("it should show up here as Live job in its own tab
+// and always filter into today's actions", see this file's git history).
+// A chip that only sometimes renders is not "its own tab": it doesn't
+// exist when it's the only type present, it's not reachable by URL/deep
+// link, and it disappears from view the instant you're looking at News.
+// live_job now gets a real third tab, always visible (same pattern as
+// News below: a persistent button, a count badge, never conditional on
+// what else happens to be in the feed), and is excluded from the
+// "Signals" tab's own list — moved, not duplicated, exactly like
+// NEWS_SIGNAL_TYPES already is.
 async function loadFeedPageData(userId) {
   const signals = await listActiveSignals(userId)
   return { signals }
@@ -86,13 +91,22 @@ export default function IntelligenceFeed() {
   // actually show.
   const dedupedSignals = useMemo(() => collapseFeedDuplicates(signals), [signals])
   const newCount = useMemo(() => dedupedSignals.filter(s => s.status === 'new').length, [dedupedSignals])
-  const tabSignals = useMemo(
-    () => dedupedSignals.filter(s => mainTab === 'news' ? NEWS_SIGNAL_TYPES.includes(s.signal_type) : !NEWS_SIGNAL_TYPES.includes(s.signal_type)),
-    [dedupedSignals, mainTab],
-  )
+  // Three mutually-exclusive slices of the one signals array: News
+  // (m_and_a/regulatory/public_commentary), Live roles (live_job), and
+  // everything else in "Signals". A row lives in exactly one tab — live_job
+  // used to also show up in Signals via the chip filter below; now it only
+  // shows in its own tab, same "move, not duplicate" rule News already
+  // follows, so the two tabs never disagree with each other about the same
+  // row's count.
+  const tabSignals = useMemo(() => dedupedSignals.filter(s => {
+    if (mainTab === 'news') return NEWS_SIGNAL_TYPES.includes(s.signal_type)
+    if (mainTab === 'live_jobs') return s.signal_type === 'live_job'
+    return !NEWS_SIGNAL_TYPES.includes(s.signal_type) && s.signal_type !== 'live_job'
+  }), [dedupedSignals, mainTab])
   const visible = useMemo(() => typeFilter === 'all' ? tabSignals : tabSignals.filter(s => s.signal_type === typeFilter), [tabSignals, typeFilter])
   const presentTypes = useMemo(() => [...new Set(tabSignals.map(s => s.signal_type))], [tabSignals])
   const newsCount = useMemo(() => dedupedSignals.filter(s => NEWS_SIGNAL_TYPES.includes(s.signal_type)).length, [dedupedSignals])
+  const liveJobsCount = useMemo(() => dedupedSignals.filter(s => s.signal_type === 'live_job').length, [dedupedSignals])
 
   // The type-filter chip only ever makes sense scoped to whichever tab is
   // active (no point offering an "M&A" chip while looking at the Signals
@@ -223,9 +237,15 @@ export default function IntelligenceFeed() {
         </button>
         <button
           onClick={() => switchTab('news')}
-          className={`px-1.5 py-2.5 text-[13.5px] font-bold border-b-2 -mb-0.5 transition-colors ${mainTab === 'news' ? 'text-navy border-gold' : 'text-gray-500 border-transparent hover:text-gray-600'}`}
+          className={`px-1.5 py-2.5 mr-[22px] text-[13.5px] font-bold border-b-2 -mb-0.5 transition-colors ${mainTab === 'news' ? 'text-navy border-gold' : 'text-gray-500 border-transparent hover:text-gray-600'}`}
         >
           News {newsCount > 0 && <span className="text-xs font-semibold">({newsCount})</span>}
+        </button>
+        <button
+          onClick={() => switchTab('live_jobs')}
+          className={`px-1.5 py-2.5 text-[13.5px] font-bold border-b-2 -mb-0.5 transition-colors ${mainTab === 'live_jobs' ? 'text-navy border-gold' : 'text-gray-500 border-transparent hover:text-gray-600'}`}
+        >
+          💼 Live roles {liveJobsCount > 0 && <span className="text-xs font-semibold">({liveJobsCount})</span>}
         </button>
       </div>
 
