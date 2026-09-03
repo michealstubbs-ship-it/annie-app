@@ -46,6 +46,46 @@ describe('fileBufferToRows — plain delimited text, any of the realistic delimi
   })
 })
 
+// 2026-09-04, real customer report: Michael saw "funny letters" instead of
+// Arabic text on Companies imported via LinkedIn. Root cause: LinkedIn's
+// real Connections.csv is plain UTF-8 with NO byte-order mark, and SheetJS's
+// own plain-text reader defaults to decoding un-BOM'd bytes as Latin-1 —
+// every multi-byte UTF-8 character (any Arabic, any accented Latin) got
+// split into multiple single-byte mojibake characters. These tests build
+// the exact un-BOM'd byte shape a real customer file has (via the same
+// TextEncoder-based toArrayBuffer helper already used above — it never adds
+// a BOM), so a regression back to the old Latin-1-by-default behavior would
+// fail these immediately.
+describe('fileBufferToRows — non-ASCII text with no BOM (the real mojibake bug)', () => {
+  it('reads Arabic company/name text correctly from a plain (un-BOM\'d) UTF-8 CSV', () => {
+    const rows = fileBufferToRows(toArrayBuffer('First Name,Last Name,Company\nمحمد,العلي,شركة الرياض\n'))
+    expect(rows[1]).toEqual(['محمد', 'العلي', 'شركة الرياض'])
+  })
+
+  it('reads accented Latin text correctly from a plain (un-BOM\'d) UTF-8 CSV', () => {
+    const rows = fileBufferToRows(toArrayBuffer('First Name,Last Name,Company\nRené,Müller,Société Générale\n'))
+    expect(rows[1]).toEqual(['René', 'Müller', 'Société Générale'])
+  })
+
+  it('end-to-end: rowsToContacts carries the correctly-decoded Arabic text through, not mojibake', () => {
+    const csvText = 'First Name,Last Name,Company\nمحمد,العلي,شركة الرياض\n'
+    const rows = fileBufferToRows(toArrayBuffer(csvText))
+    expect(rowsToContacts(rows)).toEqual([{
+      name: 'محمد العلي', company: 'شركة الرياض', title: '', linkedin_url: '', email: '', connectedOn: '',
+    }])
+  })
+
+  it('still correctly decodes a genuinely legacy-Windows-encoded (Windows-1252) file, falling back off the UTF-8 attempt', () => {
+    // "café" in real Windows-1252 bytes: 'c','a','f',0xE9 — 0xE9 alone is not
+    // valid UTF-8 (a continuation byte with no lead byte), so the UTF-8
+    // decode attempt throws and the Windows-1252 fallback correctly reads
+    // it as "é", proving the fallback path itself still works.
+    const bytes = new Uint8Array([...'Company\ncaf'].map(c => c.charCodeAt(0)).concat(0xe9))
+    const rows = fileBufferToRows(bytes.buffer)
+    expect(rows[1]).toEqual(['café'])
+  })
+})
+
 describe('fileBufferToRows — real binary spreadsheet formats, built and read via the actual SheetJS library', () => {
   const sheetData = [
     ['First Name', 'Last Name', 'URL', 'Email Address', 'Company', 'Position', 'Connected On'],
