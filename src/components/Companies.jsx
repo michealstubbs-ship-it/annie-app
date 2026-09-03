@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { supabase } from '../lib/supabase'
 import { normalizeCompanyName } from '../lib/companyMatch'
 import { listCompanies, createCompany, updateCompany, deleteCompany } from '../lib/data/companies'
 import { listContactsWithCompany } from '../lib/data/contacts'
 import { listJobsMinimal } from '../lib/data/jobs'
+import { listCompanyDocuments, createCompanyDocument, deleteCompanyDocument } from '../lib/data/companyDocuments'
 import { listIndustries, searchCompanies, filterCompaniesByIndustry, sortCompanies } from '../lib/companiesView'
 import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
@@ -56,8 +58,75 @@ export default function Companies() {
   // fully inert before this (no click action at all, not even Edit).
   const [detailContactId, setDetailContactId] = useState(null)
 
+  // 2026-09-04, Michael: "Should be able to attach a document next to a
+  // client... if you sign a contract with the client, you can attach it to
+  // their name" — a third tab alongside Contacts/Jobs, same per-company
+  // detail-panel pattern. Loaded lazily per selected company (not batched
+  // into the page's own load() above) since most companies won't have any
+  // documents most of the time, and the file list itself is cheap to fetch
+  // on demand rather than for every company up front.
+  const [documents, setDocuments] = useState([])
+  const [docsLoading, setDocsLoading] = useState(false)
+  const [docFile, setDocFile] = useState(null)
+  const [docUploading, setDocUploading] = useState(false)
+  const [docError, setDocError] = useState('')
+  const [confirmDeleteDocId, setConfirmDeleteDocId] = useState(null)
+
   useEffect(() => { load() }, [user])
   useEffect(() => { if (location.state?.autoOpenAdd) openAddCo() }, [location.state])
+  useEffect(() => { if (selected) loadDocuments(selected.id) }, [selected?.id])
+
+  async function loadDocuments(companyId) {
+    setDocsLoading(true)
+    setDocError('')
+    try {
+      setDocuments(await listCompanyDocuments(companyId))
+    } catch (err) {
+      setDocError(err.message || 'Could not load documents for this company.')
+    } finally {
+      setDocsLoading(false)
+    }
+  }
+
+  async function uploadDocument() {
+    if (!docFile || !selected) return
+    setDocUploading(true)
+    setDocError('')
+    try {
+      const ext = docFile.name.split('.').pop()
+      const path = `${user.id}/${crypto.randomUUID()}.${ext}`
+      const { error: upErr } = await supabase.storage.from('company-documents').upload(path, docFile, { upsert: true, contentType: docFile.type })
+      if (upErr) throw new Error('Upload failed: ' + upErr.message)
+      const { error: err } = await createCompanyDocument({
+        company_id: selected.id, user_id: user.id, file_name: docFile.name, file_path: path,
+      })
+      if (err) throw err
+      setDocFile(null)
+      await loadDocuments(selected.id)
+    } catch (err) {
+      setDocError(err.message)
+    } finally {
+      setDocUploading(false)
+    }
+  }
+
+  async function viewDocument(path) {
+    const { data, error } = await supabase.storage.from('company-documents').createSignedUrl(path, 3600)
+    if (error) return alert('Could not open document: ' + error.message)
+    window.open(data.signedUrl, '_blank')
+  }
+
+  async function deleteDocument(id, path) {
+    setDocError('')
+    // Best-effort on the storage object — if it's already gone (or the
+    // delete races another tab), the DB row is still the source of truth
+    // for what's "attached to this company" and must come off the list
+    // either way, same non-blocking precedent as candidate CV handling.
+    try { await supabase.storage.from('company-documents').remove([path]) } catch {}
+    const { error: err } = await deleteCompanyDocument(id)
+    if (err) { setDocError(err.message); return }
+    setDocuments(prev => prev.filter(d => d.id !== id))
+  }
 
   async function load() {
     setLoading(true)
@@ -245,7 +314,7 @@ export default function Companies() {
             const jOpen = jobsFor(co.id).filter(j => j.status === 'active' || j.status === 'onhold').length
             const clr = color(co.name)
             return (
-              <button key={co.id} onClick={() => { setSelected(co); setTab('contacts'); setDelError(''); setCoNote('') }} className="card p-4 text-left hover:border-gold border border-transparent transition-all">
+              <button key={co.id} onClick={() => { setSelected(co); setTab('contacts'); setDelError(''); setCoNote(''); setDocFile(null); setDocError('') }} className="card p-4 text-left hover:border-gold border border-transparent transition-all">
                 <div className="flex items-center gap-3 mb-2">
                   <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0" style={{ background: clr + '18', color: clr }}>{initials(co.name)}</div>
                   <div className="min-w-0">
@@ -310,6 +379,7 @@ export default function Companies() {
               <div className="flex gap-1 mt-4">
                 <button onClick={() => setTab('contacts')} className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${tab === 'contacts' ? 'bg-navy text-white' : 'text-gray-500 hover:bg-gray-100'}`}>Contacts ({contactsFor(selected.id).length})</button>
                 <button onClick={() => setTab('jobs')} className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${tab === 'jobs' ? 'bg-navy text-white' : 'text-gray-500 hover:bg-gray-100'}`}>Jobs ({jobsFor(selected.id).length})</button>
+                <button onClick={() => setTab('documents')} className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${tab === 'documents' ? 'bg-navy text-white' : 'text-gray-500 hover:bg-gray-100'}`}>Documents ({documents.length})</button>
               </div>
             </div>
 
@@ -356,6 +426,42 @@ export default function Companies() {
                   )}
                 </div>
               )}
+
+              {tab === 'documents' && (
+                <div>
+                  <ErrorBanner>{docError}</ErrorBanner>
+                  <div className="flex items-center gap-2 mb-4">
+                    <input
+                      type="file"
+                      onChange={e => setDocFile(e.target.files?.[0] || null)}
+                      className="text-xs flex-1"
+                    />
+                    <button onClick={uploadDocument} disabled={!docFile || docUploading} className="btn-primary flex-shrink-0">
+                      {docUploading ? 'Uploading...' : 'Upload'}
+                    </button>
+                  </div>
+                  {docsLoading ? (
+                    <p className="text-sm text-gray-400">Loading documents...</p>
+                  ) : documents.length === 0 ? (
+                    <p className="text-sm text-gray-400">No documents attached to {selected.name} yet — a signed contract, an MSA, anything worth keeping against this client's name.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {documents.map(d => (
+                        <div key={d.id} className="flex items-center justify-between p-3 rounded-lg border border-gray-100">
+                          <div className="min-w-0">
+                            <div className="font-semibold text-navy text-sm truncate">📄 {d.file_name}</div>
+                            <div className="text-xs text-gray-400">{new Date(d.uploaded_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
+                          </div>
+                          <div className="flex items-center gap-3 flex-shrink-0">
+                            <button onClick={() => viewDocument(d.file_path)} className="text-xs font-semibold text-gold-ink hover:underline">View</button>
+                            <button onClick={() => setConfirmDeleteDocId(d.id)} className="text-xs font-semibold text-red-500 hover:underline">Delete</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -389,6 +495,14 @@ export default function Companies() {
         onConfirm={() => delCo(selected.id)}
         title="Delete company"
         message="Delete this company? Contacts and jobs linked to it will stay, just unlinked."
+        confirmLabel="Delete"
+      />
+      <ConfirmDialog
+        open={!!confirmDeleteDocId}
+        onClose={() => setConfirmDeleteDocId(null)}
+        onConfirm={() => { const id = confirmDeleteDocId; const doc = documents.find(d => d.id === id); setConfirmDeleteDocId(null); if (doc) deleteDocument(id, doc.file_path) }}
+        title="Delete document"
+        message="Delete this document? This can't be undone."
         confirmLabel="Delete"
       />
     </div>

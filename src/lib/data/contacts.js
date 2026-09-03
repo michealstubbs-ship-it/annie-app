@@ -76,3 +76,19 @@ export async function listContactsForMatching(userId) {
   if (error) throw error
   return data || []
 }
+
+// 2026-09-04, Michael ("when you are adding a candidate, let us as an extra
+// function add it to a company as a contact") — Candidates.jsx's own guard
+// against creating a second, duplicate contact row every time the same
+// candidate is saved again with that option still checked. A company's own
+// contact list is inherently small, so filtering client-side (same
+// precedent as findOrCreateCompany's own name-matching, just scoped to one
+// company instead of the whole table) is cheap and simple rather than
+// worth a server-side ilike query.
+export async function findContactIdByCompanyAndName(companyId, name) {
+  const key = (name || '').trim().toLowerCase()
+  if (!companyId || !key) return null
+  const { data, error } = await supabase.from('contacts').select('id, name').eq('company_id', companyId)
+  if (error) throw error
+  return (data || []).find(c => (c.name || '').trim().toLowerCase() === key)?.id || null
+}

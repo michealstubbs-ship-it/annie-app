@@ -9,6 +9,8 @@ import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import { logSignalOutcome } from '../lib/signalOutcomes'
 import { companiesMatch } from '../lib/companyMatch'
+import { findOrCreateCompany } from '../lib/data/companies'
+import { createContact, findContactIdByCompanyAndName } from '../lib/data/contacts'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
@@ -30,7 +32,7 @@ const STAGE_COLOR = {
 const EMPTY = {
   name: '', role: '', company: '', location: '', industry: '', nationality: '', email: '', phone: '',
   curr_sal: '', curr_sal_currency: '', want_sal: '', want_sal_currency: '', notice_period: '', availability: '', linkedin_url: '',
-  status: 'sourced', source: '', follow_up_date: '', notes: '', job_id: '',
+  status: 'sourced', source: '', follow_up_date: '', notes: '', job_id: '', add_as_contact: false,
 }
 
 // A candidate's own quoted salary currency can differ from the firm's own
@@ -133,6 +135,7 @@ export default function Candidates() {
       want_sal: c.want_sal || '', want_sal_currency: c.want_sal_currency || currencyCode,
       notice_period: c.notice_period || '', availability: c.availability || '', linkedin_url: c.linkedin_url || '',
       status: c.status || 'sourced', source: c.source || '', follow_up_date: c.follow_up_date || '', notes: c.notes || '', job_id: c.job_id || '',
+      add_as_contact: false,
     })
     setEditId(c.id)
     setCvFile(null)
@@ -164,6 +167,37 @@ export default function Candidates() {
     }
   }
 
+  // 2026-09-04, Michael: "when you are adding a candidate, let us as an
+  // extra function add it to a company as a contact" — best-effort, same
+  // "never block the actual save" precedent as maybeLogPlacement above.
+  // findOrCreateCompany/findContactIdByCompanyAndName are the exact same
+  // dedupe primitives ContactFormModal/CompanySelect already use, so this
+  // can never create a second company or a duplicate contact just because
+  // the box was left checked across a couple of edits.
+  async function maybeAddAsContact(row) {
+    if (!row.add_as_contact || !row.name?.trim() || !row.company?.trim()) return
+    try {
+      const companyId = await findOrCreateCompany(row.company.trim(), user.id)
+      if (!companyId) return
+      const existingId = await findContactIdByCompanyAndName(companyId, row.name)
+      if (existingId) return
+      await createContact({
+        name: row.name.trim(),
+        email: row.email || null,
+        phone: row.phone || null,
+        title: row.role || null,
+        company: row.company.trim(),
+        company_id: companyId,
+        status: 'warm',
+        notes: `Also added as a candidate on ${new Date().toLocaleDateString('en-GB')}.`,
+      }, user.id)
+    } catch (err) {
+      // Best-effort — the candidate itself already saved fine; surface this
+      // as a non-blocking note rather than losing it silently.
+      setListError(`Candidate saved, but could not also add as a contact: ${err.message}`)
+    }
+  }
+
   async function save() {
     if (!form.name.trim()) return setError('Name is required')
     setSaving(true)
@@ -178,8 +212,12 @@ export default function Candidates() {
         cvPath = path
       }
 
+      // add_as_contact is a form-only flag — never a candidates column —
+      // so it's split off here rather than spread onto the row that
+      // actually gets persisted.
+      const { add_as_contact, ...formFields } = form
       const row = {
-        ...form,
+        ...formFields,
         curr_sal: form.curr_sal ? parseInt(form.curr_sal) : null,
         curr_sal_currency: form.curr_sal ? (form.curr_sal_currency || currencyCode) : null,
         want_sal: form.want_sal ? parseInt(form.want_sal) : null,
@@ -200,6 +238,7 @@ export default function Candidates() {
         if (err) throw err
       }
       maybeLogPlacement(row, previousStatus)
+      maybeAddAsContact({ ...row, add_as_contact: form.add_as_contact })
       await load()
       setShowModal(false)
     } catch (err) {
@@ -476,6 +515,28 @@ export default function Candidates() {
               <div>
                 <label className="label" htmlFor="candidate-follow-up-date">Follow-up date</label>
                 <input id="candidate-follow-up-date" className="input" type="date" value={form.follow_up_date} onChange={e => setForm(p => ({ ...p, follow_up_date: e.target.value }))} />
+              </div>
+              {/* 2026-09-04, Michael: "when you are adding a candidate, let
+                  us as an extra function add it to a company as a contact"
+                  — a candidate is sometimes also a useful business contact
+                  (a hiring manager on the move, a referral source), so this
+                  offers to also create/link a real Contacts row at their
+                  current company, without leaving this form. Disabled until
+                  there's a company to attach to, since a contact with no
+                  company would be an orphan the same way a bare free-text
+                  company string used to be (see findOrCreateCompany's own
+                  header comment). */}
+              <div className="col-span-2">
+                <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.add_as_contact}
+                    disabled={!form.company.trim()}
+                    onChange={e => setForm(p => ({ ...p, add_as_contact: e.target.checked }))}
+                  />
+                  Also add {form.name.trim() || 'this candidate'} as a contact{form.company.trim() ? ` at ${form.company.trim()}` : ''}
+                </label>
+                {!form.company.trim() && <p className="text-[11px] text-gray-400 mt-1">Add a current company above to enable this.</p>}
               </div>
               <div className="col-span-2">
                 <label className="label" htmlFor="candidate-job-id">Job / mandate they're being considered for</label>
