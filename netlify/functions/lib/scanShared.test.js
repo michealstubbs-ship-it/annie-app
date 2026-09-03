@@ -15,7 +15,7 @@ import {
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, looksLikeStaffingAgencyName, isStaffingAgencyIndustry, verifyContactsAcrossFunctions, resolveContactForSignal, createTimeoutFetch,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs, discoverGuaranteedLiveJobEntry, discoverHotCompanies,
-  pickLiveJobEntryFromLeads, isMegaEmployer, MEGA_EMPLOYER_HEADCOUNT_THRESHOLD, buildPriorityDiscoveryPrompt,
+  pickLiveJobEntryFromLeads, pickLiveJobEntriesFromLeads, LIVE_JOB_PRIORITY_LIMIT, isMegaEmployer, MEGA_EMPLOYER_HEADCOUNT_THRESHOLD, buildPriorityDiscoveryPrompt,
   looksTruncatedByTokenLimit, getLearnedSources, recordLearnedDiscoveries, isJunkLearnedSourceValue,
   normalizeLearnedLocation,
   writeToSignalPool, fetchSignalPoolMatches, personalizePoolHits,
@@ -594,6 +594,8 @@ describe('discoverTheirStackJobs', () => {
       location: 'Dubai',
       url: 'https://www.naukrigulf.com/head-of-product-jobs-in-dubai-jid-1',
       salary: null,
+      employeeCount: null,
+      isRecruitingAgency: false,
     }])
     vi.unstubAllGlobals()
   })
@@ -759,6 +761,103 @@ describe('pickLiveJobEntryFromLeads', () => {
   it('returns null when both lead lists are empty — never throws', () => {
     expect(pickLiveJobEntryFromLeads([], [], new Set())).toBeNull()
     expect(pickLiveJobEntryFromLeads(undefined, undefined, new Set())).toBeNull()
+  })
+
+  it('skips a mega-employer or agency-posted lead instead of returning it, moving on to the next real one', () => {
+    // 2026-09-03 real report: this picker used to take the FIRST lead
+    // regardless of quality — a mega-employer (Al-Futtaim-sized) or an
+    // agency-posted role would only get caught much later downstream,
+    // wasting the one guaranteed slot. Now uses the same free
+    // employeeCount/isRecruitingAgency fields discoverTheirStackJobs maps
+    // through, plus the text-based staffing-agency name check, to skip
+    // straight to a real pick.
+    const entry = pickLiveJobEntryFromLeads(
+      [
+        { title: 'Chief Risk Officer', company: 'Giant Co', url: 'https://x.com/1', employeeCount: 26657, isRecruitingAgency: false },
+        { title: 'Director of Government Relations', company: 'STAR SERVICES LLC', url: 'https://x.com/2', employeeCount: 677, isRecruitingAgency: true },
+        { title: 'Chief Financial Officer', company: 'POWERCHINA', url: 'https://x.com/3', employeeCount: 2222, isRecruitingAgency: false },
+      ],
+      [],
+      new Set(),
+    )
+    expect(entry).toMatchObject({ company: 'POWERCHINA', sourceUrl: 'https://x.com/3' })
+  })
+})
+
+// 2026-09-03, Michael, real report: "surely there's a lot more roles than
+// that — did she stop as soon as she found these finance roles?" — a
+// single scan's raw leads regularly contain several genuinely good,
+// distinct candidates, but the old singular picker only ever kept one.
+// This is the plural successor used by runPriorityDiscovery's own top-up
+// in both scan files.
+describe('pickLiveJobEntriesFromLeads', () => {
+  it('returns up to `limit` distinct, real entries instead of just one', () => {
+    const entries = pickLiveJobEntriesFromLeads(
+      [
+        { title: 'Chief Financial Officer', company: 'POWERCHINA', url: 'https://x.com/1' },
+        { title: 'Group CFO', company: 'ALAS Emirates Ready Mix', url: 'https://x.com/2' },
+        { title: 'Chief Financial Officer', company: 'Save Life Care', url: 'https://x.com/3' },
+      ],
+      [],
+      new Set(),
+      2,
+    )
+    expect(entries).toHaveLength(2)
+    expect(entries[0]).toMatchObject({ company: 'POWERCHINA' })
+    expect(entries[1]).toMatchObject({ company: 'ALAS Emirates Ready Mix' })
+  })
+
+  it('skips mega-employer and agency-posted leads when filling multiple slots, not just the first', () => {
+    const entries = pickLiveJobEntriesFromLeads(
+      [
+        { title: 'Chief Risk Officer', company: 'Al-Futtaim', url: 'https://x.com/1', employeeCount: 26657, isRecruitingAgency: false },
+        { title: 'Chief Financial Officer', company: 'COPADO User Group Hyderabad', url: 'https://x.com/2', employeeCount: 1, isRecruitingAgency: false },
+        { title: 'Chief Financial Officer', company: 'POWERCHINA', url: 'https://x.com/3', employeeCount: 2222, isRecruitingAgency: false },
+        { title: 'Director of Government Relations', company: 'STAR SERVICES LLC', url: 'https://x.com/4', employeeCount: 677, isRecruitingAgency: true },
+        { title: 'Group CFO', company: 'ALAS Emirates Ready Mix', url: 'https://x.com/5', employeeCount: 147, isRecruitingAgency: false },
+      ],
+      [],
+      new Set(),
+      LIVE_JOB_PRIORITY_LIMIT,
+    )
+    // Al-Futtaim (mega-employer) and STAR SERVICES (agency) are skipped;
+    // COPADO isn't disqualified by these two checks alone (no staffing-
+    // agency name match, employeeCount 1 isn't a mega-employer) so it's
+    // still a legitimate pick here — the point of this test is that the
+    // picker keeps going past a bad lead rather than stopping, not that
+    // every weak-looking name gets caught (that's a separate, follow-up
+    // concern flagged to Michael, not this fix's scope).
+    expect(entries.map(e => e.company)).toEqual(['COPADO User Group Hyderabad', 'POWERCHINA', 'ALAS Emirates Ready Mix'])
+  })
+
+  it('never returns more than `limit` even when more real leads exist', () => {
+    const entries = pickLiveJobEntriesFromLeads(
+      [
+        { title: 'A', company: 'One', url: 'https://x.com/1' },
+        { title: 'B', company: 'Two', url: 'https://x.com/2' },
+        { title: 'C', company: 'Three', url: 'https://x.com/3' },
+      ],
+      [],
+      new Set(),
+      1,
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({ company: 'One' })
+  })
+
+  it('dedupes against its own already-picked URLs, not just existingKeys', () => {
+    const entries = pickLiveJobEntriesFromLeads(
+      [{ title: 'CFO', company: 'Acme', url: 'https://x.com/1' }],
+      [{ title: 'CFO', company: 'Acme', url: 'https://x.com/1' }],
+      new Set(),
+      5,
+    )
+    expect(entries).toHaveLength(1)
+  })
+
+  it('returns an empty array, never throws, when nothing real is available', () => {
+    expect(pickLiveJobEntriesFromLeads([], [], new Set(), 3)).toEqual([])
+    expect(pickLiveJobEntriesFromLeads(undefined, undefined, new Set(), 3)).toEqual([])
   })
 })
 
@@ -3176,13 +3275,14 @@ describe('buildPriorityDiscoveryPrompt', () => {
   it('restricts scope to only live_job and leadership_change, explicitly excluding the types the main scan already covers', () => {
     const prompt = buildPriorityDiscoveryPrompt(ob, [])
     expect(prompt).toContain('Do NOT report funding, expansion, M&A, regulatory news, or general commentary here')
-    expect(prompt).toContain('at most one live_job, at most one leadership_change')
+    expect(prompt).toContain('up to 3 live_job, at most one leadership_change')
   })
 
-  it('caps the ask at one of each, never asking to pad either one out', () => {
+  it('caps the ask at LIVE_JOB_PRIORITY_LIMIT live_job entries and one leadership_change, never asking to pad any of them out', () => {
     const prompt = buildPriorityDiscoveryPrompt(ob, [])
-    expect(prompt).toContain('Return up to ONE genuinely good live_job entry AND up to ONE genuinely good leadership_change entry')
-    expect(prompt).toContain('never pad either one out just to return something')
+    expect(prompt).toContain('Return up to 3 genuinely good live_job entries')
+    expect(prompt).toContain('AND up to ONE genuinely good leadership_change entry')
+    expect(prompt).toContain('never pad any of them out just to return something')
   })
 
   it('includes the mega-employer bias instruction with the in-house-recruiting reasoning', () => {
