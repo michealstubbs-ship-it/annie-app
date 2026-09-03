@@ -19,6 +19,10 @@ function today() { return new Date().toISOString().slice(0, 10) }
 const EMPTY = {
   title: '', company_id: '', company_name: '', industry: '', salary_num: '', fee_pct: '',
   likelihood: '3', job_type: 'permanent', status: 'active', received: today(), deadline: '', notes: '',
+  // 2026-09-06, gap-analysis batch 1: lets a recruiter flag/filter which
+  // specific roles count toward the client's national-hire quota,
+  // separately from the client's general quota_band standing on Companies.
+  counts_toward_quota: false,
 }
 
 function calcFee(salary, pct) {
@@ -55,6 +59,7 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
         received: editJob.received || today(),
         deadline: editJob.deadline || '',
         notes: editJob.notes || '',
+        counts_toward_quota: !!editJob.counts_toward_quota,
       })
     } else {
       setForm({ ...EMPTY, company_id: lockedCompanyId || '', company_name: lockedCompanyName || '' })
@@ -89,6 +94,7 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
         received: form.received || today(),
         deadline: form.deadline || null,
         notes: form.notes.trim() || null,
+        counts_toward_quota: form.counts_toward_quota,
         updated_at: new Date().toISOString(),
       }
       let result
@@ -158,6 +164,10 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
             <div><label className="label" htmlFor="job-deadline">Deadline / start date</label><input id="job-deadline" type="date" className="input" value={form.deadline} onChange={e => setForm(p => ({ ...p, deadline: e.target.value }))} /></div>
           </div>
           <div><label className="label" htmlFor="job-notes">Brief / job description</label><textarea id="job-notes" className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Key requirements, must-haves, skills needed, context about the role..." /></div>
+          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+            <input type="checkbox" checked={form.counts_toward_quota} onChange={e => setForm(p => ({ ...p, counts_toward_quota: e.target.checked }))} />
+            🏛️ Counts toward the client's Emiratization/Saudization quota
+          </label>
         </div>
         <div className="flex gap-3 justify-end mt-5">
           <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>

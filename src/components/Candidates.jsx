@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase'
 import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, findCandidateDuplicateByEmail, findDuplicateSubmission } from '../lib/data/candidates'
 import { listActiveJobsForPicker } from '../lib/data/jobs'
 import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
-import { STAGES, STAGE_LABEL, STAGE_COLOR, searchCandidates, filterCandidatesByStage, sortCandidates, groupCandidatesByStage } from '../lib/candidatesView'
+import { STAGES, STAGE_LABEL, STAGE_COLOR, searchCandidates, filterCandidatesByStage, sortCandidates, groupCandidatesByStage, VISA_STATUS_LABEL, VISA_TYPE_LABEL, visaExpiryBadge } from '../lib/candidatesView'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import { logSignalOutcome } from '../lib/signalOutcomes'
@@ -40,6 +40,11 @@ const EMPTY = {
   // value shown on the card), used only for matching (see
   // candidateMatch.js's prepareCandidatesForMatching).
   titles: [], industries: [],
+  // 2026-09-06, gap-analysis batch 1 ("visa & sponsorship status
+  // tracking"): the single field every GCC recruiter needs first and no
+  // competitor CRM researched has as a real field. Nullable, same
+  // unaffected-by-default shape as counter_offer_risk above.
+  visa_status: '', visa_type: '', visa_sponsor: '', visa_expiry: '',
 }
 
 // Friendly labels for the CV auto-fill banner ("Annie read this CV and
@@ -227,6 +232,7 @@ export default function Candidates() {
       titles: Array.isArray(c.titles) ? c.titles : [], industries: Array.isArray(c.industries) ? c.industries : [],
       counter_offer_risk: c.counter_offer_risk || '', counter_offer_notes: c.counter_offer_notes || '',
       is_hotlisted: !!c.is_hotlisted, hotlist_note: c.hotlist_note || '',
+      visa_status: c.visa_status || '', visa_type: c.visa_type || '', visa_sponsor: c.visa_sponsor || '', visa_expiry: c.visa_expiry || '',
     })
     setEditId(c.id)
     setCvFile(null)
@@ -500,6 +506,10 @@ export default function Candidates() {
         want_sal_currency: form.want_sal ? (form.want_sal_currency || currencyCode) : null,
         follow_up_date: form.follow_up_date || null,
         job_id: form.job_id || null,
+        visa_status: form.visa_status || null,
+        visa_type: form.visa_type || null,
+        visa_sponsor: form.visa_sponsor?.trim() || null,
+        visa_expiry: form.visa_expiry || null,
         cv_path: cvPath,
         updated_at: new Date().toISOString(),
       }
@@ -570,6 +580,15 @@ export default function Candidates() {
                     >
                       ⚠️ {c.counter_offer_risk} counter-offer risk
                     </span>
+                  )}
+                  {(() => {
+                    const badge = visaExpiryBadge(c.visa_expiry)
+                    if (!badge) return null
+                    const cls = badge.level === 'critical' ? 'bg-red-100 text-red-600' : badge.level === 'watch' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'
+                    return <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${cls}`} title={c.visa_type ? `${VISA_TYPE_LABEL[c.visa_type] || c.visa_type} visa` : ''}>🛂 {badge.label}</span>
+                  })()}
+                  {c.visa_status === 'needs_sponsorship' && (
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-orange-100 text-orange-700" title="Rules out any role that can't sponsor">🛂 {VISA_STATUS_LABEL.needs_sponsorship}</span>
                   )}
                 </div>
                 <p className="text-xs text-gray-500 mt-0.5">{[c.role, c.company].filter(Boolean).join(' · ')}</p>
@@ -964,6 +983,39 @@ export default function Candidates() {
                   <input id="candidate-hotlist-note" className="input" placeholder="What makes them worth marketing right now" value={form.hotlist_note} onChange={e => setForm(p => ({ ...p, hotlist_note: e.target.value }))} />
                 </div>
               )}
+              {/* 2026-09-06, gap-analysis batch 1: the single field every GCC
+                  recruiter needs first — whether this candidate can even be
+                  submitted for a role that can't sponsor. */}
+              <div>
+                <label className="label" htmlFor="candidate-visa-status">🛂 Visa status</label>
+                <select id="candidate-visa-status" className="input" value={form.visa_status} onChange={e => setForm(p => ({ ...p, visa_status: e.target.value }))}>
+                  <option value="">Not set</option>
+                  <option value="own_visa">Own visa (transferable)</option>
+                  <option value="needs_sponsorship">Needs sponsorship</option>
+                  <option value="sponsored_by_agency">Sponsored by this agency</option>
+                  <option value="not_required">Not required (citizen/resident)</option>
+                </select>
+              </div>
+              <div>
+                <label className="label" htmlFor="candidate-visa-type">Visa type</label>
+                <select id="candidate-visa-type" className="input" value={form.visa_type} onChange={e => setForm(p => ({ ...p, visa_type: e.target.value }))}>
+                  <option value="">Not set</option>
+                  <option value="employment">Employment</option>
+                  <option value="golden">Golden</option>
+                  <option value="dependent">Dependent</option>
+                  <option value="freelance">Freelance</option>
+                  <option value="visit">Visit</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div>
+                <label className="label" htmlFor="candidate-visa-sponsor">Current sponsor</label>
+                <input id="candidate-visa-sponsor" className="input" placeholder="Employer name, if sponsored" value={form.visa_sponsor} onChange={e => setForm(p => ({ ...p, visa_sponsor: e.target.value }))} />
+              </div>
+              <div>
+                <label className="label" htmlFor="candidate-visa-expiry">Visa expiry</label>
+                <input id="candidate-visa-expiry" className="input" type="date" value={form.visa_expiry} onChange={e => setForm(p => ({ ...p, visa_expiry: e.target.value }))} />
+              </div>
               {/* 2026-09-04, Michael: "when you are adding a candidate, let
                   us as an extra function add it to a company as a contact"
                   — a candidate is sometimes also a useful business contact

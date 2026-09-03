@@ -4,6 +4,7 @@ import {
   searchCompanies,
   filterCompaniesByIndustry,
   sortCompanies,
+  quotaDeadlineBadge,
 } from './companiesView.js'
 
 const COMPANIES = [
@@ -80,5 +81,31 @@ describe('sortCompanies', () => {
     const copy = [...COMPANIES]
     sortCompanies(COMPANIES, 'contacts', COUNTS)
     expect(COMPANIES).toEqual(copy)
+  })
+})
+
+describe('quotaDeadlineBadge', () => {
+  const today = new Date('2026-09-06T12:00:00')
+
+  it('returns null when no deadline is set', () => {
+    expect(quotaDeadlineBadge(null, today)).toBeNull()
+  })
+
+  it('flags a passed deadline as critical', () => {
+    const badge = quotaDeadlineBadge('2026-09-01', today)
+    expect(badge.level).toBe('critical')
+    expect(badge.label).toContain('passed')
+  })
+
+  it('flags a deadline within 60 days as critical', () => {
+    expect(quotaDeadlineBadge('2026-10-01', today).level).toBe('critical')
+  })
+
+  it('flags a deadline within 180 days as watch', () => {
+    expect(quotaDeadlineBadge('2027-01-01', today).level).toBe('watch')
+  })
+
+  it('treats a distant deadline as ok', () => {
+    expect(quotaDeadlineBadge('2028-01-01', today).level).toBe('ok')
   })
 })

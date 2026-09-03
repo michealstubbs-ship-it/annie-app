@@ -21,6 +21,9 @@ const ResetPassword = lazy(() => import('./pages/ResetPassword'))
 const Terms = lazy(() => import('./pages/Terms'))
 const Privacy = lazy(() => import('./pages/Privacy'))
 const Welcome = lazy(() => import('./pages/Welcome'))
+// 2026-09-06, gap-analysis batch 1: the client-facing shortlist link —
+// deliberately public, no ProtectedRoute wrapper, no Annie account needed.
+const ShareJobShortlist = lazy(() => import('./pages/ShareJobShortlist'))
 const SupportWidget = lazy(() => import('./components/SupportWidget'))
 
 function ProtectedRoute({ children }) {
@@ -85,6 +88,7 @@ function AppRoutes() {
         <Route path="/terms" element={<Terms />} />
         <Route path="/privacy" element={<Privacy />} />
         <Route path="/welcome" element={<Welcome />} />
+        <Route path="/share/job/:token" element={<ShareJobShortlist />} />
         <Route path="/onboarding" element={<OnboardingRoute><Onboarding /></OnboardingRoute>} />
         <Route path="/import" element={<ImportRoute><LinkedInImport /></ImportRoute>} />
         <Route path="/dashboard/*" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />

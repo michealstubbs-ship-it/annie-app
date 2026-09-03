@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { getJob } from '../lib/data/jobs'
+import { getJob, updateJob } from '../lib/data/jobs'
 import {
   listPipelineForJob,
   listOtherPipelinesForCandidate,
@@ -96,6 +96,9 @@ export default function JobPipeline() {
   const [otherCounts, setOtherCounts] = useState({}) // candidate_id -> total pipeline count (including this job)
   const [loading, setLoading] = useState(true)
   const [listError, setListError] = useState('')
+  // 2026-09-06, gap-analysis batch 1 ("client-facing shortlist link"):
+  // 'idle' | 'copied' | 'error' — feedback for the "Client link" button.
+  const [shareState, setShareState] = useState('idle')
 
   const [view, setView] = useState('board') // 'board' | 'candidates'
   const [search, setSearch] = useState('')
@@ -199,6 +202,31 @@ export default function JobPipeline() {
     })
   }
   function clearSelection() { setSelected(new Set()) }
+
+  // 2026-09-06, gap-analysis batch 1 ("client-facing shortlist link"):
+  // every job already has a public_share_token by default (see the
+  // migration) — this only ever needs to flip share_enabled on (never
+  // regenerate the token) and copy the resulting URL. share_enabled is
+  // never turned off here — a recruiter who wants to revoke a link does
+  // so explicitly elsewhere (a link staying "on" once shared matches how
+  // Vincere's own LiveList and most client-portal links behave).
+  async function getOrEnableClientLink() {
+    setShareState('idle')
+    try {
+      if (!job.share_enabled) {
+        const { error: err } = await updateJob(job.id, { share_enabled: true })
+        if (err) throw err
+        setJob(prev => ({ ...prev, share_enabled: true }))
+      }
+      const url = `${window.location.origin}/share/job/${job.public_share_token}`
+      await navigator.clipboard.writeText(url)
+      setShareState('copied')
+      setTimeout(() => setShareState('idle'), 2500)
+    } catch {
+      setShareState('error')
+      setTimeout(() => setShareState('idle'), 2500)
+    }
+  }
 
   async function bulkAdvance() {
     const targets = [...selected].map(id => links.find(l => l.id === id)).filter(Boolean)
@@ -364,6 +392,9 @@ export default function JobPipeline() {
             {job.deadline && <> · target close {new Date(job.deadline).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</>}
             {job.owner_id && <> · owner <b className="text-navy font-semibold">{nameForMember(teamMembers, job.owner_id)}</b></>}
           </p>
+          <button onClick={getOrEnableClientLink} className="text-xs font-semibold text-gold-ink hover:underline mt-2">
+            {shareState === 'copied' ? '✓ Link copied' : shareState === 'error' ? 'Could not copy — try again' : job.share_enabled ? '🔗 Copy client link' : '🔗 Get client link'}
+          </button>
         </div>
         <div className="flex gap-2 flex-wrap">
           {[

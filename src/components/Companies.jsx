@@ -8,7 +8,7 @@ import { listContactsWithCompany } from '../lib/data/contacts'
 import { listJobsMinimal } from '../lib/data/jobs'
 import { listCompanyDocuments, createCompanyDocument, deleteCompanyDocument } from '../lib/data/companyDocuments'
 import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
-import { listIndustries, searchCompanies, filterCompaniesByIndustry, sortCompanies } from '../lib/companiesView'
+import { listIndustries, searchCompanies, filterCompaniesByIndustry, sortCompanies, QUOTA_BAND_LABEL, QUOTA_BAND_COLOR, quotaDeadlineBadge } from '../lib/companiesView'
 import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
 import ContactDetailModal from './ContactDetailModal'
@@ -20,7 +20,10 @@ import Spinner from './Spinner'
 import OwnerFilter from './OwnerFilter'
 import OwnershipPanel from './OwnershipPanel'
 
-const EMPTY_CO = { name: '', industry: '', location: '', website: '', notes: '' }
+// 2026-09-06, gap-analysis batch 1 ("Emiratization/Saudization quota
+// tracking"): a client's own regulatory band, recruiter-maintained (not
+// scraped) — same unaffected-by-default shape as the rest of this form.
+const EMPTY_CO = { name: '', industry: '', location: '', website: '', notes: '', quota_current_pct: '', quota_target_pct: '', quota_deadline: '', quota_band: '', quota_notes: '' }
 const STATUS_COLOR = { hot: 'bg-red-100 text-red-700', warm: 'bg-amber-100 text-amber-700', cold: 'bg-blue-100 text-blue-700', client: 'bg-green-100 text-green-700', inactive: 'bg-gray-100 text-gray-500' }
 const JOB_STATUS_COLOR = { active: 'bg-green-100 text-green-700', onhold: 'bg-amber-100 text-amber-700', filled: 'bg-yellow-100 text-gold', lost: 'bg-gray-100 text-gray-500' }
 
@@ -195,7 +198,14 @@ export default function Companies() {
   const filtered = useMemo(() => sortCompanies(industryFiltered, sortBy, counts), [industryFiltered, sortBy, counts])
 
   function openAddCo() { setCoForm(EMPTY_CO); setEditCo(null); setCoError(''); setCoNote(''); setShowCoModal(true) }
-  function openEditCo(co) { setCoForm({ name: co.name, industry: co.industry || '', location: co.location || '', website: co.website || '', notes: co.notes || '' }); setEditCo(co); setCoError(''); setCoNote(''); setShowCoModal(true) }
+  function openEditCo(co) {
+    setCoForm({
+      name: co.name, industry: co.industry || '', location: co.location || '', website: co.website || '', notes: co.notes || '',
+      quota_current_pct: co.quota_current_pct ?? '', quota_target_pct: co.quota_target_pct ?? '', quota_deadline: co.quota_deadline || '',
+      quota_band: co.quota_band || '', quota_notes: co.quota_notes || '',
+    })
+    setEditCo(co); setCoError(''); setCoNote(''); setShowCoModal(true)
+  }
 
   async function saveCo() {
     const name = coForm.name.trim()
@@ -227,6 +237,11 @@ export default function Companies() {
       const row = {
         name, industry: coForm.industry.trim() || null, location: coForm.location.trim() || null,
         website: coForm.website.trim() || null, notes: coForm.notes.trim() || null, updated_at: new Date().toISOString(),
+        quota_current_pct: coForm.quota_current_pct === '' ? null : parseFloat(coForm.quota_current_pct),
+        quota_target_pct: coForm.quota_target_pct === '' ? null : parseFloat(coForm.quota_target_pct),
+        quota_deadline: coForm.quota_deadline || null,
+        quota_band: coForm.quota_band || null,
+        quota_notes: coForm.quota_notes.trim() || null,
       }
       if (editCo) {
         const { error: err } = await updateCompany(editCo.id, row)
@@ -355,6 +370,13 @@ export default function Companies() {
                   <span><span className="font-bold text-navy">{cCount}</span> contact{cCount === 1 ? '' : 's'}</span>
                   <span><span className="font-bold text-navy">{jOpen}</span> open job{jOpen === 1 ? '' : 's'}</span>
                 </div>
+                {co.quota_band && co.quota_band !== 'not_applicable' && (
+                  <div className="mt-2">
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${QUOTA_BAND_COLOR[co.quota_band]}`}>
+                      🏛️ {QUOTA_BAND_LABEL[co.quota_band]} quota{quotaDeadlineBadge(co.quota_deadline) ? ` · ${quotaDeadlineBadge(co.quota_deadline).days}d` : ''}
+                    </span>
+                  </div>
+                )}
               </button>
             )
           })}
@@ -375,6 +397,41 @@ export default function Companies() {
           <div><label className="label" htmlFor="co-edit-location">Location</label><input id="co-edit-location" className="input" value={coForm.location} onChange={e => setCoForm(p => ({ ...p, location: e.target.value }))} /></div>
           <div><label className="label" htmlFor="co-edit-website">Website</label><input id="co-edit-website" className="input" value={coForm.website} onChange={e => setCoForm(p => ({ ...p, website: e.target.value }))} /></div>
           <div><label className="label" htmlFor="co-edit-notes">Notes</label><textarea id="co-edit-notes" className="input resize-none" rows={3} value={coForm.notes} onChange={e => setCoForm(p => ({ ...p, notes: e.target.value }))} /></div>
+          {/* 2026-09-06, gap-analysis batch 1: client-entered, recruiter-
+              maintained regulatory standing (UAE Emiratization / Saudi
+              Nitaqat-style band) — not scraped, not assumed. */}
+          <div className="pt-2 border-t border-gray-100">
+            <p className="label mb-2">🏛️ Emiratization / Saudization quota</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label" htmlFor="co-edit-quota-band">Band</label>
+                <select id="co-edit-quota-band" className="input" value={coForm.quota_band} onChange={e => setCoForm(p => ({ ...p, quota_band: e.target.value }))}>
+                  <option value="">Not set</option>
+                  <option value="red">Red</option>
+                  <option value="yellow">Yellow</option>
+                  <option value="green">Green</option>
+                  <option value="platinum">Platinum</option>
+                  <option value="not_applicable">Not applicable</option>
+                </select>
+              </div>
+              <div>
+                <label className="label" htmlFor="co-edit-quota-deadline">Deadline</label>
+                <input id="co-edit-quota-deadline" className="input" type="date" value={coForm.quota_deadline} onChange={e => setCoForm(p => ({ ...p, quota_deadline: e.target.value }))} />
+              </div>
+              <div>
+                <label className="label" htmlFor="co-edit-quota-current">Current %</label>
+                <input id="co-edit-quota-current" className="input" type="number" step="0.1" placeholder="e.g. 6.5" value={coForm.quota_current_pct} onChange={e => setCoForm(p => ({ ...p, quota_current_pct: e.target.value }))} />
+              </div>
+              <div>
+                <label className="label" htmlFor="co-edit-quota-target">Target %</label>
+                <input id="co-edit-quota-target" className="input" type="number" step="0.1" placeholder="e.g. 10" value={coForm.quota_target_pct} onChange={e => setCoForm(p => ({ ...p, quota_target_pct: e.target.value }))} />
+              </div>
+              <div className="col-span-2">
+                <label className="label" htmlFor="co-edit-quota-notes">Quota notes (optional)</label>
+                <input id="co-edit-quota-notes" className="input" placeholder="e.g. needs 3 more national hires by December" value={coForm.quota_notes} onChange={e => setCoForm(p => ({ ...p, quota_notes: e.target.value }))} />
+              </div>
+            </div>
+          </div>
         </div>
         <div className="flex gap-3 justify-end mt-5">
           <button onClick={() => setShowCoModal(false)} className="btn-ghost">Cancel</button>
@@ -394,6 +451,17 @@ export default function Companies() {
                   <p className="text-sm text-gray-500">{[selected.industry, selected.location].filter(Boolean).join(' · ') || 'No details yet'}</p>
                   {selected.website && <a href={selected.website.startsWith('http') ? selected.website : `https://${selected.website}`} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">{selected.website}</a>}
                   {selected.notes && <p className="text-sm text-gray-600 mt-2">{selected.notes}</p>}
+                  {selected.quota_band && selected.quota_band !== 'not_applicable' && (
+                    <div className="mt-2 flex items-center gap-2 flex-wrap">
+                      <span className={`text-xs font-semibold px-2 py-1 rounded-full ${QUOTA_BAND_COLOR[selected.quota_band]}`}>
+                        🏛️ {QUOTA_BAND_LABEL[selected.quota_band]}{selected.quota_current_pct != null ? ` · ${selected.quota_current_pct}%` : ''}{selected.quota_target_pct != null ? ` / ${selected.quota_target_pct}% target` : ''}
+                      </span>
+                      {quotaDeadlineBadge(selected.quota_deadline) && (
+                        <span className="text-xs text-gray-500">{quotaDeadlineBadge(selected.quota_deadline).label}</span>
+                      )}
+                      {selected.quota_notes && <span className="text-xs text-gray-500">— {selected.quota_notes}</span>}
+                    </div>
+                  )}
                 </div>
                 {/* 2026-08-29 audit fix: same Delete-styled-like-a-routine-
                     action issue fixed across the rest of the CRM this pass,

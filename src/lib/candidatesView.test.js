@@ -5,6 +5,7 @@ import {
   filterCandidatesByStage,
   sortCandidates,
   groupCandidatesByStage,
+  visaExpiryBadge,
 } from './candidatesView.js'
 
 const CANDIDATES = [
@@ -91,5 +92,37 @@ describe('groupCandidatesByStage', () => {
     for (const stage of STAGES) {
       expect(groupCandidatesByStage([{ id: 'x', status: stage }])[0].label).toBeTruthy()
     }
+  })
+})
+
+describe('visaExpiryBadge', () => {
+  const today = new Date('2026-09-06T12:00:00')
+
+  it('returns null when no expiry is set', () => {
+    expect(visaExpiryBadge(null, today)).toBeNull()
+    expect(visaExpiryBadge('', today)).toBeNull()
+  })
+
+  it('flags an already-expired visa as critical', () => {
+    const badge = visaExpiryBadge('2026-09-01', today)
+    expect(badge.level).toBe('critical')
+    expect(badge.days).toBe(-5)
+    expect(badge.label).toContain('expired')
+  })
+
+  it('flags a visa expiring within 30 days as critical', () => {
+    const badge = visaExpiryBadge('2026-09-20', today)
+    expect(badge.level).toBe('critical')
+    expect(badge.days).toBe(14)
+  })
+
+  it('flags a visa expiring within 90 days as watch', () => {
+    const badge = visaExpiryBadge('2026-11-01', today)
+    expect(badge.level).toBe('watch')
+  })
+
+  it('treats a visa expiring beyond 90 days as ok', () => {
+    const badge = visaExpiryBadge('2027-06-01', today)
+    expect(badge.level).toBe('ok')
   })
 })

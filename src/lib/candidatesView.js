@@ -41,6 +41,32 @@ export const STAGE_COLOR = {
   withdrawn: 'bg-gray-100 text-gray-500',
 }
 
+export const VISA_STATUS_LABEL = {
+  own_visa: 'Own visa',
+  needs_sponsorship: 'Needs sponsorship',
+  sponsored_by_agency: 'Agency-sponsored',
+  not_required: 'Not required',
+}
+
+export const VISA_TYPE_LABEL = {
+  employment: 'Employment', golden: 'Golden', dependent: 'Dependent', freelance: 'Freelance', visit: 'Visit', other: 'Other',
+}
+
+// 2026-09-06, gap-analysis batch 1 ("visa & sponsorship status tracking"):
+// the expiry-countdown badge — same "five-minute glance" reasoning as the
+// existing hotlist/counter-offer badges. Pure date math so it's testable
+// without a real Date-dependent component render; `today` is injectable
+// for tests, defaults to now for real callers.
+export function visaExpiryBadge(visaExpiry, today = new Date()) {
+  if (!visaExpiry) return null
+  const expiry = new Date(visaExpiry + 'T00:00:00')
+  const days = Math.ceil((expiry - new Date(today.getFullYear(), today.getMonth(), today.getDate())) / 86400000)
+  if (days < 0) return { days, label: `Visa expired ${Math.abs(days)}d ago`, level: 'critical' }
+  if (days <= 30) return { days, label: `Visa expires in ${days}d`, level: 'critical' }
+  if (days <= 90) return { days, label: `Visa expires in ${days}d`, level: 'watch' }
+  return { days, label: `Visa valid ${days}d`, level: 'ok' }
+}
+
 export function searchCandidates(candidates, search) {
   const q = (search || '').trim().toLowerCase()
   if (!q) return candidates
