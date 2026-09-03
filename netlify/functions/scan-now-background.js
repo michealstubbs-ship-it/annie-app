@@ -34,7 +34,7 @@ import { getEntitlements, SCAN_TIER_CONFIG, resolveResourceCaps } from './lib/en
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, fundingFuzzyKey, splitToKeywords, extractJson, looksTruncatedByTokenLimit,
   buildExistingByCompanyType, findSemanticDedupTargets, filterSemanticDuplicates, SEMANTIC_DEDUP_MAX_TOKENS,
-  discoverHotCompanies, discoverAdzunaJobs, discoverTheirStackJobs, pickLiveJobEntryFromLeads, fetchWithRetry, mapLocationsToAdzunaCountries,
+  discoverHotCompanies, discoverAdzunaJobs, discoverTheirStackJobs, pickLiveJobEntryFromLeads, pickLiveJobEntriesFromLeads, LIVE_JOB_PRIORITY_LIMIT, fetchWithRetry, mapLocationsToAdzunaCountries,
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
   buildRegionalSourceHint,
   buildLiveJobBoardHint,
@@ -355,10 +355,16 @@ async function callAnthropic(apiKey, systemPrompt, { maxUses = 8, maxTokens = 40
 // round — round 1 is the one guaranteed to run on every trigger). Never
 // throws: a cap hit or transient failure here costs this account only the
 // small bonus this pass offers, never the rest of its scan. Falls back to
-// the same raw-API pick (pickLiveJobEntryFromLeads) the old
+// the same raw-API pick (pickLiveJobEntriesFromLeads) the old
 // discoverGuaranteedLiveJobEntry-based pool-full branch used to rely on
 // exclusively, reusing the SAME adzunaLeads/theirStackLeads this round
 // already fetched rather than spending a second API call.
+//
+// 2026-09-03: tops up to LIVE_JOB_PRIORITY_LIMIT total (AI-found plus
+// raw-lead top-up combined) instead of only ever adding one fallback when
+// the AI found zero — see intelligence-scan-background.js's own
+// runPriorityDiscovery header for the full reasoning (same real report,
+// same fix, both scan entry points).
 async function runPriorityDiscovery(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }, existingKeys, ctx) {
   const { anthropicKey, supabase, userId, resourceCaps } = ctx
   let priorityFound = []
@@ -376,9 +382,16 @@ async function runPriorityDiscovery(ob, recentCompanies, { adzunaLeads, theirSta
   } catch (err) {
     console.log('[scan-now] priority discovery call failed for', userId, '- continuing with the rest of this scan:', err.message)
   }
-  if (!priorityFound.some(s => s.entryType === 'live_job')) {
-    const fallback = pickLiveJobEntryFromLeads(theirStackLeads, adzunaLeads, existingKeys)
-    if (fallback) priorityFound.push(fallback)
+  const aiLiveJobCount = priorityFound.filter(s => s.entryType === 'live_job').length
+  const stillNeeded = LIVE_JOB_PRIORITY_LIMIT - aiLiveJobCount
+  if (stillNeeded > 0) {
+    const aiPickedKeys = new Set(
+      priorityFound.filter(s => s.entryType === 'live_job' && s.company && s.sourceUrl)
+        .map(s => normalizeKey(s.company, s.headline, s.sourceUrl)),
+    )
+    const combinedKeys = new Set([...existingKeys, ...aiPickedKeys])
+    const fallbacks = pickLiveJobEntriesFromLeads(theirStackLeads, adzunaLeads, combinedKeys, stillNeeded)
+    priorityFound.push(...fallbacks)
   }
   return priorityFound
 }

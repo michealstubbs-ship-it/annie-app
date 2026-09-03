@@ -15,7 +15,8 @@ import {
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, looksLikeStaffingAgencyName, isStaffingAgencyIndustry, verifyContactsAcrossFunctions, resolveContactForSignal, createTimeoutFetch,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs, discoverGuaranteedLiveJobEntry, discoverHotCompanies,
-  pickLiveJobEntryFromLeads, isMegaEmployer, MEGA_EMPLOYER_HEADCOUNT_THRESHOLD, buildPriorityDiscoveryPrompt,
+  discoverAdzunaJobs,
+  pickLiveJobEntryFromLeads, pickLiveJobEntriesFromLeads, LIVE_JOB_PRIORITY_LIMIT, isMegaEmployer, MEGA_EMPLOYER_HEADCOUNT_THRESHOLD, buildPriorityDiscoveryPrompt,
   looksTruncatedByTokenLimit, getLearnedSources, recordLearnedDiscoveries, isJunkLearnedSourceValue,
   normalizeLearnedLocation,
   writeToSignalPool, fetchSignalPoolMatches, personalizePoolHits,
@@ -254,8 +255,31 @@ describe('buildJobTitleQueries (the 2026-08-31 live-jobs fix)', () => {
     expect(buildJobTitleQueries(['Not A Real Function'])).toEqual(GENERIC_LEADERSHIP_TITLES)
   })
 
-  it('respects the max', () => {
+  it('respects the max when one is explicitly given', () => {
     expect(buildJobTitleQueries(['Finance & Accounting'], 2)).toHaveLength(2)
+  })
+
+  // 2026-09-03, Michael, real report: "why were all the titles that fall
+  // under strategy not searched? same for finance?" — the old default (6,
+  // shared across every selected function) meant a customer with 4
+  // functions only ever got 1-2 titles per function queried, real ones
+  // simply never asked for. Removed by explicit request ("search every
+  // title under every function someone chooses") — no caller passes an
+  // explicit max, so this default is what every real caller now gets.
+  it('with no explicit max, searches every title under every selected function — not a shared budget split across them', () => {
+    const titles = buildJobTitleQueries([
+      'Strategy & Corporate Development',
+      'Policy & Government Affairs',
+      'Finance & Accounting',
+      'Investment & Asset Management',
+    ])
+    for (const t of FUNCTION_JOB_TITLES['Strategy & Corporate Development']) expect(titles).toContain(t)
+    for (const t of FUNCTION_JOB_TITLES['Policy & Government Affairs']) expect(titles).toContain(t)
+    for (const t of FUNCTION_JOB_TITLES['Finance & Accounting']) expect(titles).toContain(t)
+    for (const t of FUNCTION_JOB_TITLES['Investment & Asset Management']) expect(titles).toContain(t)
+    // 4 functions × 6 titles each, none shared between these particular
+    // four, so no dedup collapses the count.
+    expect(titles).toHaveLength(24)
   })
 
   it('every mapped function has at least 4 real titles (2026-09-01 breadth expansion, most have 6) and none is its own label', () => {
@@ -539,6 +563,102 @@ describe('reserveTheirStackCredits (per-customer + platform-wide spend cap)', ()
   })
 })
 
+// 2026-09-03, Michael: never had its own dedicated coverage — discovered
+// while adding coverage for the "search every title" and "no live_job cap"
+// changes above. Those changes are exactly why this function's per-title
+// loop got parallelized in the first place (see discoverAdzunaJobs's own
+// header comment), so this locks in the behaviour that parallelization was
+// supposed to preserve: same requests, same within-country dedup
+// preference order, same fail-open-per-title behaviour, same final cap —
+// just fired together instead of one at a time.
+describe('discoverAdzunaJobs', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  function adzunaResponse(results) {
+    return { ok: true, json: async () => ({ results }) }
+  }
+
+  function adzunaJob({ title, company, url, location = 'London' }) {
+    return { title, company: { display_name: company }, location: { display_name: location }, redirect_url: url }
+  }
+
+  it('fires one request per title per country, and merges results back in job-title order even when a later title\'s request resolves first', async () => {
+    // Finance & Accounting -> ['Chief Financial Officer', 'Finance Director', 'Head of Finance',
+    // 'Financial Controller', 'Head of Treasury', 'Tax Director'] (buildJobTitleQueries, uncapped).
+    // Reverse the resolution order (last title resolves first) purely to prove Promise.all's
+    // input-order guarantee is what the merge actually relies on, not resolution timing.
+    const fetchSpy = vi.fn((url) => {
+      const params = new URLSearchParams(url.split('?')[1])
+      const title = params.get('title_only')
+      const titles = ['Chief Financial Officer', 'Finance Director', 'Head of Finance', 'Financial Controller', 'Head of Treasury', 'Tax Director']
+      const idx = titles.indexOf(title)
+      const delayMs = (titles.length - idx) // last title (idx 5) resolves first, first title (idx 0) resolves last
+      return new Promise((resolve) => setTimeout(() => resolve(adzunaResponse([
+        adzunaJob({ title, company: `Co ${idx}`, url: `https://jobs.example/${idx}` }),
+      ])), delayMs))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    const leads = await discoverAdzunaJobs('appid', 'appkey', { sectors: [], functions: ['Finance & Accounting'], locations: ['United Kingdom'] })
+    expect(fetchSpy).toHaveBeenCalledTimes(6)
+    expect(leads.map((l) => l.title)).toEqual(['Chief Financial Officer', 'Finance Director', 'Head of Finance', 'Financial Controller', 'Head of Treasury', 'Tax Director'])
+  })
+
+  it('does not let one title\'s failed request drop the results the other titles in the same country already found', async () => {
+    const fetchSpy = vi.fn((url) => {
+      const params = new URLSearchParams(url.split('?')[1])
+      const title = params.get('title_only')
+      if (title === 'Finance Director') return Promise.reject(new Error('network down'))
+      if (title === 'Head of Finance') return Promise.resolve({ ok: false, status: 500, text: async () => 'server error' })
+      return Promise.resolve(adzunaResponse([adzunaJob({ title, company: `Co ${title}`, url: `https://jobs.example/${title}` })]))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    const leads = await discoverAdzunaJobs('appid', 'appkey', { sectors: [], functions: ['Finance & Accounting'], locations: ['United Kingdom'] })
+    // 6 titles total, 2 fail (one throws, one non-ok) — the other 4 still come through.
+    expect(leads).toHaveLength(4)
+    expect(leads.map((l) => l.title)).not.toContain('Finance Director')
+    expect(leads.map((l) => l.title)).not.toContain('Head of Finance')
+  })
+
+  it('dedupes the same posting within a country when it matches more than one title query, keeping whichever title comes first in the list', async () => {
+    const fetchSpy = vi.fn((url) => {
+      const params = new URLSearchParams(url.split('?')[1])
+      const title = params.get('title_only')
+      // Same real ad answers both "Finance Director" and "Head of Finance" searches.
+      if (title === 'Finance Director' || title === 'Head of Finance') {
+        return Promise.resolve(adzunaResponse([adzunaJob({ title: 'Finance Director / Head of Finance', company: 'Skyro', url: 'https://jobs.example/shared' })]))
+      }
+      return Promise.resolve(adzunaResponse([]))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    const leads = await discoverAdzunaJobs('appid', 'appkey', { sectors: [], functions: ['Finance & Accounting'], locations: ['United Kingdom'] })
+    expect(leads.filter((l) => l.url === 'https://jobs.example/shared')).toHaveLength(1)
+  })
+
+  it('still applies the unchanged 10-result merge cap, interleaved evenly across countries rather than biased toward whichever country comes first', async () => {
+    const fetchSpy = vi.fn((url) => {
+      const country = url.split('/jobs/')[1].split('/')[0]
+      const params = new URLSearchParams(url.split('?')[1])
+      const title = params.get('title_only')
+      // Each of the 2 mapped countries (gb, us) has a real result for every one of the 6 titles —
+      // 12 real leads total, well past the existing 10-result cap.
+      return Promise.resolve(adzunaResponse([adzunaJob({ title, company: `${country} Co`, url: `https://jobs.example/${country}/${title}` })]))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    const leads = await discoverAdzunaJobs('appid', 'appkey', { sectors: [], functions: ['Finance & Accounting'], locations: ['United Kingdom', 'United States'] })
+    expect(leads).toHaveLength(10)
+    // Round-robin interleave: gb, us, gb, us, ... — same merge logic as before, just fed by
+    // the parallelized per-country loop above.
+    expect(leads.slice(0, 4).map((l) => l.url.includes('/gb/') ? 'gb' : 'us')).toEqual(['gb', 'us', 'gb', 'us'])
+  })
+
+  it('returns nothing, and never calls fetch, when no locations map to an Adzuna-covered country', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    expect(await discoverAdzunaJobs('appid', 'appkey', { sectors: [], functions: ['Finance & Accounting'], locations: ['UAE / GCC'] })).toEqual([])
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+})
+
 describe('discoverTheirStackJobs', () => {
   it('returns nothing without an API key, never calling fetch', async () => {
     const fetchSpy = vi.fn()
@@ -594,6 +714,8 @@ describe('discoverTheirStackJobs', () => {
       location: 'Dubai',
       url: 'https://www.naukrigulf.com/head-of-product-jobs-in-dubai-jid-1',
       salary: null,
+      employeeCount: null,
+      isRecruitingAgency: false,
     }])
     vi.unstubAllGlobals()
   })
@@ -759,6 +881,103 @@ describe('pickLiveJobEntryFromLeads', () => {
   it('returns null when both lead lists are empty — never throws', () => {
     expect(pickLiveJobEntryFromLeads([], [], new Set())).toBeNull()
     expect(pickLiveJobEntryFromLeads(undefined, undefined, new Set())).toBeNull()
+  })
+
+  it('skips a mega-employer or agency-posted lead instead of returning it, moving on to the next real one', () => {
+    // 2026-09-03 real report: this picker used to take the FIRST lead
+    // regardless of quality — a mega-employer (Al-Futtaim-sized) or an
+    // agency-posted role would only get caught much later downstream,
+    // wasting the one guaranteed slot. Now uses the same free
+    // employeeCount/isRecruitingAgency fields discoverTheirStackJobs maps
+    // through, plus the text-based staffing-agency name check, to skip
+    // straight to a real pick.
+    const entry = pickLiveJobEntryFromLeads(
+      [
+        { title: 'Chief Risk Officer', company: 'Giant Co', url: 'https://x.com/1', employeeCount: 26657, isRecruitingAgency: false },
+        { title: 'Director of Government Relations', company: 'STAR SERVICES LLC', url: 'https://x.com/2', employeeCount: 677, isRecruitingAgency: true },
+        { title: 'Chief Financial Officer', company: 'POWERCHINA', url: 'https://x.com/3', employeeCount: 2222, isRecruitingAgency: false },
+      ],
+      [],
+      new Set(),
+    )
+    expect(entry).toMatchObject({ company: 'POWERCHINA', sourceUrl: 'https://x.com/3' })
+  })
+})
+
+// 2026-09-03, Michael, real report: "surely there's a lot more roles than
+// that — did she stop as soon as she found these finance roles?" — a
+// single scan's raw leads regularly contain several genuinely good,
+// distinct candidates, but the old singular picker only ever kept one.
+// This is the plural successor used by runPriorityDiscovery's own top-up
+// in both scan files.
+describe('pickLiveJobEntriesFromLeads', () => {
+  it('returns up to `limit` distinct, real entries instead of just one', () => {
+    const entries = pickLiveJobEntriesFromLeads(
+      [
+        { title: 'Chief Financial Officer', company: 'POWERCHINA', url: 'https://x.com/1' },
+        { title: 'Group CFO', company: 'ALAS Emirates Ready Mix', url: 'https://x.com/2' },
+        { title: 'Chief Financial Officer', company: 'Save Life Care', url: 'https://x.com/3' },
+      ],
+      [],
+      new Set(),
+      2,
+    )
+    expect(entries).toHaveLength(2)
+    expect(entries[0]).toMatchObject({ company: 'POWERCHINA' })
+    expect(entries[1]).toMatchObject({ company: 'ALAS Emirates Ready Mix' })
+  })
+
+  it('skips mega-employer and agency-posted leads when filling multiple slots, not just the first', () => {
+    const entries = pickLiveJobEntriesFromLeads(
+      [
+        { title: 'Chief Risk Officer', company: 'Al-Futtaim', url: 'https://x.com/1', employeeCount: 26657, isRecruitingAgency: false },
+        { title: 'Chief Financial Officer', company: 'COPADO User Group Hyderabad', url: 'https://x.com/2', employeeCount: 1, isRecruitingAgency: false },
+        { title: 'Chief Financial Officer', company: 'POWERCHINA', url: 'https://x.com/3', employeeCount: 2222, isRecruitingAgency: false },
+        { title: 'Director of Government Relations', company: 'STAR SERVICES LLC', url: 'https://x.com/4', employeeCount: 677, isRecruitingAgency: true },
+        { title: 'Group CFO', company: 'ALAS Emirates Ready Mix', url: 'https://x.com/5', employeeCount: 147, isRecruitingAgency: false },
+      ],
+      [],
+      new Set(),
+      LIVE_JOB_PRIORITY_LIMIT,
+    )
+    // Al-Futtaim (mega-employer) and STAR SERVICES (agency) are skipped;
+    // COPADO isn't disqualified by these two checks alone (no staffing-
+    // agency name match, employeeCount 1 isn't a mega-employer) so it's
+    // still a legitimate pick here — the point of this test is that the
+    // picker keeps going past a bad lead rather than stopping, not that
+    // every weak-looking name gets caught (that's a separate, follow-up
+    // concern flagged to Michael, not this fix's scope).
+    expect(entries.map(e => e.company)).toEqual(['COPADO User Group Hyderabad', 'POWERCHINA', 'ALAS Emirates Ready Mix'])
+  })
+
+  it('never returns more than `limit` even when more real leads exist', () => {
+    const entries = pickLiveJobEntriesFromLeads(
+      [
+        { title: 'A', company: 'One', url: 'https://x.com/1' },
+        { title: 'B', company: 'Two', url: 'https://x.com/2' },
+        { title: 'C', company: 'Three', url: 'https://x.com/3' },
+      ],
+      [],
+      new Set(),
+      1,
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({ company: 'One' })
+  })
+
+  it('dedupes against its own already-picked URLs, not just existingKeys', () => {
+    const entries = pickLiveJobEntriesFromLeads(
+      [{ title: 'CFO', company: 'Acme', url: 'https://x.com/1' }],
+      [{ title: 'CFO', company: 'Acme', url: 'https://x.com/1' }],
+      new Set(),
+      5,
+    )
+    expect(entries).toHaveLength(1)
+  })
+
+  it('returns an empty array, never throws, when nothing real is available', () => {
+    expect(pickLiveJobEntriesFromLeads([], [], new Set(), 3)).toEqual([])
+    expect(pickLiveJobEntriesFromLeads(undefined, undefined, new Set(), 3)).toEqual([])
   })
 })
 
@@ -3176,13 +3395,14 @@ describe('buildPriorityDiscoveryPrompt', () => {
   it('restricts scope to only live_job and leadership_change, explicitly excluding the types the main scan already covers', () => {
     const prompt = buildPriorityDiscoveryPrompt(ob, [])
     expect(prompt).toContain('Do NOT report funding, expansion, M&A, regulatory news, or general commentary here')
-    expect(prompt).toContain('at most one live_job, at most one leadership_change')
+    expect(prompt).toContain('every genuinely good, distinct live_job entry you found (no cap), at most one leadership_change signal')
   })
 
-  it('caps the ask at one of each, never asking to pad either one out', () => {
+  it('never caps live_job entries, only leadership_change, and never asks to pad either out', () => {
     const prompt = buildPriorityDiscoveryPrompt(ob, [])
-    expect(prompt).toContain('Return up to ONE genuinely good live_job entry AND up to ONE genuinely good leadership_change entry')
-    expect(prompt).toContain('never pad either one out just to return something')
+    expect(prompt).toContain('Return every genuinely good live_job entry you found — no cap on how many')
+    expect(prompt).toContain('AND up to ONE genuinely good leadership_change entry')
+    expect(prompt).toContain('never pad any of them out just to return something')
   })
 
   it('includes the mega-employer bias instruction with the in-house-recruiting reasoning', () => {

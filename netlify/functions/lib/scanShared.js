@@ -772,15 +772,30 @@ export function functionParentLabel(value) {
 // legitimately share a title (Chief Operating Officer sits under both
 // Operations and General Management).
 //
-// Default max raised 4 -> 6 (2026-09-01), in the same edit that expanded
-// FUNCTION_JOB_TITLES/GENERIC_LEADERSHIP_TITLES to 6-7 titles each — moving
-// one without the other would have meant curating broader per-function
-// title coverage that never actually got queried, capped out by this
-// number before the new titles were ever reached. This is the title-QUERY
-// cap only (how many distinct title strings get searched for) — it does
-// not change how many results come back per source; that's each caller's
-// own separate cap (10 for Adzuna/TheirStack, 8 for Apollo).
-export function buildJobTitleQueries(functions, max = 6) {
+// 2026-09-03, Michael, real report: "why were all the titles that fall
+// under strategy not searched? same for finance?" — the default cap here
+// used to be one SHARED budget (6) split round-robin across every
+// selected function, not 6 per function. A customer with 4 functions
+// selected (Michael's own account: Strategy & Corporate Development,
+// Policy & Government Affairs, Finance & Accounting, Investment & Asset
+// Management) only ever got 1-2 of each function's 6 real titles queried —
+// Finance and Investment lost their whole 2nd-6th titles entirely to
+// whichever functions happened to interleave first. Removed by request
+// ("search every title under every function someone chooses") after
+// confirming the actual cost: TheirStack and Apollo both bill per call,
+// not per title in that call's own filter list (a longer job_title_or/
+// q_organization_job_titles array costs the same as a short one — see
+// discoverTheirStackJobs/discoverHotCompanies's own reservation calls,
+// both flat per-call, not per-title), and Adzuna is free regardless (see
+// discoverAdzunaJobs's own header) — the one real cost was Adzuna's
+// sequential per-title fetch loop adding wall-clock time as titles grew,
+// now parallelized in that same function for exactly this reason. `max`
+// stays available as an explicit override for a caller that genuinely
+// wants a cap (existing tests below), it just no longer has an implicit
+// value that quietly throttles every real caller (discoverAdzunaJobs,
+// discoverTheirStackJobs, discoverHotCompanies all call this with no
+// second argument).
+export function buildJobTitleQueries(functions, max = Infinity) {
   const perFunction = []
   const seenFn = new Set()
   for (const value of functions || []) {
@@ -953,11 +968,28 @@ export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, lo
   const jobTitles = buildJobTitleQueries(functions)
   if (!jobTitles.length) return []
 
+  // 2026-09-03, Michael: this used to fire one title's request, await it,
+  // then fire the next — harmless back when buildJobTitleQueries silently
+  // capped every customer at 6 titles total, but that shared cap is gone
+  // now (search every title under every selected function, by request —
+  // see buildJobTitleQueries' own header), so a customer with several
+  // functions selected can mean dozens of these per country. Adzuna is
+  // free and uncapped for this volume regardless of request count (see
+  // this function's original comment above) — there was never a cost
+  // reason for these to run one at a time, only inertia, and doing so
+  // serially would otherwise add real wall-clock time to the one
+  // sequential per-customer loop this whole scan run is built on (see
+  // RUN_BUDGET_MS's own header on why that budget is shared across every
+  // customer in a single run). Fired together per country instead;
+  // `responses` stays in the same order as `jobTitles` (Promise.all
+  // preserves it), so the within-country dedup below still prefers
+  // whichever title comes first in that list, exactly as it did when
+  // this ran sequentially.
   const perCountry = []
   for (const country of countries) {
     const countryResults = []
     const seenUrls = new Set()
-    for (const jobTitle of jobTitles) {
+    const responses = await Promise.all(jobTitles.map(async (jobTitle) => {
       try {
         const params = new URLSearchParams({
           app_id: appId,
@@ -970,40 +1002,44 @@ export async function discoverAdzunaJobs(appId, appKey, { sectors, functions, lo
         const resp = await fetchWithRetry(`https://api.adzuna.com/v1/api/jobs/${country}/search/1?${params.toString()}`)
         if (resp.ok) {
           const data = await resp.json()
-          for (const j of data.results || []) {
-            const title = (j.title || '').replace(/<[^>]+>/g, '').trim()
-            const company = j.company?.display_name || ''
-            const url = j.redirect_url || ''
-            if (!title || !company) continue
-            // The same posting legitimately matches more than one title
-            // query ("Finance Director" and "Head of Finance" both hit a
-            // "Finance Director / Head of Finance" ad), so dedupe within the
-            // country before it reaches the merge below.
-            if (url && seenUrls.has(url)) continue
-            if (url) seenUrls.add(url)
-            countryResults.push({
-              title,
-              company,
-              location: j.location?.display_name || '',
-              url,
-              salary: j.salary_min ? `${Math.round(j.salary_min)}${j.salary_max && j.salary_max !== j.salary_min ? `-${Math.round(j.salary_max)}` : ''}` : null,
-            })
-          }
-        } else {
-          // 2026-08-29 audit fix: a non-ok response (a suspended app_id/
-          // app_key, a bad request, an Adzuna-side outage) fell through this
-          // branch with nothing logged at all — identical, in every log and
-          // in the product, to "genuinely zero jobs in this country right
-          // now." Every other discover*/lookup* function in this file at
-          // least logs its non-ok branch (see discoverTheirStackJobs,
-          // discoverHotCompanies, verifyContact above); this was the one
-          // real gap. Still fails open on purpose (one country's outage
-          // shouldn't drop the others this loop already found), just no
-          // longer invisibly.
-          console.error(`[scanShared] Adzuna non-ok response for ${country} / "${jobTitle}": ${resp.status}`)
+          return data.results || []
         }
+        // 2026-08-29 audit fix: a non-ok response (a suspended app_id/
+        // app_key, a bad request, an Adzuna-side outage) fell through this
+        // branch with nothing logged at all — identical, in every log and
+        // in the product, to "genuinely zero jobs in this country right
+        // now." Every other discover*/lookup* function in this file at
+        // least logs its non-ok branch (see discoverTheirStackJobs,
+        // discoverHotCompanies, verifyContact above); this was the one
+        // real gap. Still fails open on purpose (one title's failure
+        // shouldn't drop the others this country already found), just no
+        // longer invisibly.
+        console.error(`[scanShared] Adzuna non-ok response for ${country} / "${jobTitle}": ${resp.status}`)
+        return []
       } catch (err) {
         console.error('[scanShared] adzuna discovery failed for', country, `/ "${jobTitle}":`, err.message)
+        return []
+      }
+    }))
+    for (const results of responses) {
+      for (const j of results) {
+        const title = (j.title || '').replace(/<[^>]+>/g, '').trim()
+        const company = j.company?.display_name || ''
+        const url = j.redirect_url || ''
+        if (!title || !company) continue
+        // The same posting legitimately matches more than one title
+        // query ("Finance Director" and "Head of Finance" both hit a
+        // "Finance Director / Head of Finance" ad), so dedupe within the
+        // country before it reaches the merge below.
+        if (url && seenUrls.has(url)) continue
+        if (url) seenUrls.add(url)
+        countryResults.push({
+          title,
+          company,
+          location: j.location?.display_name || '',
+          url,
+          salary: j.salary_min ? `${Math.round(j.salary_min)}${j.salary_max && j.salary_max !== j.salary_min ? `-${Math.round(j.salary_max)}` : ''}` : null,
+        })
       }
     }
     perCountry.push(countryResults)
@@ -1193,6 +1229,20 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
         location: j.location || j.short_location || '',
         url: j.url || j.final_url || j.source_url || '',
         salary: j.salary_string || null,
+        // 2026-09-03, Michael: TheirStack's own response already carries
+        // employee_count and is_recruiting_agency on company_object — free
+        // signal this mapping was throwing away, meaning
+        // pickLiveJobEntry(ies)FromLeads below could only judge a lead by
+        // title/company/url and had no way to avoid picking a mega-employer
+        // or an agency-posted role BEFORE spending one of the guaranteed
+        // live_job slots on it — only buildEnrichedSignalRow's later,
+        // Apollo-backed check caught it, by which point the pick was
+        // already made and nothing replaced it. Adzuna leads have no
+        // equivalent field (no company object in its response), so they
+        // stay undefined here and fall through to the text-based
+        // looksLikeStaffingAgencyName check only, same as always.
+        employeeCount: typeof j.company_object?.employee_count === 'number' ? j.company_object.employee_count : null,
+        isRecruitingAgency: !!j.company_object?.is_recruiting_agency,
       }))
       .filter(j => j.title && j.company && j.url)
       .slice(0, limit)
@@ -1245,31 +1295,87 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
 // spending a second, duplicate API call just to get a pickable entry.
 // Still exported and used directly by discoverGuaranteedLiveJobEntry below
 // for any caller that doesn't already have leads on hand.
-export function pickLiveJobEntryFromLeads(theirStackLeads, adzunaLeads, existingKeys) {
-  for (const lead of [...(theirStackLeads || []), ...(adzunaLeads || [])]) {
-    if (!lead.title || !lead.company || !lead.url) continue
-    if (existingKeys?.has(normalizeKey(lead.company, lead.title, lead.url))) continue
-    let sourceLabel = ''
-    try { sourceLabel = new URL(lead.url).hostname.replace(/^www\./, '') } catch { /* keep '' */ }
-    return {
-      entryType: 'live_job',
-      company: lead.company,
-      signalType: 'live_job',
-      headline: `${lead.title} — live opening at ${lead.company}`,
-      whyItMatters: `A genuine, currently open ${lead.title} posting${lead.location ? ` in ${lead.location}` : ''}${lead.salary ? `, salary ${lead.salary}` : ''} — a real, time-sensitive hiring need right now.`,
-      sourceUrl: lead.url,
-      sourceLabel,
-      eventDate: null,
-      titleKeywords: [lead.title],
-      whoToApproach: '',
-      introMessage: '',
-      candidateAngle: '',
-      benchStrengthAngle: '',
-      candidateProfile: null,
-      likelyRoles: [],
-    }
+// 2026-09-03, Michael, real report: asked to see exactly what a scan run's
+// raw lead lists actually contained (Al-Futtaim, POWERCHINA, ALAS Emirates
+// Ready Mix, several more) after this picker had surfaced a single, weak
+// "COPADO User Group Hyderabad" entry from that same list — a name that
+// reads like a meetup/community group, not a real employer. The picker
+// below used to take the FIRST lead that merely had a title/company/url
+// and wasn't already on file, with no read at all on whether it was
+// actually a good pick — a mega-employer (Al-Futtaim, 26,657 staff) or an
+// agency-posted role would only get caught much later, by
+// buildEnrichedSignalRow's Apollo-backed check, by which point the one
+// guaranteed slot was already spent on it and nothing replaced it. This
+// gate runs the same two checks that check would eventually make anyway
+// (isMegaEmployer, looksLikeStaffingAgencyName — the latter also doubles
+// as a coarse "does this even read like a real employer" filter for a
+// name like "COPADO User Group Hyderabad"), but at picking time, using the
+// employeeCount/isRecruitingAgency TheirStack already hands back for free
+// (see discoverTheirStackJobs's own mapping) — so a bad lead costs nothing
+// and the picker moves on to the next one instead of spending its shot.
+function isDisqualifiedLiveJobLead(lead) {
+  if (looksLikeStaffingAgencyName(lead.company)) return true
+  if (lead.isRecruitingAgency) return true
+  if (isMegaEmployer(lead.employeeCount)) return true
+  return false
+}
+
+function buildLiveJobEntryFromLead(lead) {
+  let sourceLabel = ''
+  try { sourceLabel = new URL(lead.url).hostname.replace(/^www\./, '') } catch { /* keep '' */ }
+  return {
+    entryType: 'live_job',
+    company: lead.company,
+    signalType: 'live_job',
+    headline: `${lead.title} — live opening at ${lead.company}`,
+    whyItMatters: `A genuine, currently open ${lead.title} posting${lead.location ? ` in ${lead.location}` : ''}${lead.salary ? `, salary ${lead.salary}` : ''} — a real, time-sensitive hiring need right now.`,
+    sourceUrl: lead.url,
+    sourceLabel,
+    eventDate: null,
+    titleKeywords: [lead.title],
+    whoToApproach: '',
+    introMessage: '',
+    candidateAngle: '',
+    benchStrengthAngle: '',
+    candidateProfile: null,
+    likelyRoles: [],
   }
-  return null
+}
+
+// 2026-09-03: plural successor to pickLiveJobEntryFromLeads below, for the
+// priority-discovery pass's own top-up (see LIVE_JOB_PRIORITY_LIMIT in this
+// file and runPriorityDiscovery in both scan files) — Michael's own
+// question ("surely there's a lot more roles than that") confirmed a single
+// scan's raw leads regularly contain several genuinely good, distinct
+// candidates (POWERCHINA, ALAS Emirates Ready Mix, both real mid-size
+// employers, sitting unused behind the one COPADO pick that run). Same
+// source order and dedup-against-existingKeys rule as the singular
+// function, plus: skips a disqualified lead instead of returning it (see
+// isDisqualifiedLiveJobLead), and dedupes against its OWN already-picked
+// entries by URL so the same posting can't fill two of the limit's slots.
+export function pickLiveJobEntriesFromLeads(theirStackLeads, adzunaLeads, existingKeys, limit = 1) {
+  const picked = []
+  const pickedUrls = new Set()
+  for (const lead of [...(theirStackLeads || []), ...(adzunaLeads || [])]) {
+    if (picked.length >= limit) break
+    if (!lead.title || !lead.company || !lead.url) continue
+    if (pickedUrls.has(lead.url)) continue
+    if (existingKeys?.has(normalizeKey(lead.company, lead.title, lead.url))) continue
+    if (isDisqualifiedLiveJobLead(lead)) continue
+    pickedUrls.add(lead.url)
+    picked.push(buildLiveJobEntryFromLead(lead))
+  }
+  return picked
+}
+
+// Singular convenience wrapper, kept for discoverGuaranteedLiveJobEntry and
+// existing callers that only ever wanted one entry — same quality gate as
+// the plural picker above now applies here too (previously this had none),
+// so a mega-employer or agency-posted lead no longer costs this the one
+// slot it has; it just moves on to the next real one, same as it already
+// did for an existing-on-file duplicate.
+export function pickLiveJobEntryFromLeads(theirStackLeads, adzunaLeads, existingKeys) {
+  return pickLiveJobEntriesFromLeads(theirStackLeads, adzunaLeads, existingKeys, 1)[0] || null
 }
 
 export async function discoverGuaranteedLiveJobEntry(adzunaAppId, adzunaAppKey, theirStackApiKey, ob, existingKeys, supabase, caps = {}) {
@@ -3527,15 +3633,45 @@ export function buildCustomerWatchlistHint(companies) {
 }
 
 // Deliberately smaller than POOL_PERSONALIZE_MAX_TOKENS/the main scan's own
-// budget above — this prompt asks for at most 3 entries total (1 live_job, 1
-// leadership_change, plus any incidental annie_learned finds) against a
-// narrow, single-purpose brief, not the main scan's "up to 5-8, mixed
-// types" sweep. maxUses (web-search round-trips) similarly scaled down: a
-// handful of targeted lookups per type, not the wider budget a general
-// sweep needs to cover funding/expansion/M&A/regulatory/live_job/leadership
-// all in one call.
-export const PRIORITY_DISCOVERY_MAX_TOKENS = 2000
-export const PRIORITY_DISCOVERY_MAX_USES = 6
+// budget above — a narrow, single-purpose brief, not the main scan's "up
+// to 5-8, mixed types" sweep. maxUses (web-search round-trips) similarly
+// scaled down: a handful of targeted lookups per type, not the wider
+// budget a general sweep needs to cover funding/expansion/M&A/regulatory/
+// live_job/leadership all in one call.
+//
+// 2026-09-03, Michael, follow-up to LIVE_JOB_PRIORITY_LIMIT below being
+// uncapped: MAX_TOKENS raised 3200 -> 6000 so the AI's own output has real
+// room for however many live_job entries actually clear the bar this call
+// — each one carries several free-text fields (whyItMatters, introMessage,
+// candidateAngle, benchStrengthAngle, candidateProfile), so a response
+// that's no longer capped at a small fixed count needs a token budget that
+// won't truncate it mid-response. MAX_USES raised 6 -> 8 in the same edit —
+// finding several DISTINCT good candidates (not just one) plausibly takes
+// a couple more search round-trips than finding just one did.
+export const PRIORITY_DISCOVERY_MAX_TOKENS = 6000
+export const PRIORITY_DISCOVERY_MAX_USES = 8
+
+// 2026-09-03, Michael: "surely there's a lot more roles ... did she stop
+// as soon as she found these finance roles?", then, after the fix below
+// first shipped capping this at 3: "remove the cap on how many jobs it can
+// find. So, if 10 quality jobs are found that day then so be it." —
+// she didn't stop searching (buildJobTitleQueries already queries every
+// one of this recruiter's selected functions in one interleaved pass, not
+// sequentially-until-one-hits), but this prompt's own "up to ONE live_job
+// entry" instruction and pickLiveJobEntryFromLeads' own single-pick shape
+// meant only one of whatever the search turned up ever made it through,
+// regardless of how many other genuinely good, distinct ones existed in
+// the same result set. Uncapped by explicit request — no arbitrary ceiling
+// on how many live_job entries a single scan can surface. The real,
+// natural ceiling is however many genuinely good, distinct, verified
+// candidates actually exist this round: the AI's own search still only
+// reports what it can verify (never padded — see the prompt's own
+// instruction), and the raw-lead top-up (pickLiveJobEntriesFromLeads) is
+// itself bounded by how many real leads TheirStack/Adzuna return per call
+// (10 each, their own existing caps — a separate, deliberate cost lever,
+// not this one). Infinity here just means "don't ALSO truncate on top of
+// those real ceilings."
+export const LIVE_JOB_PRIORITY_LIMIT = Infinity
 
 // 2026-09-02, Michael: real report — "why has Annie not found one live
 // job" and, separately, "why is leadership so thin". Root cause for both,
@@ -3556,14 +3692,21 @@ export const PRIORITY_DISCOVERY_MAX_USES = 6
 // happens to already have on file from the general sweep's target-firm
 // anchors (funding/expansion's own mechanism, not built for these two).
 //
-// This prompt is deliberately narrow: it asks for AT MOST ONE live_job
-// entry and AT MOST ONE leadership_change entry per call, never both
-// padded to hit a count — called on both of this account's two daily
-// scan fires (see MAX_SIGNALS_PER_RUN's own 12-hourly cadence), so "up to
-// 1 per call, twice a day" is what actually delivers Michael's stated
-// target of up to 2 good ones a day for each, without inventing a
-// separate once-a-day rate-limit mechanism to enforce it. Runs
-// unconditionally, every single call, regardless of whether the shared
+// This prompt asks for every genuinely good, distinct live_job entry
+// found (no artificial cap — see LIVE_JOB_PRIORITY_LIMIT's own header) and
+// AT MOST ONE leadership_change entry per call, never padded to hit a
+// count — called on both of this account's two daily scan fires (see
+// MAX_SIGNALS_PER_RUN's own 12-hourly cadence). 2026-09-03, Michael, real
+// report: "surely there's a lot more roles than that — did she stop as
+// soon as she found these finance roles?", then, after this first shipped
+// capped at 3: "remove the cap ... if 10 quality jobs are found that day
+// then so be it" — a single run's raw leads regularly contain several
+// genuinely good, distinct candidates (confirmed live: 10 raw TheirStack
+// leads, only 1 ever kept before this fix), so any fixed number here just
+// moves where the same understatement happens. leadership_change stays at
+// one: Michael hasn't asked for more of those, and a genuine, well-sourced
+// named appointment is inherently rarer per cycle than an open job
+// posting. Runs unconditionally, every single call, regardless of whether the shared
 // signal pool already covers the rest of that run's quota — see this
 // pass's own caller for why these two are additional to, not competing
 // against, the ordinary per-run cap the rest of buildScanPrompt's output
@@ -3580,7 +3723,7 @@ This is a dedicated, focused pass for exactly the two things this recruiter has 
 
 Bias hard against household-name, mega-employer companies (thousands of employees) — a company that size runs hiring almost entirely in-house and essentially never engages an external agency recruiter, so a live opening or a new appointment there isn't a real lead for this recruiter even though it's the easiest one to find. The real value is in genuine mid-market and emerging companies actively hiring or promoting right now, even if they're less famous.
 
-${opts.adzunaLeads?.length ? `Adzuna's live jobs board shows these real, recent postings that may match: ${opts.adzunaLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. If one of these reads as posted directly by the company itself (no agency name, no "on behalf of our client" language), it's a candidate for your one live_job entry below.\n` : ''}${opts.theirStackLeads?.length ? `TheirStack (covers UAE/GCC, where Adzuna has no coverage) shows these real, recent postings: ${opts.theirStackLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. Same rule as the Adzuna leads above.\n` : ''}
+${opts.adzunaLeads?.length ? `Adzuna's live jobs board shows these real, recent postings that may match: ${opts.adzunaLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. Any of these that reads as posted directly by the company itself (no agency name, no "on behalf of our client" language) is a candidate for one of your live_job entries below — several different ones from this list can each become their own entry, with no cap on how many, they don't have to compete for a single slot.\n` : ''}${opts.theirStackLeads?.length ? `TheirStack (covers UAE/GCC, where Adzuna has no coverage) shows these real, recent postings: ${opts.theirStackLeads.map(l => `"${l.title}" at ${l.company}${l.location ? ` (${l.location})` : ''}${l.salary ? `, salary ~${l.salary}` : ''} — ${l.url}`).join(' | ')}. Same rule as the Adzuna leads above.\n` : ''}
 For the live job: beyond the leads above, actively search this recruiter's own named regional job boards and LinkedIn Jobs posts, and check each target firm below's own careers page directly, for a real, specific, currently open vacancy in this recruiter's target functions — never a "company X is hiring" narrative with no actual posting to cite.
 ${buildLiveJobBoardHint(onboarding?.locations, onboarding?.sectors)}
 For the leadership appointment: actively search this recruiter's own named regional press below and LinkedIn for someone who has genuinely, recently (within the last ${SIGNAL_LOOKBACK_DAYS} days) joined, been appointed, or been promoted into a senior role — ideally at one of the target firms below, or at a company already on this recruiter's radar (listed below), though a genuine appointment anywhere in this recruiter's sectors/markets counts. Naming the actual person is strongly preferred but not required if your source doesn't name them.
@@ -3589,9 +3732,9 @@ ${buildTargetFirmHint(onboarding?.sectors, opts.learned, onboarding?.locations)}
 ${buildCustomerWatchlistHint(opts.watchlist)}
 Companies already surfaced recently — still worth checking for a fresh live opening or a fresh appointment even though they've come up before: ${recentCompanies.join(', ') || 'None yet'}.
 
-Return up to ONE genuinely good live_job entry AND up to ONE genuinely good leadership_change entry. An empty result for one or both is a completely normal, honest outcome if nothing genuinely clears the bar right now — never pad either one out just to return something.
+Return every genuinely good live_job entry you found — no cap on how many, each a different real, specific, currently open role, never near-duplicates of the same posting — AND up to ONE genuinely good leadership_change entry. Zero for one or both is a completely normal, honest outcome if that's genuinely all that clears the bar right now — never pad any of them out just to return something, and never hold one back once you've found and verified it.
 
-For the live job, if you found one, use this exact shape:
+For each live job you found, use this exact shape:
 - entryType: "live_job"
 - company: the company name
 - headline: the exact, specific role title (e.g. "Senior Finance Manager", not "Hiring across Finance")
@@ -3632,5 +3775,5 @@ For each genuinely new company or source you noticed while checking the named so
 - location: which market this belongs to — one of exactly [${onboarding?.locations?.join(', ') || 'this recruiter\'s selected markets'}], or "Global" only for a genuinely global resource with no single home market
 Only include this when you actually found something real this way — never invent one to pad the response.
 
-Return a single JSON array mixing entryTypes as they apply (0-3 entries: at most one live_job, at most one leadership_change signal, plus any annie_learned entries). Only return the JSON array, nothing else. If nothing genuinely good was found for either, return an empty array.`
+Return a single JSON array mixing entryTypes as they apply: every genuinely good, distinct live_job entry you found (no cap), at most one leadership_change signal, plus any annie_learned entries. Only return the JSON array, nothing else. If nothing genuinely good was found for either, return an empty array.`
 }

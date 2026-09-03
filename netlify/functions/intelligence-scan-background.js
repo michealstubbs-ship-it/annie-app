@@ -49,7 +49,7 @@ import { getEntitlements, SCAN_TIER_CONFIG, resolveResourceCaps } from './lib/en
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, fundingFuzzyKey, extractJson, looksTruncatedByTokenLimit,
   buildExistingByCompanyType, findSemanticDedupTargets, filterSemanticDuplicates, SEMANTIC_DEDUP_MAX_TOKENS,
-  discoverAdzunaJobs, discoverTheirStackJobs, pickLiveJobEntryFromLeads, fetchWithRetry, alertIfConfigured,
+  discoverAdzunaJobs, discoverTheirStackJobs, pickLiveJobEntryFromLeads, pickLiveJobEntriesFromLeads, LIVE_JOB_PRIORITY_LIMIT, fetchWithRetry, alertIfConfigured,
   dropGenericHiringWhereLiveJobsExist, buildEnrichedSignalRows, createTimeoutFetch,
   buildRegionalSourceHint,
   buildLiveJobBoardHint,
@@ -306,9 +306,20 @@ async function callAnthropic(apiKey, systemPrompt, supabase, { maxTokens = 4096,
 // customer the (small) bonus this pass offers, never the rest of their scan.
 // Guarantees at least an attempt at a real live_job even when the AI itself
 // found nothing this round, by falling back to the same raw-API pick
-// (pickLiveJobEntryFromLeads) the old pool-full branch used to rely on
+// (pickLiveJobEntriesFromLeads) the old pool-full branch used to rely on
 // exclusively — reusing the SAME adzunaLeads/theirStackLeads this run
 // already fetched, not a second API call.
+//
+// 2026-09-03, Michael, real report ("surely there's a lot more roles than
+// that"): this used to top up with exactly one fallback entry, and only
+// when the AI itself found ZERO — so a run where the AI (or the raw leads)
+// genuinely had 3-4 good, distinct candidates still only ever kept 1,
+// AI-found or fallback-found alike. Now tops up to LIVE_JOB_PRIORITY_LIMIT
+// total regardless of how many the AI itself already found, using
+// pickLiveJobEntriesFromLeads' own quality gate (mega-employer/staffing-
+// agency skip) so the raw-lead top-up never wastes a slot on a lead that
+// was always going to fail enrichment's later check — same standard the AI
+// prompt itself now asks for.
 async function runPriorityDiscovery(ob, recentCompanies, { adzunaLeads, theirStackLeads, learned, watchlist }, existingKeys, ctx) {
   const { anthropicKey, supabase, resourceCaps } = ctx
   let priorityFound = []
@@ -328,9 +339,20 @@ async function runPriorityDiscovery(ob, recentCompanies, { adzunaLeads, theirSta
   } catch (err) {
     console.log('[intelligence-scan] priority discovery call failed for', ob.user_id, '- continuing with the rest of this scan:', err.message)
   }
-  if (!priorityFound.some(s => s.entryType === 'live_job')) {
-    const fallback = pickLiveJobEntryFromLeads(theirStackLeads, adzunaLeads, existingKeys)
-    if (fallback) priorityFound.push(fallback)
+  const aiLiveJobCount = priorityFound.filter(s => s.entryType === 'live_job').length
+  const stillNeeded = LIVE_JOB_PRIORITY_LIMIT - aiLiveJobCount
+  if (stillNeeded > 0) {
+    // Dedup against whatever the AI itself already picked this same call,
+    // not just this customer's existing signal history — otherwise the
+    // raw-lead top-up could re-add the exact same posting the AI already
+    // found and named as its own live_job entry.
+    const aiPickedKeys = new Set(
+      priorityFound.filter(s => s.entryType === 'live_job' && s.company && s.sourceUrl)
+        .map(s => normalizeKey(s.company, s.headline, s.sourceUrl)),
+    )
+    const combinedKeys = new Set([...existingKeys, ...aiPickedKeys])
+    const fallbacks = pickLiveJobEntriesFromLeads(theirStackLeads, adzunaLeads, combinedKeys, stillNeeded)
+    priorityFound.push(...fallbacks)
   }
   return priorityFound
 }
