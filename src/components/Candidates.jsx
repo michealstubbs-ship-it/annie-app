@@ -2,10 +2,11 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
-import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, findCandidateDuplicateByEmail, findDuplicateSubmission } from '../lib/data/candidates'
+import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, findCandidateDuplicateByEmail, findDuplicateSubmission, findCandidateIdByExactName } from '../lib/data/candidates'
 import { listActiveJobsForPicker } from '../lib/data/jobs'
 import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
 import { STAGES, STAGE_LABEL, STAGE_COLOR, searchCandidates, filterCandidatesByStage, sortCandidates, groupCandidatesByStage, VISA_STATUS_LABEL, VISA_TYPE_LABEL, visaExpiryBadge } from '../lib/candidatesView'
+import { searchCandidatesBoolean } from '../lib/booleanSearch'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import { logSignalOutcome } from '../lib/signalOutcomes'
@@ -45,6 +46,10 @@ const EMPTY = {
   // competitor CRM researched has as a real field. Nullable, same
   // unaffected-by-default shape as counter_offer_risk above.
   visa_status: '', visa_type: '', visa_sponsor: '', visa_expiry: '',
+  // 2026-09-06, gap-analysis batch 2 ("referral program tracking"):
+  // referrer_candidate_id is resolved best-effort in save() below, never
+  // typed directly — the form only ever collects the free-text name.
+  referrer_name: '', referrer_candidate_id: null,
 }
 
 // Friendly labels for the CV auto-fill banner ("Annie read this CV and
@@ -87,6 +92,11 @@ export default function Candidates() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [search, setSearch] = useState('')
+  // 2026-09-06, gap-analysis batch 2 ("real Boolean / X-ray search"):
+  // opt-in — the plain substring search stays the default for everyone
+  // who never needs AND/OR/NOT, same "additive, not a replacement"
+  // reasoning as booleanSearch.js's own header comment.
+  const [booleanMode, setBooleanMode] = useState(false)
   const [sortBy, setSortBy] = useState('recent')
   const [showModal, setShowModal] = useState(false)
   const [form, setForm] = useState(EMPTY)
@@ -191,7 +201,10 @@ export default function Candidates() {
   // returned — no grouping, no sort. Filtering/sorting/grouping logic
   // lives in lib/candidatesView.js so it's unit-tested rather than only
   // reachable through this render.
-  const searched = useMemo(() => searchCandidates(candidates, search), [candidates, search])
+  const searched = useMemo(
+    () => (booleanMode ? searchCandidatesBoolean(candidates, search) : searchCandidates(candidates, search)),
+    [candidates, search, booleanMode]
+  )
   const ownerFiltered = useMemo(
     () => (ownerFilter === 'all' ? searched : searched.filter(c => c.owner_id === ownerFilter)),
     [searched, ownerFilter]
@@ -233,6 +246,7 @@ export default function Candidates() {
       counter_offer_risk: c.counter_offer_risk || '', counter_offer_notes: c.counter_offer_notes || '',
       is_hotlisted: !!c.is_hotlisted, hotlist_note: c.hotlist_note || '',
       visa_status: c.visa_status || '', visa_type: c.visa_type || '', visa_sponsor: c.visa_sponsor || '', visa_expiry: c.visa_expiry || '',
+      referrer_name: c.referrer_name || '', referrer_candidate_id: c.referrer_candidate_id || null,
     })
     setEditId(c.id)
     setCvFile(null)
@@ -510,6 +524,10 @@ export default function Candidates() {
         visa_type: form.visa_type || null,
         visa_sponsor: form.visa_sponsor?.trim() || null,
         visa_expiry: form.visa_expiry || null,
+        referrer_name: form.referrer_name.trim() || null,
+        // Best-effort re-resolve on every save (not just at typing time) —
+        // cheap, and picks up a referrer who gets added to the CRM later.
+        referrer_candidate_id: form.referrer_name.trim() ? await findCandidateIdByExactName(form.referrer_name).catch(() => null) : null,
         cv_path: cvPath,
         updated_at: new Date().toISOString(),
       }
@@ -589,6 +607,9 @@ export default function Candidates() {
                   })()}
                   {c.visa_status === 'needs_sponsorship' && (
                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-orange-100 text-orange-700" title="Rules out any role that can't sponsor">🛂 {VISA_STATUS_LABEL.needs_sponsorship}</span>
+                  )}
+                  {c.referrer_name && (
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600" title={c.referrer_candidate_id ? 'Linked to an existing candidate record' : 'Referrer not yet in the CRM'}>🤝 Referred by {c.referrer_name}</span>
                   )}
                 </div>
                 <p className="text-xs text-gray-500 mt-0.5">{[c.role, c.company].filter(Boolean).join(' · ')}</p>
@@ -681,7 +702,19 @@ export default function Candidates() {
 
       <div className="flex items-center justify-between gap-3 mb-6 flex-wrap">
         <div className="flex flex-wrap items-center gap-3">
-          <input className="input max-w-sm" placeholder="Search candidates..." value={search} onChange={e => setSearch(e.target.value)} />
+          <input
+            className="input max-w-sm"
+            placeholder={booleanMode ? 'e.g. python AND (django OR flask) NOT contractor' : 'Search candidates...'}
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          <button
+            onClick={() => setBooleanMode(v => !v)}
+            className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 ${booleanMode ? 'bg-navy border-navy text-white' : 'border-gray-200 text-gray-600'}`}
+            title='Boolean / X-ray search: AND, OR, NOT, "exact phrases", and (grouping)'
+          >
+            {'{ }'} Boolean
+          </button>
           <OwnerFilter value={ownerFilter} onChange={setOwnerFilter} teamMembers={teamMembers} />
           <button
             onClick={() => setHotlistOnly(v => !v)}
@@ -937,6 +970,14 @@ export default function Candidates() {
               <div>
                 <label className="label" htmlFor="candidate-source">Source</label>
                 <input id="candidate-source" className="input" value={form.source} onChange={e => setForm(p => ({ ...p, source: e.target.value }))} />
+              </div>
+              {/* 2026-09-06, gap-analysis batch 2: turns "Referral" from a
+                  label in the source field above into an actual program —
+                  who referred them, resolved to a real candidate record
+                  automatically when that name matches one on save(). */}
+              <div>
+                <label className="label" htmlFor="candidate-referrer">Referred by (optional)</label>
+                <input id="candidate-referrer" className="input" placeholder="Name of the person who referred them" value={form.referrer_name} onChange={e => setForm(p => ({ ...p, referrer_name: e.target.value }))} />
               </div>
               <div>
                 <label className="label" htmlFor="candidate-follow-up-date">Follow-up date</label>

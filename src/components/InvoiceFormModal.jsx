@@ -53,12 +53,23 @@ const EMPTY = {
   // starts on the same terms the database would apply anyway, just visible
   // and editable here instead of invisible until someone checks the row.
   guarantee_days: '90', rebate_model: 'no_refund',
+  // 2026-09-06, gap-analysis batch 2 ("referral program tracking"): same
+  // "matches the column default" reasoning as guarantee_days above —
+  // 'none' is the right default for the overwhelming majority of
+  // placements that aren't referrals at all.
+  referral_payout_status: 'none', referral_payout_amount: '', referral_payout_notes: '',
 }
 
 const REBATE_MODEL_OPTIONS = [
   { value: 'no_refund', label: 'Free replacement only (no refund)' },
   { value: 'pro_rated', label: 'Pro-rated refund' },
   { value: 'full_refund', label: 'Full refund' },
+]
+
+const REFERRAL_PAYOUT_OPTIONS = [
+  { value: 'none', label: 'Not a referral placement' },
+  { value: 'pending', label: 'Referral payout owed' },
+  { value: 'paid', label: 'Referral payout paid' },
 ]
 
 // Create/edit form for a placement-fee invoice. Only ever creates or edits
@@ -106,6 +117,9 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
         notes: invoice.notes || '',
         guarantee_days: invoice.guarantee_days != null ? String(invoice.guarantee_days) : '90',
         rebate_model: invoice.rebate_model || 'no_refund',
+        referral_payout_status: invoice.referral_payout_status || 'none',
+        referral_payout_amount: invoice.referral_payout_amount != null ? String(invoice.referral_payout_amount) : '',
+        referral_payout_notes: invoice.referral_payout_notes || '',
       })
       const items = invoice.invoice_line_items?.length
         ? invoice.invoice_line_items
@@ -313,6 +327,9 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
         notes: form.notes.trim() || null,
         guarantee_days: Number(form.guarantee_days) || 90,
         rebate_model: form.rebate_model || 'no_refund',
+        referral_payout_status: form.referral_payout_status || 'none',
+        referral_payout_amount: form.referral_payout_amount ? Number(form.referral_payout_amount) : null,
+        referral_payout_notes: form.referral_payout_notes.trim() || null,
         updated_at: new Date().toISOString(),
       }
       const itemsForSave = validItems.map(li => ({ description: li.description.trim(), quantity: Number(li.quantity) || 1, unitAmount: Number(li.unitAmount) || 0, amount: li.amount }))
@@ -451,6 +468,31 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
                 {REBATE_MODEL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
+          </div>
+          {/* 2026-09-06, gap-analysis batch 2 ("referral program tracking"):
+              only shown once relevant — a genuine referral is uncommon
+              enough that surfacing three fields for every invoice would
+              be noise, same "shown only once it matters" precedent as
+              counter-offer notes in Candidates.jsx. */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="label" htmlFor="inv-referral-status">🤝 Referral payout</label>
+              <select id="inv-referral-status" className="input" value={form.referral_payout_status} onChange={e => setForm(p => ({ ...p, referral_payout_status: e.target.value }))}>
+                {REFERRAL_PAYOUT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            {form.referral_payout_status !== 'none' && (
+              <>
+                <div>
+                  <label className="label" htmlFor="inv-referral-amount">Payout amount</label>
+                  <input id="inv-referral-amount" type="number" min="0" className="input" value={form.referral_payout_amount} onChange={e => setForm(p => ({ ...p, referral_payout_amount: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="label" htmlFor="inv-referral-notes">Payout notes (optional)</label>
+                  <input id="inv-referral-notes" className="input" value={form.referral_payout_notes} onChange={e => setForm(p => ({ ...p, referral_payout_notes: e.target.value }))} />
+                </div>
+              </>
+            )}
           </div>
           <div><label className="label" htmlFor="inv-notes">Notes</label><textarea id="inv-notes" className="input resize-none" rows={2} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Anything you'd like to appear on the invoice itself" /></div>
 

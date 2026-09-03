@@ -68,6 +68,27 @@ export async function findDuplicateSubmission(email, jobId) {
   return data || null
 }
 
+// 2026-09-06, gap-analysis batch 2 ("referral program tracking"): best-
+// effort resolve of a free-typed referrer name to an existing candidate
+// record, mirroring findOrCreateCompany's own "not found is a legitimate
+// state, not an error" reasoning — a referrer who isn't in the CRM at all
+// (a client contact, a friend-of-the-agency) is common and fine; this
+// just upgrades referrer_name to a real link when an exact match exists.
+// Case-insensitive exact match only (not fuzzy) — the same bar
+// findOrCreateCompany uses for its own dedupe check, since a loose match
+// here risks silently linking to the WRONG person.
+export async function findCandidateIdByExactName(name) {
+  if (!name?.trim()) return null
+  const { data, error } = await supabase
+    .from('candidates')
+    .select('id')
+    .ilike('name', name.trim())
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  return data?.id || null
+}
+
 export function updateCandidate(id, row) {
   return supabase.from('candidates').update(row).eq('id', id)
 }

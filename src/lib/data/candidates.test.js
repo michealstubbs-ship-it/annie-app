@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
 
-import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, listCandidateJobLinks, listCandidatesForMatching, listCandidatesMinimal, listCandidatesForInvoicePicker, findCandidateDuplicateByEmail, findDuplicateSubmission } from './candidates.js'
+import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, listCandidateJobLinks, listCandidatesForMatching, listCandidatesMinimal, listCandidatesForInvoicePicker, findCandidateDuplicateByEmail, findDuplicateSubmission, findCandidateIdByExactName } from './candidates.js'
 
 function makeBuilder(result) {
   const builder = {}
@@ -153,6 +153,35 @@ describe('findCandidateDuplicateByEmail', () => {
     builder = makeBuilder({ data: null, error: { message: 'db down' } })
     fromMock.mockReturnValue(builder)
     await expect(findCandidateDuplicateByEmail('jane@example.com')).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+describe('findCandidateIdByExactName', () => {
+  it('returns null without querying when no name is given', async () => {
+    expect(await findCandidateIdByExactName('')).toBeNull()
+    expect(await findCandidateIdByExactName('   ')).toBeNull()
+    expect(fromMock).not.toHaveBeenCalled()
+  })
+
+  it('looks up by case-insensitive name and returns the id', async () => {
+    builder = makeBuilder({ data: { id: 'cand9' }, error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await findCandidateIdByExactName('Jane Doe')
+    expect(fromMock).toHaveBeenCalledWith('candidates')
+    expect(builder.ilike).toHaveBeenCalledWith('name', 'Jane Doe')
+    expect(result).toBe('cand9')
+  })
+
+  it('returns null when no candidate matches', async () => {
+    builder = makeBuilder({ data: null, error: null })
+    fromMock.mockReturnValue(builder)
+    expect(await findCandidateIdByExactName('Nobody Here')).toBeNull()
+  })
+
+  it('throws instead of silently returning null when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(findCandidateIdByExactName('Jane Doe')).rejects.toEqual({ message: 'db down' })
   })
 })
 
