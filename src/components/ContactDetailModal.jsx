@@ -2,12 +2,14 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { getContact, updateContact, deleteContact } from '../lib/data/contacts'
 import { listContactNotes, createContactNote } from '../lib/data/contactNotes'
+import { listTeamMembers } from '../lib/data/teamMembers'
 import { CONTACT_STATUS_LABELS } from '../lib/contactsView'
 import Modal from './Modal'
 import ContactFormModal from './ContactFormModal'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
+import OwnershipPanel from './OwnershipPanel'
 
 const STATUS_COLORS = {
   hot: 'bg-red-100 text-red-700',
@@ -40,6 +42,10 @@ export default function ContactDetailModal({ contactId, open, onClose, onChanged
   const [notes, setNotes] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  // 2026-09-03, Michael: "you need to see who added the contact in case
+  // there are any ownerships" — same OwnershipPanel used on Candidates.jsx
+  // and Companies.jsx, backed by the same team roster.
+  const [teamMembers, setTeamMembers] = useState([])
 
   const [noteBody, setNoteBody] = useState('')
   const [savingNote, setSavingNote] = useState(false)
@@ -58,9 +64,10 @@ export default function ContactDetailModal({ contactId, open, onClose, onChanged
     setLoading(true)
     setError('')
     try {
-      const [c, n] = await Promise.all([getContact(contactId), listContactNotes(contactId)])
+      const [c, n, tm] = await Promise.all([getContact(contactId), listContactNotes(contactId), listTeamMembers()])
       setContact(c)
       setNotes(n)
+      setTeamMembers(tm)
       setFollowUpDate(c.follow_up_date || '')
       setFollowUpReason(c.follow_up_reason || '')
     } catch (err) {
@@ -147,6 +154,13 @@ export default function ContactDetailModal({ contactId, open, onClose, onChanged
               </div>
             </div>
           </div>
+
+          <OwnershipPanel
+            table="contacts"
+            record={contact}
+            teamMembers={teamMembers}
+            onReassigned={updated => setContact(prev => ({ ...prev, owner_id: updated.owner_id }))}
+          />
 
           {/* Follow-up reminder — Michael: "a follow up option, where you can
               put it as a reminder when and why to follow up." Surfaces on

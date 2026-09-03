@@ -22,6 +22,26 @@ export function createCandidate(row, userId) {
   return supabase.from('candidates').insert({ ...row, user_id: userId })
 }
 
+// 2026-09-03, Michael: "in case there are any ownerships" — before a second
+// team member unknowingly adds the same candidate as if they were new, this
+// checks for an existing row with the same email first. Email-only (not
+// name — two different real people are very often named the same thing,
+// but never share an email) and case-insensitive, since a re-typed email
+// varies in case far more often than it varies in spelling. Nothing calls
+// this automatically on every keystroke — Candidates.jsx's save() checks it
+// once, only for a brand-new candidate, only when an email was given.
+export async function findCandidateDuplicateByEmail(email) {
+  if (!email?.trim()) return null
+  const { data, error } = await supabase
+    .from('candidates')
+    .select('id, name, owner_id, created_at')
+    .ilike('email', email.trim())
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  return data || null
+}
+
 export function updateCandidate(id, row) {
   return supabase.from('candidates').update(row).eq('id', id)
 }

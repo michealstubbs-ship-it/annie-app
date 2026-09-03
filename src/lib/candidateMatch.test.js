@@ -5,6 +5,7 @@ import {
   matchPreparedCandidatesToSignal,
   matchCandidatesToJob,
   matchPreparedCandidatesToJob,
+  isGeographicallyEligible,
 } from './candidateMatch.js'
 
 describe('matchCandidatesToSignal', () => {
@@ -217,5 +218,101 @@ describe('comma-qualified role fields (sector words after a comma)', () => {
     const signal = { title_keywords: ['Chief Financial Officer'], headline: '', company_industry: '' }
     const candidates = [{ id: 1, role: 'Chief Financial Officer', industry: '', status: 'active' }]
     expect(matchCandidatesToSignal(signal, candidates).map(c => c.id)).toEqual([1])
+  })
+})
+
+// 2026-09-05, task #256: candidates.titles/industries (jsonb arrays) hold
+// Annie's own CV-parse read on every OTHER title/industry a candidate's
+// real experience could plausibly match — additive to the recruiter's own
+// singular role/industry fields.
+describe('titles/industries arrays (AI-inferred title equivalence, additive to role/industry)', () => {
+  it('matches on an inferred title even though the recruiter-typed role field itself has no overlap', () => {
+    const signal = { title_keywords: ['VP Marketing'], headline: '', company_industry: '' }
+    const candidates = [{ id: 1, role: 'Head of Growth', titles: ['VP Marketing', 'Growth Lead'], industry: '', status: 'active' }]
+    expect(matchCandidatesToSignal(signal, candidates).map(c => c.id)).toEqual([1])
+  })
+
+  it('matches on an inferred industry the same way', () => {
+    const job = { title: '', notes: '', industry: 'Hospitality' }
+    const candidates = [{ id: 1, role: 'Ops Manager', industry: 'Retail', industries: ['Hospitality', 'Facilities'], status: 'active' }]
+    expect(matchCandidatesToJob(job, candidates).map(c => c.id)).toEqual([1])
+  })
+
+  it('a candidate with no titles/industries parsed still matches exactly as before (additive, not required)', () => {
+    const signal = { title_keywords: ['CFO'], headline: '', company_industry: '' }
+    const candidates = [{ id: 1, role: 'CFO', industry: '', status: 'active' }]
+    expect(matchCandidatesToSignal(signal, candidates).map(c => c.id)).toEqual([1])
+  })
+
+  it('tolerates titles/industries being missing, null, or not an array, without throwing', () => {
+    const signal = { title_keywords: ['CFO'], headline: '', company_industry: '' }
+    expect(() => prepareCandidatesForMatching([
+      { id: 1, role: 'CFO', status: 'active', titles: null, industries: null },
+      { id: 2, role: 'CFO', status: 'active', titles: 'not-an-array' },
+      { id: 3, role: 'CFO', status: 'active' },
+    ])).not.toThrow()
+  })
+})
+
+// 2026-09-05, Michael: "if any of the candidates are saudi nationals or
+// emiratis, only recommend those candidates if those jobs are in Saudi or
+// UAE if that makes sense" — the priority piece of the CV-scan rebuild.
+describe('isGeographicallyEligible', () => {
+  it('a Saudi national is eligible for a Saudi-located role', () => {
+    expect(isGeographicallyEligible({ nationality: 'Saudi' }, 'Riyadh, Saudi Arabia')).toBe(true)
+  })
+
+  it('a Saudi national is NOT eligible for a role outside Saudi Arabia', () => {
+    expect(isGeographicallyEligible({ nationality: 'Saudi Arabian' }, 'Dubai, UAE')).toBe(false)
+  })
+
+  it('an Emirati national is eligible for a UAE-located role', () => {
+    expect(isGeographicallyEligible({ nationality: 'Emirati' }, 'Dubai, United Arab Emirates')).toBe(true)
+  })
+
+  it('an Emirati national is NOT eligible for a role outside the UAE', () => {
+    expect(isGeographicallyEligible({ nationality: 'UAE National' }, 'Riyadh, Saudi Arabia')).toBe(false)
+  })
+
+  it('a candidate with no nationality on file is never gated', () => {
+    expect(isGeographicallyEligible({ nationality: '' }, 'London, UK')).toBe(true)
+    expect(isGeographicallyEligible({}, 'London, UK')).toBe(true)
+  })
+
+  it('a nationality Michael did not ask to gate is never restricted', () => {
+    expect(isGeographicallyEligible({ nationality: 'British' }, 'anywhere at all')).toBe(true)
+    expect(isGeographicallyEligible({ nationality: 'Egyptian' }, 'London, UK')).toBe(true)
+  })
+})
+
+describe('geographic gating wired into real matching (signals and jobs)', () => {
+  it('excludes a Saudi national from a live_job signal whose company is not in Saudi Arabia', () => {
+    const signal = { title_keywords: ['CFO'], headline: '', company_industry: '', company_city: 'London', company_country: 'United Kingdom' }
+    const candidates = [{ id: 1, role: 'CFO', nationality: 'Saudi', status: 'active' }]
+    expect(matchCandidatesToSignal(signal, candidates)).toEqual([])
+  })
+
+  it('includes a Saudi national for a live_job signal whose company IS in Saudi Arabia', () => {
+    const signal = { title_keywords: ['CFO'], headline: '', company_industry: '', company_city: 'Riyadh', company_country: 'Saudi Arabia' }
+    const candidates = [{ id: 1, role: 'CFO', nationality: 'Saudi', status: 'active' }]
+    expect(matchCandidatesToSignal(signal, candidates).map(c => c.id)).toEqual([1])
+  })
+
+  it('excludes an Emirati candidate from a customer-added job outside the UAE', () => {
+    const job = { title: 'CFO', notes: '', industry: '', companies: { location: 'London, UK' } }
+    const candidates = [{ id: 1, role: 'CFO', nationality: 'Emirati', status: 'active' }]
+    expect(matchCandidatesToJob(job, candidates)).toEqual([])
+  })
+
+  it('includes an Emirati candidate for a customer-added job in the UAE', () => {
+    const job = { title: 'CFO', notes: '', industry: '', companies: { location: 'Dubai, UAE' } }
+    const candidates = [{ id: 1, role: 'CFO', nationality: 'Emirati', status: 'active' }]
+    expect(matchCandidatesToJob(job, candidates).map(c => c.id)).toEqual([1])
+  })
+
+  it('a candidate with no nationality on file matches jobs/signals anywhere, as before', () => {
+    const job = { title: 'CFO', notes: '', industry: '', companies: { location: 'London, UK' } }
+    const candidates = [{ id: 1, role: 'CFO', status: 'active' }]
+    expect(matchCandidatesToJob(job, candidates).map(c => c.id)).toEqual([1])
   })
 })

@@ -28,7 +28,10 @@ export const STAGE_LABEL = {
 export function searchCandidates(candidates, search) {
   const q = (search || '').trim().toLowerCase()
   if (!q) return candidates
-  return candidates.filter(c => [c.name, c.role, c.company, c.location, c.industry, c.email].some(f => f?.toLowerCase().includes(q)))
+  // nationality added 2026-09-04 (Michael: "add a nationality function") —
+  // same free-text field as location/industry, so it gets the same search
+  // treatment as soon as it exists on a candidate row.
+  return candidates.filter(c => [c.name, c.role, c.company, c.location, c.industry, c.nationality, c.email].some(f => f?.toLowerCase().includes(q)))
 }
 
 export function filterCandidatesByStage(candidates, stage) {

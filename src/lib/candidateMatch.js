@@ -10,6 +10,30 @@
 
 const CLOSED_STATUSES = ['placed', 'rejected', 'withdrawn']
 
+// 2026-09-05, Michael, on the CV-parsing rebuild: "if any of the candidates
+// are saudi nationals or emiratis, only recommend those candidates if those
+// jobs are in Saudi or UAE". A free-text field matched against a free-text
+// field, same "loose keyword overlap, not a shared taxonomy" reasoning as
+// the rest of this file — deliberately narrow (only the two nationalities
+// Michael actually named) rather than a general "nationals only match their
+// own country" rule for every nationality, since he didn't ask for that and
+// a candidate with no gating rule here should never be filtered out on
+// nationality at all.
+const NATIONALITY_HOME_COUNTRY = [
+  { nationality: /\b(saudi|ksa)\b/i, country: /\b(saudi|ksa|riyadh|jeddah|dammam|khobar)\b/i },
+  { nationality: /\b(emirati|u\.?a\.?e\.? national)\b/i, country: /\b(u\.?a\.?e\.?|emirates|dubai|abu dhabi|sharjah|ajman|fujairah)\b/i },
+]
+
+// Exported so the CV auto-fill UI can explain the rule inline (see
+// Candidates.jsx's nationality field), not just candidateMatch.js itself.
+export function isGeographicallyEligible(candidate, locationText) {
+  const nationality = (candidate?.nationality || '').trim()
+  if (!nationality) return true // nothing on file — no gate to apply
+  const rule = NATIONALITY_HOME_COUNTRY.find(r => r.nationality.test(nationality))
+  if (!rule) return true // a nationality Michael didn't ask to gate — never filtered on this basis
+  return rule.country.test(locationText || '')
+}
+
 function tokenize(str) {
   return (str || '')
     .toLowerCase()
@@ -81,15 +105,24 @@ export function prepareCandidatesForMatching(candidates) {
     .filter(c => !CLOSED_STATUSES.includes(c.status))
     .map(c => {
       const { titlePart, qualifierPart } = splitRoleForMatching(c.role)
+      // 2026-09-05: candidates.titles/industries (jsonb arrays) are Annie's
+      // own CV-parse read on every OTHER title/industry this candidate's
+      // real experience could plausibly match — e.g. "Head of Growth" also
+      // covering "VP Marketing" or "Growth Lead" searches — additive to the
+      // recruiter's own singular role/industry fields, never replacing
+      // them, so a candidate whose CV was never parsed (titles/industries
+      // empty) matches exactly as before.
+      const extraTitleTokens = (Array.isArray(c.titles) ? c.titles : []).flatMap(tokenize)
+      const extraIndustryTokens = (Array.isArray(c.industries) ? c.industries : []).flatMap(tokenize)
       return {
         candidate: c,
-        roleTokens: tokenize(titlePart),
+        roleTokens: [...new Set([...tokenize(titlePart), ...extraTitleTokens])],
         // Sector words a recruiter typed after a comma in the role field
         // (see splitRoleForMatching above) join the real industry field's
         // own tokens here — same array, so a candidate still surfaces on
         // industry overlap either way, but that comma-qualifier text can no
         // longer masquerade as a title word.
-        industryTokens: [...tokenize(c.industry), ...tokenize(qualifierPart)],
+        industryTokens: [...new Set([...tokenize(c.industry), ...tokenize(qualifierPart), ...extraIndustryTokens])],
       }
     })
 }
@@ -98,7 +131,7 @@ export function prepareCandidatesForMatching(candidates) {
 // signal/job shape directly, so both the signal-matching functions and the
 // job-matching functions below funnel through exactly one scoring
 // implementation instead of two near-identical copies.
-function scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens }, prepared, { requireTitleOverlap = false, limit = 5 } = {}) {
+function scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens, locationText = '' }, prepared, { requireTitleOverlap = false, limit = 5 } = {}) {
   if (!prepared.length) return []
 
   const scored = prepared.map(({ candidate, roleTokens, industryTokens: candidateIndustryTokens }) => {
@@ -125,7 +158,7 @@ function scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryToken
   // behaviour deliberately — there, an industry-only match with no title
   // overlap is covered by its own test and is wanted.
   return scored
-    .filter(s => s.score >= 1 && (!requireTitleOverlap || s.titleScore >= 1))
+    .filter(s => s.score >= 1 && (!requireTitleOverlap || s.titleScore >= 1) && isGeographicallyEligible(s.candidate, locationText))
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map(s => s.candidate)
@@ -136,7 +169,13 @@ function scoreAgainstPrepared(signal, prepared) {
   const titleTokens = (signal.title_keywords || []).flatMap(tokenize)
   const freeTextTokens = tokenize(signal.headline)
   const industryTokens = tokenize(signal.company_industry)
-  return scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens }, prepared, { requireTitleOverlap: true, limit: 3 })
+  // A live_job signal has no dedicated location field of its own — only the
+  // hiring company's own HQ, from Apollo enrichment (see
+  // buildEnrichedSignalRow in scanShared.js) — which is exactly the "is
+  // this job in Saudi/UAE" question the nationality gate above needs to
+  // answer.
+  const locationText = [signal.company_city, signal.company_state, signal.company_country].filter(Boolean).join(', ')
+  return scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens, locationText }, prepared, { requireTitleOverlap: true, limit: 3 })
 }
 
 // 2026-08-29: same matching, pointed at a real job posting instead of a BD
@@ -150,7 +189,12 @@ function scoreJobAgainstPrepared(job, prepared) {
   const titleTokens = tokenize(job.title)
   const freeTextTokens = tokenize(job.notes)
   const industryTokens = tokenize(job.industry)
-  return scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens }, prepared)
+  // listJobsWithCompanies joins the client company in (see data/jobs.js) —
+  // `job.companies.location` is the real location a customer-added job is
+  // actually based in, same field Jobs.jsx already reads to show it on the
+  // card.
+  const locationText = job.companies?.location || ''
+  return scoreAgainstPreparedTokens({ titleTokens, freeTextTokens, industryTokens, locationText }, prepared)
 }
 
 // Returns the candidates (best matches first) worth surfacing for this

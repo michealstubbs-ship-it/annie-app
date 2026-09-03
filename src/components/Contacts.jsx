@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { listContacts, deleteContact } from '../lib/data/contacts'
+import { listTeamMembers } from '../lib/data/teamMembers'
 import { CONTACT_STATUSES, CONTACT_STATUS_LABELS, searchContacts, filterContactsByStatus, sortContacts, groupContactsByStatus } from '../lib/contactsView'
 import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
@@ -9,6 +10,7 @@ import ContactDetailModal from './ContactDetailModal'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
+import OwnerFilter from './OwnerFilter'
 
 const STATUS_COLORS = {
   hot: 'bg-red-100 text-red-700',
@@ -50,6 +52,11 @@ export default function Contacts() {
   // 2026-09-01: click-to-expand — clicking a contact opens this detail view
   // (notes log + follow-up) instead of Edit being the only way in.
   const [detailContactId, setDetailContactId] = useState(null)
+  // 2026-09-03, Michael: "a drop down to that specific license with
+  // everyone on the license so that you can always see who added the
+  // contact" — same teamMembers/ownerFilter pattern as Candidates.jsx.
+  const [teamMembers, setTeamMembers] = useState([])
+  const [ownerFilter, setOwnerFilter] = useState('all')
 
   useEffect(() => { loadContacts() }, [user])
   useEffect(() => { if (location.state?.autoOpenAdd) openAdd() }, [location.state])
@@ -64,7 +71,9 @@ export default function Contacts() {
     // error instead of quietly returning [] — previously that looked
     // identical to "you have no contacts yet".
     try {
-      setContacts(await listContacts(user.id))
+      const [c, tm] = await Promise.all([listContacts(user.id), listTeamMembers()])
+      setContacts(c)
+      setTeamMembers(tm)
     } catch (err) {
       setListError(err.message || 'Could not load your contacts. Please try again.')
     } finally {
@@ -89,12 +98,16 @@ export default function Contacts() {
   }
 
   const searched = useMemo(() => searchContacts(contacts, search), [contacts, search])
+  const ownerFiltered = useMemo(
+    () => (ownerFilter === 'all' ? searched : searched.filter(c => c.owner_id === ownerFilter)),
+    [searched, ownerFilter]
+  )
   const statusCounts = useMemo(() => {
     const counts = {}
-    for (const s of CONTACT_STATUSES) counts[s] = searched.filter(c => c.status === s).length
+    for (const s of CONTACT_STATUSES) counts[s] = ownerFiltered.filter(c => c.status === s).length
     return counts
-  }, [searched])
-  const statusFiltered = useMemo(() => filterContactsByStatus(searched, statusFilter), [searched, statusFilter])
+  }, [ownerFiltered])
+  const statusFiltered = useMemo(() => filterContactsByStatus(ownerFiltered, statusFilter), [ownerFiltered, statusFilter])
   const sorted = useMemo(() => sortContacts(statusFiltered, sortKey, sortDir), [statusFiltered, sortKey, sortDir])
   const groups = statusFilter === 'all' ? groupContactsByStatus(sorted) : null
 
@@ -147,12 +160,13 @@ export default function Contacts() {
 
       <div className="flex items-center gap-3 mb-6 flex-wrap">
         <input className="input max-w-sm" placeholder="Search contacts..." value={search} onChange={e => setSearch(e.target.value)} />
+        <OwnerFilter value={ownerFilter} onChange={setOwnerFilter} teamMembers={teamMembers} />
         <div className="flex items-center gap-1.5 flex-wrap">
           <button
             onClick={() => setStatusFilter('all')}
             className={`text-xs px-3 py-1.5 rounded-full font-semibold transition-colors ${statusFilter === 'all' ? 'bg-navy text-white' : 'bg-gray-50 text-gray-500 hover:bg-gray-100'}`}
           >
-            All <span className="opacity-70">({searched.length})</span>
+            All <span className="opacity-70">({ownerFiltered.length})</span>
           </button>
           {CONTACT_STATUSES.map(s => (
             <button
@@ -194,6 +208,16 @@ export default function Contacts() {
           <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Try a different name, company, title, or email — or clear the search to see all {contacts.length} contacts.</p>
           <button onClick={() => setSearch('')} className="btn-ghost">Clear search</button>
         </div>
+      ) : ownerFiltered.length === 0 ? (
+        // Owner filter narrowed a non-empty search down to nobody — its own
+        // empty state so it doesn't get misread as "no contacts at this
+        // status", same precedent as Candidates.jsx's equivalent.
+        <div className="card p-12 text-center">
+          <div className="text-4xl mb-3">🗂️</div>
+          <h3 className="font-bold text-navy mb-1">No contacts owned by {teamMembers.find(m => m.id === ownerFilter)?.name || 'that team member'}{search ? ` matching "${search}"` : ''}</h3>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Try a different team member, or clear this filter to see all {searched.length} contact{searched.length === 1 ? '' : 's'}{search ? ' matching your search' : ''}.</p>
+          <button onClick={() => setOwnerFilter('all')} className="btn-ghost">Show everyone's contacts</button>
+        </div>
       ) : statusFiltered.length === 0 ? (
         // 2026-08-29 audit fix: a status filter with zero matches used to be
         // impossible (there was no status filter) — now that there is one,
@@ -202,7 +226,7 @@ export default function Contacts() {
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">🗂️</div>
           <h3 className="font-bold text-navy mb-1">No {CONTACT_STATUS_LABELS[statusFilter]} contacts{search ? ` matching "${search}"` : ''}</h3>
-          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Try a different status, or clear this filter to see all {searched.length} contact{searched.length === 1 ? '' : 's'}{search ? ' matching your search' : ''}.</p>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Try a different status, or clear this filter to see all {ownerFiltered.length} contact{ownerFiltered.length === 1 ? '' : 's'}{search ? ' matching your search' : ''}.</p>
           <button onClick={() => setStatusFilter('all')} className="btn-ghost">Show all statuses</button>
         </div>
       ) : (

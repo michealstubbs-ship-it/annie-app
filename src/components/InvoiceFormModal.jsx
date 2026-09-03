@@ -42,7 +42,15 @@ const EMPTY = {
 // here (see the `locked` check below) rather than through a second
 // component, since the fields and layout are identical either way; only
 // whether they're editable changes.
-export default function InvoiceFormModal({ open, invoice, onClose, onSaved }) {
+//
+// `prefill` (2026-09-06, item 6/7: "invoice prompt on candidate placement")
+// — an optional partial EMPTY-shaped object, applied only in create mode
+// (never on an existing `invoice`, which already has its own real values).
+// Candidates.jsx passes company_id/job_id/candidate_id/bill_to_name here
+// when a candidate's status flips to "placed" and the recruiter accepts
+// the prompt, so the form opens already linked and fee-prefilled instead
+// of asking them to re-pick everything they just did in the candidate form.
+export default function InvoiceFormModal({ open, invoice, onClose, onSaved, prefill }) {
   const { user } = useAuth()
   const [form, setForm] = useState(EMPTY)
   const [lineItems, setLineItems] = useState([newRow()])
@@ -80,13 +88,32 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved }) {
       setLineItems(items)
       if (invoice.company_id) loadJobs(invoice.company_id)
     } else {
-      setForm(EMPTY)
+      setForm({ ...EMPTY, ...prefill })
       setLineItems([newRow()])
       setJobs([])
       prefillFromTeamDefaults()
+      // Mirrors handleCompanyChange/handleJobChange's own loadJobs-then-fee-
+      // prefill sequence below, just triggered by an incoming prefill
+      // instead of a user picking things from the dropdowns — same
+      // best-effort error handling as loadJobs itself (a failure here just
+      // leaves Role empty, it doesn't block opening the form).
+      if (prefill?.company_id) {
+        listJobsForCompany(prefill.company_id)
+          .then(j => {
+            setJobs(j)
+            const job = prefill.job_id && j.find(x => x.id === prefill.job_id)
+            if (job) {
+              setLineItems([newRow({ description: `Placement fee — ${job.title}`, unitAmount: job.fee_value != null ? String(job.fee_value) : '' })])
+            }
+          })
+          .catch(err => {
+            reportClientError('Invoice form: failed to load jobs for prefilled company', err, { companyId: prefill.company_id })
+            setJobs([])
+          })
+      }
     }
     loadCandidates()
-  }, [open, invoice])
+  }, [open, invoice, prefill])
 
   // Best-effort — a failed load just leaves the built-in EMPTY defaults
   // (GBP, no due date) rather than blocking the form. 2026-08-29 audit fix:

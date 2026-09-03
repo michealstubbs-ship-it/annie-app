@@ -95,3 +95,28 @@
 
 [context.branch-deploy]
   command = "npm test && npm run build"
+
+# parse-cv / parse-cvs-bulk-background (CV auto-fill, item 3) are the first
+# functions in this repo to depend on a package with a binary-adjacent asset
+# file loaded at runtime rather than via a static import: pdfjs-dist's
+# "fake worker" (its main-thread fallback, used since these functions never
+# spawn a real Worker thread) still needs to dynamically resolve its own
+# pdf.worker.mjs relative to where pdfjs-dist ships. Verified directly
+# against Netlify's real bundler (@netlify/zip-it-and-ship-it, not just a
+# manual esbuild test) that its dependency-tracing step ships pdf.mjs but
+# — because that resolution is dynamic, not a static import the tracer can
+# see — silently drops pdf.worker.mjs, which would have surfaced in
+# production as "Cannot find module '.../pdf.worker.mjs'" on the very first
+# real PDF upload. `included_files` is Netlify's documented mechanism for
+# exactly this gap (a traced dependency missing one non-statically-resolved
+# file) — confirmed fixed by re-running the same real bundler with this
+# config and then actually invoking the shipped output (real PDF + real
+# DOCX through pdfjs-dist/mammoth from the exact unpacked zip contents) end
+# to end. mammoth needed no such entry: it's shipped as a normal external
+# CJS dependency and its own internal `require("fs")` resolves natively,
+# with no bundling shim involved.
+[functions."parse-cv"]
+  included_files = ["node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"]
+
+[functions."parse-cvs-bulk-background"]
+  included_files = ["node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"]

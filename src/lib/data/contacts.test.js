@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
 
-import { listContacts, listContactsWithCompany, createContact, updateContact, deleteContact, listContactsMinimal, listContactsForMatching, getContact } from './contacts.js'
+import { listContacts, listContactsWithCompany, createContact, updateContact, deleteContact, listContactsMinimal, listContactsForMatching, getContact, findContactIdByCompanyAndName, findContactDuplicateByEmail } from './contacts.js'
 
 // A minimal chainable query builder — every method returns `this` so any
 // call order these functions use resolves, and awaiting it resolves to
@@ -28,6 +28,9 @@ function makeBuilder(result) {
     update: vi.fn(chain),
     delete: vi.fn(chain),
     single: vi.fn(chain),
+    ilike: vi.fn(chain),
+    limit: vi.fn(chain),
+    maybeSingle: vi.fn(() => Promise.resolve(result)),
     then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
   })
   return builder
@@ -153,5 +156,72 @@ describe('getContact', () => {
     builder = makeBuilder({ data: null, error: { message: 'not found' } })
     fromMock.mockReturnValue(builder)
     await expect(getContact('missing')).rejects.toEqual({ message: 'not found' })
+  })
+})
+
+// 2026-09-04, Michael ("when you are adding a candidate, let us as an extra
+// function add it to a company as a contact") — Candidates.jsx's guard
+// against creating a duplicate contact every time the same candidate is
+// re-saved with that option still checked.
+describe('findContactIdByCompanyAndName', () => {
+  it('returns null without calling Supabase at all for a blank company or name', async () => {
+    expect(await findContactIdByCompanyAndName(null, 'Jo')).toBeNull()
+    expect(await findContactIdByCompanyAndName('co1', '')).toBeNull()
+    expect(await findContactIdByCompanyAndName('co1', '   ')).toBeNull()
+    expect(fromMock).not.toHaveBeenCalled()
+  })
+
+  it('matches an existing contact at that company case/whitespace-insensitively', async () => {
+    builder = makeBuilder({ data: [{ id: 'c1', name: 'Jo Smith' }, { id: 'c2', name: 'Ada Cole' }], error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await findContactIdByCompanyAndName('co1', '  jo smith  ')
+    expect(builder.eq).toHaveBeenCalledWith('company_id', 'co1')
+    expect(result).toBe('c1')
+  })
+
+  it('returns null when no contact at that company matches the name', async () => {
+    builder = makeBuilder({ data: [{ id: 'c2', name: 'Ada Cole' }], error: null })
+    fromMock.mockReturnValue(builder)
+    expect(await findContactIdByCompanyAndName('co1', 'Jo Smith')).toBeNull()
+  })
+
+  it('throws instead of silently returning null when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(findContactIdByCompanyAndName('co1', 'Jo Smith')).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+// 2026-09-03, Michael: "in case there are any ownerships" — team-wide
+// (not scoped to one company, unlike findContactIdByCompanyAndName above),
+// since a real duplicate contact is just as likely to show up unattached
+// or attached to a slightly different company.
+describe('findContactDuplicateByEmail', () => {
+  it('returns null without querying when no email is given', async () => {
+    expect(await findContactDuplicateByEmail('')).toBeNull()
+    expect(fromMock).not.toHaveBeenCalled()
+  })
+
+  it('looks up by case-insensitive email and returns the match', async () => {
+    builder = makeBuilder({ data: { id: 'c1', name: 'Jo Smith', owner_id: 'user_2', created_at: '2026-08-01' }, error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await findContactDuplicateByEmail('Jo@Example.com')
+    expect(fromMock).toHaveBeenCalledWith('contacts')
+    expect(builder.select).toHaveBeenCalledWith('id, name, owner_id, created_at')
+    expect(builder.ilike).toHaveBeenCalledWith('email', 'Jo@Example.com')
+    expect(builder.limit).toHaveBeenCalledWith(1)
+    expect(result).toEqual({ id: 'c1', name: 'Jo Smith', owner_id: 'user_2', created_at: '2026-08-01' })
+  })
+
+  it('returns null when nothing matches', async () => {
+    builder = makeBuilder({ data: null, error: null })
+    fromMock.mockReturnValue(builder)
+    expect(await findContactDuplicateByEmail('nobody@example.com')).toBeNull()
+  })
+
+  it('throws instead of silently returning null when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(findContactDuplicateByEmail('jo@example.com')).rejects.toEqual({ message: 'db down' })
   })
 })

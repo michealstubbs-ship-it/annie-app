@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { createContact, updateContact } from '../lib/data/contacts'
+import { createContact, updateContact, findContactDuplicateByEmail } from '../lib/data/contacts'
+import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
 import CompanySelect from './CompanySelect'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
@@ -17,6 +18,12 @@ export default function ContactFormModal({ open, editContact, lockedCompanyId, l
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [teamMembers, setTeamMembers] = useState([])
+  // 2026-09-03, Michael: "in case there are any ownerships" — same
+  // duplicate-by-email check as Candidates.jsx's save(), for the same
+  // reason: a second team member adding a contact someone else already has.
+  const [dupWarning, setDupWarning] = useState(null)
+  const [dupChecking, setDupChecking] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -32,11 +39,29 @@ export default function ContactFormModal({ open, editContact, lockedCompanyId, l
       setForm({ ...EMPTY, company_id: lockedCompanyId || '', company: lockedCompanyName || '' })
     }
     setError('')
+    setDupWarning(null)
+    listTeamMembers().then(setTeamMembers).catch(() => setTeamMembers([]))
   }, [open, editContact, lockedCompanyId, lockedCompanyName])
 
-  async function save(e) {
-    e.preventDefault()
+  async function save(e, { skipDupCheck = false } = {}) {
+    e?.preventDefault()
     if (!form.name.trim()) return setError('Name is required')
+
+    if (!editContact && form.email.trim() && !skipDupCheck) {
+      setDupChecking(true)
+      try {
+        const dup = await findContactDuplicateByEmail(form.email)
+        if (dup) {
+          setDupWarning({ id: dup.id, name: dup.name, ownerName: nameForMember(teamMembers, dup.owner_id) })
+          return
+        }
+      } catch {
+        // Best-effort — never block a genuine save on a failed dup-check.
+      } finally {
+        setDupChecking(false)
+      }
+    }
+
     setSaving(true)
     setError('')
     try {
@@ -74,6 +99,22 @@ export default function ContactFormModal({ open, editContact, lockedCompanyId, l
   return (
     <Modal open={open} onClose={onClose} title={editContact ? 'Edit Contact' : 'Add Contact'} maxWidth="max-w-lg">
       <ErrorBanner>{error}</ErrorBanner>
+
+      {/* 2026-09-03, Michael: "in case there are any ownerships" — a new
+          contact whose email matches one someone else on the team already
+          added. Never blocks outright, just makes it a deliberate choice. */}
+      {dupWarning && (
+        <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 mb-4 flex-wrap">
+          <span className="text-sm text-amber-800">
+            ⚠️ <b>{dupWarning.name}</b> is already in the CRM with this email{dupWarning.ownerName ? ` (owned by ${dupWarning.ownerName})` : ''}.
+          </span>
+          <div className="flex gap-2 ml-auto">
+            <button type="button" onClick={() => setDupWarning(null)} className="text-xs font-semibold text-amber-800 hover:underline px-2">Cancel</button>
+            <button type="button" onClick={e => { setDupWarning(null); save(e, { skipDupCheck: true }) }} className="btn-primary text-xs px-3 py-1.5">Save as new anyway</button>
+          </div>
+        </div>
+      )}
+
       {/* A real <form onSubmit> so the `required`/type="email"/type="url"
           constraints on these fields actually fire — they were previously
           inert because "Save" called save() directly via onClick instead
@@ -105,7 +146,7 @@ export default function ContactFormModal({ open, editContact, lockedCompanyId, l
         </div>
         <div className="flex gap-3 justify-end mt-5">
           <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
-          <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : 'Save'}</button>
+          <button type="submit" disabled={saving || dupChecking} className="btn-primary">{dupChecking ? 'Checking...' : saving ? 'Saving...' : 'Save'}</button>
         </div>
       </form>
     </Modal>
