@@ -94,3 +94,44 @@ export function formatMoney(amount, currencyCode) {
   const formatted = n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   return symbol.length > 1 ? `${symbol} ${formatted}` : `${symbol}${formatted}`
 }
+
+// 2026-09-03, Michael ("rebate/guarantee period tracking" — one of the two
+// oversights he asked to be prioritized): a pure day-math function, same
+// reasoning as the rest of this file — the invoice list badge, the invoice
+// detail view, and any future reminder/notification all need the exact
+// same "is this still inside the window" answer, computed once here
+// rather than three places quietly drifting on how they count days.
+//
+// `invoice` only needs guarantee_starts_at/guarantee_days/rebate_triggered_at
+// — callers pass the whole invoice row for convenience, nothing else here
+// reads other fields. `today` is injectable (defaults to `new Date()`) so
+// tests don't depend on the real clock.
+export function getGuaranteeStatus(invoice, today = new Date()) {
+  if (invoice?.rebate_triggered_at) {
+    return { state: 'triggered', daysLeft: null, daysElapsed: null }
+  }
+  if (!invoice?.guarantee_starts_at) {
+    return { state: 'not_started', daysLeft: null, daysElapsed: null }
+  }
+  const start = new Date(invoice.guarantee_starts_at)
+  const guaranteeDays = Number(invoice.guarantee_days) || 90
+  const msPerDay = 24 * 60 * 60 * 1000
+  const daysElapsed = Math.floor((today.getTime() - start.getTime()) / msPerDay)
+  const daysLeft = guaranteeDays - daysElapsed
+  if (daysLeft <= 0) return { state: 'expired', daysLeft: 0, daysElapsed }
+  if (daysLeft <= 14) return { state: 'ending_soon', daysLeft, daysElapsed }
+  return { state: 'active', daysLeft, daysElapsed }
+}
+
+// Plain-language label for the badge — kept separate from the state
+// machine above so a future locale/wording change doesn't touch the
+// actual day-math, same split as currencySymbol()/formatMoney() above.
+export function guaranteeStatusLabel(status) {
+  switch (status.state) {
+    case 'triggered': return 'Rebate/replacement triggered'
+    case 'not_started': return 'Guarantee not started'
+    case 'expired': return 'Guarantee period ended'
+    case 'ending_soon': return `Guarantee ends in ${status.daysLeft} day${status.daysLeft === 1 ? '' : 's'}`
+    default: return `${status.daysLeft} days left on guarantee`
+  }
+}

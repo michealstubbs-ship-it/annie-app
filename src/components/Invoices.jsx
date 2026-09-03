@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { listInvoices, getInvoice, deleteInvoice, markInvoicePaid, voidInvoice, markInvoiceSent } from '../lib/data/invoices'
+import { listInvoices, getInvoice, deleteInvoice, markInvoicePaid, voidInvoice, markInvoiceSent, triggerRebate, clearRebateTrigger } from '../lib/data/invoices'
 import { fetchInvoicePdfBlobUrl } from '../lib/invoiceApi'
-import { formatMoney } from '../lib/invoiceCalc'
+import { formatMoney, getGuaranteeStatus, guaranteeStatusLabel } from '../lib/invoiceCalc'
 import { useMarketCurrency } from '../lib/useMarketCurrency'
 import InvoiceFormModal from './InvoiceFormModal'
 import ConfirmDialog from './ConfirmDialog'
@@ -16,6 +16,20 @@ const STATUS_COLOR = {
   sent: 'bg-amber-100 text-amber-700',
   paid: 'bg-green-100 text-green-700',
   void: 'bg-red-100 text-red-400',
+}
+
+// 2026-09-03, Michael ("rebate/guarantee period tracking"): mirrors
+// STATUS_COLOR's own per-state color map, keyed by getGuaranteeStatus's
+// state instead of the invoice's own status — 'triggered' reads as an
+// alert (something the client acted on), 'ending_soon' as a heads-up,
+// 'expired'/'not_started' as quiet/inactive, matching this page's existing
+// palette rather than introducing new colors.
+const GUARANTEE_COLOR = {
+  triggered: 'bg-red-100 text-red-500',
+  ending_soon: 'bg-amber-100 text-amber-700',
+  active: 'bg-green-50 text-green-600',
+  expired: 'bg-gray-100 text-gray-400',
+  not_started: 'bg-gray-100 text-gray-400',
 }
 
 // 2026-08-31 audit fix: "Sent" used to be the only word this page ever had
@@ -48,6 +62,14 @@ export default function Invoices() {
   const [markSentLoadingId, setMarkSentLoadingId] = useState(null)
   const [editLoadingId, setEditLoadingId] = useState(null)
   const [rowError, setRowError] = useState({})
+  // 2026-09-03, Michael ("rebate/guarantee period tracking"): which
+  // invoice's inline "trigger the rebate" note field is open, and its
+  // in-progress text — a small local form rather than a full modal, since
+  // it's a single optional note field, same weight as the existing inline
+  // per-row actions on this page.
+  const [rebateFormId, setRebateFormId] = useState(null)
+  const [rebateNote, setRebateNote] = useState('')
+  const [rebateSavingId, setRebateSavingId] = useState(null)
   // 2026-08-29 audit fix: this summary bar hardcoded 'AED' — Annie's own
   // home market, not necessarily this account's. Resolved from the
   // account's own onboarding market instead, same source Overview.jsx and
@@ -190,6 +212,43 @@ export default function Invoices() {
     }
   }
 
+  // 2026-09-03, Michael ("rebate/guarantee period tracking"): records that
+  // the guarantee actually got invoked on this placement (a free
+  // replacement or refund was given) — see triggerRebate's own header in
+  // invoices.js for why this is a distinct explicit action rather than
+  // just editing the invoice.
+  function openRebateForm(inv) { setRebateFormId(inv.id); setRebateNote('') }
+  function closeRebateForm() { setRebateFormId(null); setRebateNote('') }
+
+  async function handleTriggerRebate(id) {
+    setRowErr(id, '')
+    setRebateSavingId(id)
+    try {
+      const updated = await triggerRebate(id, rebateNote.trim())
+      setInvoices(prev => prev.map(i => i.id === id ? { ...i, ...updated } : i))
+      closeRebateForm()
+    } catch (err) {
+      setRowErr(id, err.message || 'Could not record the rebate')
+    } finally {
+      setRebateSavingId(null)
+    }
+  }
+
+  // Undoes a mistaken/premature trigger — no confirm dialog, same weight
+  // as clearing any other field; the trigger itself is the deliberate act.
+  async function handleClearRebate(id) {
+    setRowErr(id, '')
+    setRebateSavingId(id)
+    try {
+      const updated = await clearRebateTrigger(id)
+      setInvoices(prev => prev.map(i => i.id === id ? { ...i, ...updated } : i))
+    } catch (err) {
+      setRowErr(id, err.message || 'Could not undo the rebate trigger')
+    } finally {
+      setRebateSavingId(null)
+    }
+  }
+
   // 2026-08-31 audit fix, a real, confirmed bug: this used to sum every
   // invoice's raw `total` into one combined number regardless of that
   // invoice's own `currency` — a known limitation flagged (but not fixed)
@@ -220,6 +279,11 @@ export default function Invoices() {
 
   function InvoiceRow({ inv }) {
     const roleLine = [inv.jobs?.title, inv.candidates?.name].filter(Boolean).join(' · ')
+    // Guarantee/rebate only means anything once a placement's actually
+    // been billed — a still-editable draft hasn't started its guarantee
+    // window yet in any way that's worth surfacing here.
+    const guarantee = inv.status !== 'draft' && inv.status !== 'void' ? getGuaranteeStatus(inv) : null
+    const showingRebateForm = rebateFormId === inv.id
     return (
       <div className="card p-4">
         <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -237,6 +301,9 @@ export default function Invoices() {
                 {inv.invoice_number || (inv.issue_date ? `Draft · ${new Date(inv.issue_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : 'Draft')}
               </h3>
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${STATUS_COLOR[inv.status]}`}>{STATUS_LABEL[inv.status]}</span>
+              {guarantee && guarantee.state !== 'not_started' && (
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${GUARANTEE_COLOR[guarantee.state]}`}>{guaranteeStatusLabel(guarantee)}</span>
+              )}
             </div>
             <p className="text-xs text-gray-500 mt-0.5">{inv.companies?.name || inv.bill_to_name}</p>
             {roleLine && <p className="text-xs text-gray-500 mt-0.5">{roleLine}</p>}
@@ -244,12 +311,32 @@ export default function Invoices() {
               <span className="font-semibold text-navy tabular-nums">{formatMoney(inv.total, inv.currency)}</span>
               {inv.due_date && <span>Due {new Date(inv.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>}
             </div>
+            {inv.rebate_triggered_at && (
+              <p className="text-xs text-red-500 mt-1">
+                Rebate/replacement triggered {new Date(inv.rebate_triggered_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}{inv.rebate_notes ? ` — ${inv.rebate_notes}` : ''}
+                {' '}<button onClick={() => handleClearRebate(inv.id)} disabled={rebateSavingId === inv.id} className="font-semibold hover:underline disabled:opacity-50">{rebateSavingId === inv.id ? 'Undoing...' : 'Undo'}</button>
+              </p>
+            )}
             {DELIVERY_WARNING[inv.email_delivery_status] && (
               <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
                 <span aria-hidden="true">⚠</span> {DELIVERY_WARNING[inv.email_delivery_status]}
               </p>
             )}
             {rowError[inv.id] && <p className="text-xs text-red-600 mt-1">{rowError[inv.id]}</p>}
+            {showingRebateForm && (
+              <div className="mt-2 flex items-start gap-2 flex-wrap">
+                <input
+                  autoFocus
+                  className="input text-xs flex-1 min-w-[180px]"
+                  placeholder="What happened? (optional)"
+                  value={rebateNote}
+                  onChange={e => setRebateNote(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleTriggerRebate(inv.id)}
+                />
+                <button onClick={() => handleTriggerRebate(inv.id)} disabled={rebateSavingId === inv.id} className="text-xs text-red-500 font-semibold hover:underline disabled:opacity-50">{rebateSavingId === inv.id ? 'Saving...' : 'Confirm'}</button>
+                <button onClick={closeRebateForm} className="text-xs text-gray-400 hover:underline">Cancel</button>
+              </div>
+            )}
           </div>
           {/* 2026-08-29 audit fix: Void/Delete used to sit in the same
               plain-text row as every routine action, one word away from
@@ -280,6 +367,16 @@ export default function Invoices() {
               )}
               <button onClick={() => handleDownload(inv)} className="text-xs text-gold-ink font-semibold hover:underline">Download PDF</button>
               {inv.status === 'sent' && <button onClick={() => handleMarkPaid(inv)} className="text-xs text-green-600 font-semibold hover:underline">Mark paid</button>}
+              {/* 2026-09-03, Michael ("rebate/guarantee period tracking"):
+                  only offered once billed (status !== draft) and while the
+                  guarantee hasn't already been invoked — matches
+                  triggerRebate's own "distinct explicit action" framing in
+                  invoices.js rather than being buried in an edit. */}
+              {(inv.status === 'sent' || inv.status === 'paid') && !inv.rebate_triggered_at && (
+                <button onClick={() => (showingRebateForm ? closeRebateForm() : openRebateForm(inv))} className="text-xs text-red-500 font-semibold hover:underline">
+                  {showingRebateForm ? 'Cancel' : 'Trigger rebate'}
+                </button>
+              )}
             </div>
             {(inv.status === 'draft' || inv.status === 'sent') && (
               <div className="flex gap-2 flex-wrap justify-end pl-3 ml-1 border-l border-gray-200">

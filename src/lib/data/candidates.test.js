@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
 
-import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, listCandidateJobLinks, listCandidatesForMatching, listCandidatesMinimal, listCandidatesForInvoicePicker, findCandidateDuplicateByEmail } from './candidates.js'
+import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, listCandidateJobLinks, listCandidatesForMatching, listCandidatesMinimal, listCandidatesForInvoicePicker, findCandidateDuplicateByEmail, findDuplicateSubmission } from './candidates.js'
 
 function makeBuilder(result) {
   const builder = {}
@@ -153,6 +153,43 @@ describe('findCandidateDuplicateByEmail', () => {
     builder = makeBuilder({ data: null, error: { message: 'db down' } })
     fromMock.mockReturnValue(builder)
     await expect(findCandidateDuplicateByEmail('jane@example.com')).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+// 2026-09-03, Michael ("double-submission warnings")
+describe('findDuplicateSubmission', () => {
+  it('returns null without querying when no email is given', async () => {
+    expect(await findDuplicateSubmission('', 'job1')).toBeNull()
+    expect(fromMock).not.toHaveBeenCalled()
+  })
+
+  it('returns null without querying when no jobId is given', async () => {
+    expect(await findDuplicateSubmission('jane@example.com', '')).toBeNull()
+    expect(fromMock).not.toHaveBeenCalled()
+  })
+
+  it('looks up by case-insensitive email SCOPED to the given job, and returns the match', async () => {
+    builder = makeBuilder({ data: { id: 'cand1', name: 'Jane Doe', owner_id: 'user_2', status: 'submitted', created_at: '2026-08-01' }, error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await findDuplicateSubmission('Jane@Example.com', 'job1')
+    expect(fromMock).toHaveBeenCalledWith('candidates')
+    expect(builder.select).toHaveBeenCalledWith('id, name, owner_id, status, created_at')
+    expect(builder.ilike).toHaveBeenCalledWith('email', 'Jane@Example.com')
+    expect(builder.eq).toHaveBeenCalledWith('job_id', 'job1')
+    expect(builder.limit).toHaveBeenCalledWith(1)
+    expect(result).toEqual({ id: 'cand1', name: 'Jane Doe', owner_id: 'user_2', status: 'submitted', created_at: '2026-08-01' })
+  })
+
+  it('returns null when this candidate has not been submitted to this particular job', async () => {
+    builder = makeBuilder({ data: null, error: null })
+    fromMock.mockReturnValue(builder)
+    expect(await findDuplicateSubmission('jane@example.com', 'job1')).toBeNull()
+  })
+
+  it('throws instead of silently returning null when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(findDuplicateSubmission('jane@example.com', 'job1')).rejects.toEqual({ message: 'db down' })
   })
 })
 

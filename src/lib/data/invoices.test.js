@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock, rpcMock } = vi.hoisted(() => ({ fromMock: vi.fn(), rpcMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock, rpc: rpcMock } }))
 
-import { listInvoices, getInvoice, createInvoice, updateInvoice, replaceLineItems, deleteInvoice, markInvoicePaid, voidInvoice, markInvoiceSent } from './invoices.js'
+import { listInvoices, getInvoice, createInvoice, updateInvoice, replaceLineItems, deleteInvoice, markInvoicePaid, voidInvoice, markInvoiceSent, triggerRebate, clearRebateTrigger } from './invoices.js'
 
 function makeBuilder(result) {
   const builder = {}
@@ -206,5 +206,39 @@ describe('markInvoiceSent', () => {
     builder = makeBuilder({ data: null, error: { message: 'db down' } })
     fromMock.mockReturnValue(builder)
     await expect(markInvoiceSent('inv1')).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+// 2026-09-03, Michael ("rebate/guarantee period tracking")
+describe('triggerRebate', () => {
+  it('stamps rebate_triggered_at and rebate_notes', async () => {
+    await triggerRebate('inv1', 'Candidate resigned week 8', '2026-09-01')
+    expect(builder.update).toHaveBeenCalledWith({ rebate_triggered_at: '2026-09-01', rebate_notes: 'Candidate resigned week 8' })
+    expect(builder.eq).toHaveBeenCalledWith('id', 'inv1')
+  })
+
+  it('defaults the triggered date to today when not given', async () => {
+    await triggerRebate('inv1', 'Left early')
+    const call = builder.update.mock.calls[0][0]
+    expect(call.rebate_triggered_at).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('stores null notes rather than an empty string when none given', async () => {
+    await triggerRebate('inv1', '', '2026-09-01')
+    expect(builder.update).toHaveBeenCalledWith({ rebate_triggered_at: '2026-09-01', rebate_notes: null })
+  })
+
+  it('throws instead of silently succeeding when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(triggerRebate('inv1', 'note', '2026-09-01')).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+describe('clearRebateTrigger', () => {
+  it('clears both rebate fields back to null', async () => {
+    await clearRebateTrigger('inv1')
+    expect(builder.update).toHaveBeenCalledWith({ rebate_triggered_at: null, rebate_notes: null })
+    expect(builder.eq).toHaveBeenCalledWith('id', 'inv1')
   })
 })

@@ -2,8 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { listJobsWithCompanies, deleteJob } from '../lib/data/jobs'
-import { listCandidateJobLinks, listCandidatesForMatching } from '../lib/data/candidates'
-import { prepareCandidatesForMatching, matchPreparedCandidatesToJob } from '../lib/candidateMatch'
+import { listCandidateJobLinks } from '../lib/data/candidates'
+import { recommendCandidatesForJob } from '../lib/candidateRecommendClient'
 import InfoTip from './InfoTip'
 import JobFormModal from './JobFormModal'
 import ConfirmDialog from './ConfirmDialog'
@@ -25,16 +25,20 @@ function stars(n) { return '★'.repeat(n) + '☆'.repeat(5 - n) }
 // 2026-08-29, flagged directly: candidate-to-job matching didn't exist
 // anywhere in the app — the only link was manual, one candidate at a time
 // (the "job they're being considered for" picker on the candidate form).
-// This surfaces "who in my CRM might actually fit this job" using the exact
-// matching engine already built and proven for Today's Actions
-// (candidateMatch.js), pointed at title/industry/notes instead of a BD
-// signal — no new matching logic, same reasoning as Contacts.jsx/
-// Companies.jsx reusing lib/*View.js helpers.
 //
-// Matches are computed lazily, only for an expanded card — cheap either way
-// once candidates are prepared once (see Jobs()'s own load()), but there's
-// no reason to compute or render suggestions for a card nobody asked to see.
-function JobCard({ j, count, expanded, onToggleExpand, matches, candidatesLoading, currencyPrefix }) {
+// 2026-09-06 upgrade (Michael, on the newer AI recommend feature: "if its
+// an upgrade replace it") — REPLACES the original keyword-overlap panel
+// (candidateMatch.js's matchPreparedCandidatesToJob, still in the codebase
+// for Today's Actions' own BD-signal matching, just no longer called from
+// here) with an on-demand AI call (recommend-candidates.js) that reads the
+// candidate's real notes/CV-derived titles/industries/notice-period/salary
+// together with the job's full brief text, not just a title/industry
+// word-overlap score, and explains its reasoning per candidate instead of
+// surfacing a bare name. Deliberately on-demand (a button, not computed for
+// every expanded card) since — unlike the old free client-side scorer —
+// this is a real, rate-capped AI call; recState caches the result per job
+// so re-expanding a card already fetched this session doesn't re-spend it.
+function JobCard({ j, count, expanded, onToggleExpand, recState, onRecommend, currencyPrefix }) {
   return (
     <div className="card p-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -66,26 +70,43 @@ function JobCard({ j, count, expanded, onToggleExpand, matches, candidatesLoadin
       </div>
 
       <button onClick={() => onToggleExpand.match(j.id)} className="text-xs font-semibold text-gold-ink mt-3 hover:underline">
-        {expanded ? '▾ Hide suggested candidates' : '▸ Suggested candidates'}
+        {expanded ? '▾ Hide Annie’s recommendations' : '✨ Annie’s candidate recommendations'}
       </button>
       {expanded && (
         <div className="mt-2 pt-3 border-t border-gray-100 space-y-2">
-          {candidatesLoading ? (
-            <p className="text-xs text-gray-400">Checking your CRM for a match…</p>
-          ) : matches.length === 0 ? (
-            <p className="text-xs text-gray-400">No obvious matches in your CRM yet — Annie checks role, industry, and notes on file against this job's title, industry, and brief.</p>
-          ) : (
-            matches.map(c => (
-              <div key={c.id} className="flex items-center justify-between text-xs bg-page-bg rounded-lg px-3 py-2 gap-2">
-                <span className="min-w-0 truncate">
-                  <span className="font-semibold text-navy">{c.name}</span>
-                  {[c.role, c.company].filter(Boolean).length > 0 && <span className="text-gray-500"> — {[c.role, c.company].filter(Boolean).join(' · ')}</span>}
-                </span>
-                <span className="text-[10px] text-gray-400 uppercase tracking-wide flex-shrink-0">{c.status}</span>
-              </div>
-            ))
+          {(!recState || recState.status === 'idle') && (
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs text-gray-400">Ask Annie to check your CRM against this job's full brief.</p>
+              <button onClick={() => onRecommend(j.id)} className="btn-ghost text-xs px-3 py-1.5 flex-shrink-0">Get recommendations</button>
+            </div>
           )}
-          <p className="text-[10px] text-gray-400 mt-1">💡 Annie's suggestion, based on what's on file — not a guarantee of fit.</p>
+          {recState?.status === 'loading' && <p className="text-xs text-gray-400">Reading this job's brief against your CRM…</p>}
+          {recState?.status === 'error' && (
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs text-amber-600">{recState.message || 'Couldn’t generate recommendations just now.'}</p>
+              <button onClick={() => onRecommend(j.id)} className="text-xs text-gold-ink font-semibold hover:underline flex-shrink-0">Try again</button>
+            </div>
+          )}
+          {recState?.status === 'done' && recState.recommendations.length === 0 && (
+            <p className="text-xs text-gray-400">No genuine fit in your CRM right now — Annie read the full brief and would rather say so than force a weak match.</p>
+          )}
+          {recState?.status === 'done' && recState.recommendations.length > 0 && (
+            <>
+              {recState.recommendations.map(({ candidate: c, reason }) => (
+                <div key={c.id} className="text-xs bg-page-bg rounded-lg px-3 py-2 border border-dashed border-gray-200">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate">
+                      <span className="font-semibold text-navy">{c.name}</span>
+                      {[c.role, c.company].filter(Boolean).length > 0 && <span className="text-gray-500"> — {[c.role, c.company].filter(Boolean).join(' · ')}</span>}
+                    </span>
+                    <span className="text-[10px] text-gray-400 uppercase tracking-wide flex-shrink-0">{c.status}</span>
+                  </div>
+                  {reason && <p className="text-gray-500 mt-1">💡 {reason}</p>}
+                </div>
+              ))}
+              <p className="text-[10px] text-gray-400 mt-1">✨ Annie's read on your CRM against this job's brief — not a guarantee of fit.</p>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -99,9 +120,12 @@ export default function Jobs() {
   const location = useLocation()
   const [jobs, setJobs] = useState([])
   const [candCounts, setCandCounts] = useState({})
-  const [preparedCandidates, setPreparedCandidates] = useState([])
-  const [candidatesLoading, setCandidatesLoading] = useState(true)
   const [expandedJobIds, setExpandedJobIds] = useState(() => new Set())
+  // Keyed by job id: { status: 'idle'|'loading'|'done'|'error', recommendations, message }.
+  // Lives here (not inside JobCard) for the same reason expandedJobIds does
+  // — JobCard re-renders on every unrelated save, so per-card local state
+  // would silently lose an already-fetched recommendation.
+  const [recommendState, setRecommendState] = useState({})
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editJob, setEditJob] = useState(null)
@@ -109,7 +133,7 @@ export default function Jobs() {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [listError, setListError] = useState('')
 
-  useEffect(() => { load(); loadCandidatePool() }, [user])
+  useEffect(() => { load() }, [user])
   useEffect(() => { if (location.state?.autoOpenAdd) openAdd() }, [location.state])
 
   async function load() {
@@ -136,32 +160,25 @@ export default function Jobs() {
     }
   }
 
-  // 2026-08-31 audit fix: found chasing "Jobs & Mandates is the slowest page
-  // in the app... several seconds to paint even with a warm cache and only
-  // 7 jobs." This used to be awaited inside load()'s own Promise.all, so
-  // the whole page — jobs, 7 of them — sat behind fetching AND tokenizing
-  // the recruiter's ENTIRE candidate pool (deliberately uncapped, notes
-  // field included — see listCandidatesForMatching's own comment) on every
-  // single visit to this page, even though that pool is only ever read
-  // once a card is actually expanded (see renderJobCard below). A firm with
-  // a real, well-populated CRM was paying that full fetch-and-tokenize cost
-  // just to paint a list of job titles. Split into its own effect so it
-  // loads in the background instead of gating the page's own render;
-  // candidatesLoading covers the one real edge case (a card gets expanded
-  // before this resolves) with a "still checking" line rather than a false
-  // "no matches" while it's mid-flight.
-  async function loadCandidatePool() {
-    setCandidatesLoading(true)
+  // 2026-09-06: the old client-side candidate pool prefetch this used to be
+  // (see git history for loadCandidatePool) is gone along with the panel it
+  // fed — recommend-candidates.js now reads the candidate pool server-side,
+  // once, only when a recruiter actually clicks "Get recommendations" on a
+  // specific job. That's strictly less work than before (this page never
+  // fetches/tokenizes the whole CRM pool just to paint a list of job
+  // titles now, not even in the background) and the real AI cost is only
+  // ever spent on a card someone actually asked about.
+  async function requestRecommendations(jobId) {
+    setRecommendState(prev => ({ ...prev, [jobId]: { status: 'loading' } }))
     try {
-      const matchCandidates = await listCandidatesForMatching(user.id)
-      setPreparedCandidates(prepareCandidatesForMatching(matchCandidates))
-    } catch {
-      // Best-effort, same as elsewhere: a failed background prefetch just
-      // means "no suggested candidates" rather than a page-level error —
-      // the job list itself already loaded fine.
-      setPreparedCandidates([])
-    } finally {
-      setCandidatesLoading(false)
+      const result = await recommendCandidatesForJob(jobId)
+      if (result?.ok) {
+        setRecommendState(prev => ({ ...prev, [jobId]: { status: 'done', recommendations: result.recommendations || [] } }))
+      } else {
+        setRecommendState(prev => ({ ...prev, [jobId]: { status: 'error', message: result?.message } }))
+      }
+    } catch (err) {
+      setRecommendState(prev => ({ ...prev, [jobId]: { status: 'error', message: err.message } }))
     }
   }
 
@@ -206,8 +223,8 @@ export default function Jobs() {
         count={candCounts[j.id] || 0}
         expanded={expanded}
         onToggleExpand={cardActions}
-        matches={expanded ? matchPreparedCandidatesToJob(j, preparedCandidates) : []}
-        candidatesLoading={candidatesLoading}
+        recState={recommendState[j.id]}
+        onRecommend={requestRecommendations}
         currencyPrefix={currencyPrefix}
       />
     )
@@ -219,7 +236,7 @@ export default function Jobs() {
         <div>
           <h1 className="text-3xl font-bold text-navy flex items-center">
             Jobs & Mandates
-            <InfoTip text="Every job attaches to a real company record, picked from a dropdown, so the same client never gets created twice under a different spelling. Link candidates to a job from the Candidates page, or check Suggested candidates on a job for who in your CRM might already fit." />
+            <InfoTip text="Every job attaches to a real company record, picked from a dropdown, so the same client never gets created twice under a different spelling. Link candidates to a job from the Candidates page, or ask Annie for candidate recommendations on a job to see who in your CRM might already fit." />
           </h1>
           <p className="text-gray-500 mt-1">{open.length} open, {closed.length} closed</p>
         </div>

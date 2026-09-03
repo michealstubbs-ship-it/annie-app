@@ -113,3 +113,23 @@ export async function markInvoiceSent(id) {
   if (claimErr) throw claimErr
   return updateInvoice(id, { invoice_number: invoiceNumber, status: 'sent', sent_at: new Date().toISOString() })
 }
+
+// 2026-09-03, Michael ("rebate/guarantee period tracking"): records that a
+// rebate/free replacement was actually invoked on this placement — a
+// distinct, explicit action from just editing the invoice, since it's the
+// one field that answers "did the guarantee period actually get used"
+// (getGuaranteeStatus in invoiceCalc.js treats a non-null
+// rebate_triggered_at as its own state regardless of days remaining).
+// `triggeredAt` defaults to today but is a parameter rather than always
+// `new Date()` — a recruiter logging this a few days after the fact (the
+// candidate actually left on the 12th, they're recording it on the 15th)
+// should be able to backdate it to when it really happened.
+export async function triggerRebate(id, notes, triggeredAt = new Date().toISOString().slice(0, 10)) {
+  return updateInvoice(id, { rebate_triggered_at: triggeredAt, rebate_notes: notes || null })
+}
+
+// Undoes triggerRebate — a recruiter who clicked it by mistake, or logged
+// it before confirming, needs a way back rather than being stuck.
+export async function clearRebateTrigger(id) {
+  return updateInvoice(id, { rebate_triggered_at: null, rebate_notes: null })
+}

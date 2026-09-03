@@ -42,6 +42,57 @@
 // from their own CDN going forward — see package.json's own dependency URL.
 import * as XLSX from 'xlsx'
 
+// 2026-09-04, real customer report: Michael saw "funny letters" in place of
+// Arabic text on Companies imported from LinkedIn. Root cause traced into
+// the vendored xlsx package itself: when the uploaded bytes don't match any
+// binary workbook signature (zip/xlsx+ods, CFB/xls) and carry no BOM —
+// exactly what LinkedIn's own real Connections.csv looks like, plain UTF-8
+// with no BOM — SheetJS's plain-text reader (prn_to_sheet -> cc2str) decodes
+// the raw bytes one byte per character as Latin-1/Windows-1252, not UTF-8.
+// Every multi-byte UTF-8 character (Arabic, accented Latin, anything
+// non-ASCII) gets split into multiple single-byte "characters" — Arabic ع
+// (UTF-8 bytes D8 B9) becomes "Ø¹", the exact mojibake Michael reported.
+// That corrupted string then gets written straight into `companies.name`
+// (see LinkedInImport.jsx) and every later page just renders whatever's
+// stored — there's no repair step downstream, so this has to be fixed here,
+// at read time, before a bad decode ever reaches the database.
+//
+// isKnownBinaryOrBom() below detects the cases the existing binary-format
+// path already handles correctly (real .xlsx/.ods — both zip containers;
+// legacy .xls — a CFB container; or a UTF-16 BOM, which SheetJS's own
+// top-level reader already special-cases) and leaves those completely
+// untouched, `type: 'array'` exactly as before. For everything else — plain
+// CSV/TSV/TXT with no BOM, the actually-broken case — decode the bytes
+// ourselves: try real UTF-8 first (`fatal: true` throws on any byte
+// sequence that isn't valid UTF-8, rather than silently mangling it), and
+// only fall back to Windows-1252 if that throws. This gets both a
+// genuinely UTF-8 file (the overwhelming majority today, and what
+// LinkedIn's export actually is) and a genuinely legacy-Windows-encoded
+// file right, instead of assuming one or the other — then hand SheetJS the
+// already-correct JS string (`type: 'string'`) so its own delimiter
+// detection/parsing runs exactly as before, just on undamaged text.
+const ZIP_MAGIC = [0x50, 0x4b] // .xlsx / .ods (both zip containers)
+const CFB_MAGIC = [0xd0, 0xcf, 0x11, 0xe0] // legacy .xls
+const UTF16LE_BOM = [0xff, 0xfe]
+const UTF16BE_BOM = [0xfe, 0xff]
+const UTF8_BOM = [0xef, 0xbb, 0xbf]
+
+function startsWithBytes(bytes, magic) {
+  return magic.length <= bytes.length && magic.every((b, i) => bytes[i] === b)
+}
+
+function isKnownBinaryOrBom(bytes) {
+  return [ZIP_MAGIC, CFB_MAGIC, UTF16LE_BOM, UTF16BE_BOM, UTF8_BOM].some(magic => startsWithBytes(bytes, magic))
+}
+
+function decodePlainTextBytes(bytes) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return new TextDecoder('windows-1252').decode(bytes)
+  }
+}
+
 // The one universal entry point: takes the raw bytes of WHATEVER file the
 // customer uploaded (no extension check, no format assumption) and returns
 // rows in the same [ [header...], [row...], ... ] shape parseCSV used to
@@ -53,7 +104,10 @@ import * as XLSX from 'xlsx'
 // that would otherwise become `undefined` and break the `.trim()` calls in
 // rowsToContacts.
 export function fileBufferToRows(arrayBuffer) {
-  const workbook = XLSX.read(arrayBuffer, { type: 'array' })
+  const bytes = new Uint8Array(arrayBuffer)
+  const workbook = isKnownBinaryOrBom(bytes)
+    ? XLSX.read(arrayBuffer, { type: 'array' })
+    : XLSX.read(decodePlainTextBytes(bytes), { type: 'string' })
   const firstSheetName = workbook.SheetNames[0]
   if (!firstSheetName) throw new Error('workbook has no sheets')
   const sheet = workbook.Sheets[firstSheetName]

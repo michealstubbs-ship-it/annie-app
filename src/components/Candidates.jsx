@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
-import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, findCandidateDuplicateByEmail } from '../lib/data/candidates'
+import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, findCandidateDuplicateByEmail, findDuplicateSubmission } from '../lib/data/candidates'
 import { listActiveJobsForPicker } from '../lib/data/jobs'
 import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
 import { STAGES, STAGE_LABEL, searchCandidates, filterCandidatesByStage, sortCandidates, groupCandidatesByStage } from '../lib/candidatesView'
@@ -38,6 +38,14 @@ const EMPTY = {
   name: '', role: '', company: '', location: '', industry: '', nationality: '', email: '', phone: '',
   curr_sal: '', curr_sal_currency: '', want_sal: '', want_sal_currency: '', notice_period: '', availability: '', linkedin_url: '',
   status: 'sourced', source: '', follow_up_date: '', notes: '', job_id: '', add_as_contact: false,
+  // 2026-09-03, Michael's second oversights batch: counter_offer_risk is a
+  // recruiter judgment call (no competitor CRM has this as a named field —
+  // see counter_offer_risk's own column comment in the migration), and
+  // is_hotlisted is the candidate-LED marketing flag (as opposed to every
+  // other field on this form, which is about matching this person to a
+  // specific job) — both nullable/false by default so an ordinary
+  // candidate save is completely unaffected.
+  counter_offer_risk: '', counter_offer_notes: '', is_hotlisted: false, hotlist_note: '',
   // 2026-09-05, item 3: Annie's own CV-parse read on every OTHER title/
   // industry this candidate's real experience could plausibly match —
   // additive to the role/industry fields above (which stay the single
@@ -144,6 +152,11 @@ export default function Candidates() {
   const [ownerFilter, setOwnerFilter] = useState('all')
   const [dupWarning, setDupWarning] = useState(null)
   const [dupChecking, setDupChecking] = useState(false)
+  // 2026-09-03, Michael's second oversights batch: candidate-led marketing
+  // ("hotlist") is independent of the stage/owner filters above — a
+  // hotlisted candidate can sit at any stage — so this ANDs with them
+  // rather than being folded into the STAGES filter chips.
+  const [hotlistOnly, setHotlistOnly] = useState(false)
 
   useEffect(() => { load() }, [user])
 
@@ -195,7 +208,11 @@ export default function Candidates() {
     for (const s of STAGES) counts[s] = ownerFiltered.filter(c => c.status === s).length
     return counts
   }, [ownerFiltered])
-  const stageFiltered = useMemo(() => filterCandidatesByStage(ownerFiltered, filter), [ownerFiltered, filter])
+  const hotlistFiltered = useMemo(
+    () => (hotlistOnly ? ownerFiltered.filter(c => c.is_hotlisted) : ownerFiltered),
+    [ownerFiltered, hotlistOnly]
+  )
+  const stageFiltered = useMemo(() => filterCandidatesByStage(hotlistFiltered, filter), [hotlistFiltered, filter])
   const sorted = useMemo(() => sortCandidates(stageFiltered, sortBy), [stageFiltered, sortBy])
   const groups = filter === 'all' ? groupCandidatesByStage(sorted) : null
 
@@ -220,6 +237,8 @@ export default function Candidates() {
       status: c.status || 'sourced', source: c.source || '', follow_up_date: c.follow_up_date || '', notes: c.notes || '', job_id: c.job_id || '',
       add_as_contact: false,
       titles: Array.isArray(c.titles) ? c.titles : [], industries: Array.isArray(c.industries) ? c.industries : [],
+      counter_offer_risk: c.counter_offer_risk || '', counter_offer_notes: c.counter_offer_notes || '',
+      is_hotlisted: !!c.is_hotlisted, hotlist_note: c.hotlist_note || '',
     })
     setEditId(c.id)
     setCvFile(null)
@@ -434,12 +453,24 @@ export default function Candidates() {
     // per Save click for a brand-new candidate with an email on file, and
     // only skipped once the recruiter has explicitly clicked "Save as new
     // anyway" on the warning banner above.
+    //
+    // 2026-09-03 (second oversights batch, "double-submission warnings"):
+    // when a job is selected, check the job-scoped duplicate FIRST —
+    // findDuplicateSubmission is the more specific, more dangerous case
+    // (this exact person already in THIS job's pipeline, possibly under a
+    // different owner — the classic "two recruiters submit the same
+    // candidate to the same client" landmine) and gets its own message
+    // below. Only falls back to the general team-wide check when there's
+    // no job-scoped match, so a genuine cross-job duplicate is still
+    // caught even when this particular save isn't the double-submission
+    // case.
     if (!editId && form.email.trim() && !skipDupCheck) {
       setDupChecking(true)
       try {
-        const dup = await findCandidateDuplicateByEmail(form.email)
+        const jobDup = form.job_id ? await findDuplicateSubmission(form.email, form.job_id) : null
+        const dup = jobDup || await findCandidateDuplicateByEmail(form.email)
         if (dup) {
-          setDupWarning({ id: dup.id, name: dup.name, ownerName: nameForMember(teamMembers, dup.owner_id) })
+          setDupWarning({ id: dup.id, name: dup.name, ownerName: nameForMember(teamMembers, dup.owner_id), sameJob: !!jobDup })
           return
         }
       } catch {
@@ -543,6 +574,15 @@ export default function Candidates() {
                 <div className="flex items-center gap-2 flex-wrap">
                   <h3 className="font-bold text-navy text-sm">{c.name}</h3>
                   <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${STAGE_COLOR[c.status] || 'bg-gray-100 text-gray-500'}`}>{STAGE_LABEL[c.status] || c.status}</span>
+                  {c.is_hotlisted && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700" title={c.hotlist_note || 'Being proactively marketed'}>🔥 Hotlist</span>}
+                  {c.counter_offer_risk && (
+                    <span
+                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${c.counter_offer_risk === 'high' ? 'bg-red-100 text-red-600' : c.counter_offer_risk === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}
+                      title={c.counter_offer_notes || 'Counter-offer risk'}
+                    >
+                      ⚠️ {c.counter_offer_risk} counter-offer risk
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-gray-500 mt-0.5">{[c.role, c.company].filter(Boolean).join(' · ')}</p>
               </div>
@@ -636,6 +676,13 @@ export default function Candidates() {
         <div className="flex flex-wrap items-center gap-3">
           <input className="input max-w-sm" placeholder="Search candidates..." value={search} onChange={e => setSearch(e.target.value)} />
           <OwnerFilter value={ownerFilter} onChange={setOwnerFilter} teamMembers={teamMembers} />
+          <button
+            onClick={() => setHotlistOnly(v => !v)}
+            className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 ${hotlistOnly ? 'bg-amber-500 border-amber-500 text-white' : 'border-gray-200 text-gray-600'}`}
+            title="Candidate-led marketing: strong/available candidates being proactively marketed, regardless of stage"
+          >
+            🔥 Hotlist <span className="opacity-70">({ownerFiltered.filter(c => c.is_hotlisted).length})</span>
+          </button>
           <div className="flex flex-wrap gap-1.5">
             <button onClick={() => setFilter('all')} className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 ${filter === 'all' ? 'bg-navy border-navy text-white' : 'border-gray-200 text-gray-600'}`}>
               All <span className="opacity-70">({ownerFiltered.length})</span>
@@ -734,7 +781,11 @@ export default function Candidates() {
             {dupWarning && (
               <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 mb-4 flex-wrap">
                 <span className="text-sm text-amber-800">
-                  ⚠️ <b>{dupWarning.name}</b> is already in the CRM with this email{dupWarning.ownerName ? ` (owned by ${dupWarning.ownerName})` : ''}.
+                  {dupWarning.sameJob ? (
+                    <>⚠️ <b>{dupWarning.name}</b> has already been submitted to this exact role with this email{dupWarning.ownerName ? ` by ${dupWarning.ownerName}` : ''} — submitting again risks a double-submission to the same client.</>
+                  ) : (
+                    <>⚠️ <b>{dupWarning.name}</b> is already in the CRM with this email{dupWarning.ownerName ? ` (owned by ${dupWarning.ownerName})` : ''}.</>
+                  )}
                 </span>
                 <div className="flex gap-2 ml-auto">
                   <button
@@ -884,6 +935,47 @@ export default function Candidates() {
                 <label className="label" htmlFor="candidate-follow-up-date">Follow-up date</label>
                 <input id="candidate-follow-up-date" className="input" type="date" value={form.follow_up_date} onChange={e => setForm(p => ({ ...p, follow_up_date: e.target.value }))} />
               </div>
+              {/* 2026-09-03, Michael's second oversights batch: no competitor
+                  CRM (Bullhorn/JobAdder/Vincere/Loxo/Crelate) has a named
+                  counter-offer-risk field per the same-day research — this
+                  is a genuine differentiator, not catch-up, so it's a plain
+                  recruiter judgment call rather than anything Annie infers
+                  automatically. Left blank by default; only shown/relevant
+                  once a candidate is far enough along to matter, but not
+                  gated behind stage so a recruiter can flag it the moment
+                  they sense it, however early. */}
+              <div>
+                <label className="label" htmlFor="candidate-counter-offer-risk">Counter-offer risk</label>
+                <select id="candidate-counter-offer-risk" className="input" value={form.counter_offer_risk} onChange={e => setForm(p => ({ ...p, counter_offer_risk: e.target.value }))}>
+                  <option value="">Not assessed</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </div>
+              {form.counter_offer_risk && (
+                <div className="col-span-2">
+                  <label className="label" htmlFor="candidate-counter-offer-notes">Why (optional)</label>
+                  <input id="candidate-counter-offer-notes" className="input" placeholder="e.g. salary-driven, recent promotion talk, hesitant about reasons for leaving" value={form.counter_offer_notes} onChange={e => setForm(p => ({ ...p, counter_offer_notes: e.target.value }))} />
+                </div>
+              )}
+              {/* Candidate-LED marketing (as opposed to every other field on
+                  this form, which is about matching this person to a
+                  specific job) — the researched "hotlist" pattern (Vincere):
+                  tag a strong, available candidate for proactive marketing
+                  to clients even with no open role for them yet. */}
+              <div className="col-span-2 flex items-start gap-2">
+                <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer mt-1.5">
+                  <input type="checkbox" checked={form.is_hotlisted} onChange={e => setForm(p => ({ ...p, is_hotlisted: e.target.checked }))} />
+                  🔥 Hotlist — market proactively, even without an open role
+                </label>
+              </div>
+              {form.is_hotlisted && (
+                <div className="col-span-2">
+                  <label className="label" htmlFor="candidate-hotlist-note">Hotlist note (optional)</label>
+                  <input id="candidate-hotlist-note" className="input" placeholder="What makes them worth marketing right now" value={form.hotlist_note} onChange={e => setForm(p => ({ ...p, hotlist_note: e.target.value }))} />
+                </div>
+              )}
               {/* 2026-09-04, Michael: "when you are adding a candidate, let
                   us as an extra function add it to a company as a contact"
                   — a candidate is sometimes also a useful business contact

@@ -42,6 +42,32 @@ export async function findCandidateDuplicateByEmail(email) {
   return data || null
 }
 
+// 2026-09-03, Michael ("double-submission warnings" — the other of the two
+// oversights he asked to be prioritized): a same-candidate check that's
+// ADDITIONALLY scoped to one job, unlike findCandidateDuplicateByEmail
+// above (which is deliberately team-wide, not job-scoped — "is this person
+// already anywhere in our system"). This is the more specific, classic
+// recruitment-agency landmine researched the same day: two consultants on
+// the same team submitting the same real person to the same client
+// without realizing it, which damages the client relationship and creates
+// an internal dispute over whose placement it is. A soft warning, not a
+// hard block — matches both the researched industry norm (Bullhorn) and
+// this codebase's own existing duplicate-check UX, rather than refusing
+// the save outright the way a stricter competitor (Recruitee/AgencyHub)
+// does.
+export async function findDuplicateSubmission(email, jobId) {
+  if (!email?.trim() || !jobId) return null
+  const { data, error } = await supabase
+    .from('candidates')
+    .select('id, name, owner_id, status, created_at')
+    .ilike('email', email.trim())
+    .eq('job_id', jobId)
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  return data || null
+}
+
 export function updateCandidate(id, row) {
   return supabase.from('candidates').update(row).eq('id', id)
 }

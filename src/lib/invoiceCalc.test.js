@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { lineItemAmount, computeInvoiceTotals, currencySymbol, formatMoney } from './invoiceCalc.js'
+import { lineItemAmount, computeInvoiceTotals, currencySymbol, formatMoney, getGuaranteeStatus, guaranteeStatusLabel } from './invoiceCalc.js'
 
 describe('lineItemAmount', () => {
   it('multiplies quantity by unit amount', () => {
@@ -73,5 +73,58 @@ describe('currencySymbol / formatMoney', () => {
     expect(formatMoney(1250, 'USD')).toBe('$1,250.00')
     expect(formatMoney(1250, 'GBP')).toBe('£1,250.00')
     expect(formatMoney(1250, 'EUR')).toBe('€1,250.00')
+  })
+})
+
+// 2026-09-03, Michael ("rebate/guarantee period tracking"): pure day-math,
+// so every case here pins an explicit `today` rather than depending on the
+// real clock.
+describe('getGuaranteeStatus', () => {
+  const TODAY = new Date('2026-09-03T00:00:00Z')
+
+  it('is "not_started" when there is no guarantee_starts_at yet', () => {
+    expect(getGuaranteeStatus({}, TODAY)).toEqual({ state: 'not_started', daysLeft: null, daysElapsed: null })
+  })
+
+  it('is "triggered" once a rebate/replacement has actually happened, regardless of remaining days', () => {
+    const status = getGuaranteeStatus({ guarantee_starts_at: '2026-08-01', guarantee_days: 90, rebate_triggered_at: '2026-08-20' }, TODAY)
+    expect(status).toEqual({ state: 'triggered', daysLeft: null, daysElapsed: null })
+  })
+
+  it('is "active" with plenty of days left', () => {
+    const status = getGuaranteeStatus({ guarantee_starts_at: '2026-09-01', guarantee_days: 90 }, TODAY)
+    expect(status.state).toBe('active')
+    expect(status.daysLeft).toBe(88)
+    expect(status.daysElapsed).toBe(2)
+  })
+
+  it('is "ending_soon" inside the last 14 days', () => {
+    const status = getGuaranteeStatus({ guarantee_starts_at: '2026-06-15', guarantee_days: 90 }, TODAY)
+    expect(status.state).toBe('ending_soon')
+    expect(status.daysLeft).toBeGreaterThan(0)
+    expect(status.daysLeft).toBeLessThanOrEqual(14)
+  })
+
+  it('is "expired" once the window has fully passed, clamped at 0 rather than going negative', () => {
+    const status = getGuaranteeStatus({ guarantee_starts_at: '2026-01-01', guarantee_days: 90 }, TODAY)
+    expect(status.state).toBe('expired')
+    expect(status.daysLeft).toBe(0)
+  })
+
+  it('defaults guarantee_days to 90 when missing/invalid', () => {
+    const withDefault = getGuaranteeStatus({ guarantee_starts_at: '2026-09-01' }, TODAY)
+    const explicit90 = getGuaranteeStatus({ guarantee_starts_at: '2026-09-01', guarantee_days: 90 }, TODAY)
+    expect(withDefault).toEqual(explicit90)
+  })
+})
+
+describe('guaranteeStatusLabel', () => {
+  it('renders each state as a distinct plain-language label', () => {
+    expect(guaranteeStatusLabel({ state: 'not_started' })).toMatch(/not started/i)
+    expect(guaranteeStatusLabel({ state: 'triggered' })).toMatch(/triggered/i)
+    expect(guaranteeStatusLabel({ state: 'expired' })).toMatch(/ended/i)
+    expect(guaranteeStatusLabel({ state: 'ending_soon', daysLeft: 5 })).toBe('Guarantee ends in 5 days')
+    expect(guaranteeStatusLabel({ state: 'ending_soon', daysLeft: 1 })).toBe('Guarantee ends in 1 day')
+    expect(guaranteeStatusLabel({ state: 'active', daysLeft: 60 })).toBe('60 days left on guarantee')
   })
 })

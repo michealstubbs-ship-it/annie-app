@@ -5,6 +5,8 @@ import { listJobsForCompany } from '../lib/data/jobs'
 import { listCandidatesForInvoicePicker } from '../lib/data/candidates'
 import { getInvoicingDetails } from '../lib/data/invoicingDetails'
 import { getOnboardingLocations } from '../lib/data/onboarding'
+import { listSplitsForInvoice, replaceSplits, validateSplits } from '../lib/data/invoiceSplits'
+import { listTeamMembers } from '../lib/data/teamMembers'
 import { lineItemAmount, computeInvoiceTotals, formatMoney, currencySymbol, CURRENCY_OPTIONS } from '../lib/invoiceCalc'
 import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
 import { reportClientError } from '../lib/errorReporting'
@@ -25,6 +27,16 @@ function newRow(overrides = {}) {
   return { key: `row-${rowKeySeq}`, description: '', quantity: '1', unitAmount: '', ...overrides }
 }
 
+// 2026-09-03, Michael ("commission/fee splits"): a split row before it's
+// saved — `key` is purely a React list key, matching `newRow`'s own
+// pattern; `roleType`/`userId`/`splitPct` are what actually gets sent to
+// replaceSplits (see invoiceSplits.js).
+let splitKeySeq = 0
+function newSplit(overrides = {}) {
+  splitKeySeq += 1
+  return { key: `split-${splitKeySeq}`, roleType: 'candidate_owner', userId: '', splitPct: '', ...overrides }
+}
+
 const EMPTY = {
   company_id: '', company_name: '',
   job_id: '', candidate_id: '',
@@ -35,7 +47,19 @@ const EMPTY = {
   // market currency (or an explicit saved default) right after mount.
   currency: DEFAULT_CURRENCY_CODE, issue_date: today(), due_date: '',
   tax_rate: '0', notes: '',
+  // 2026-09-03, Michael ("rebate/guarantee period tracking"): 90 days and
+  // "free replacement only" match the invoices table's own column
+  // defaults (2026-09-03-agency-dynamics-batch.sql) — a brand-new invoice
+  // starts on the same terms the database would apply anyway, just visible
+  // and editable here instead of invisible until someone checks the row.
+  guarantee_days: '90', rebate_model: 'no_refund',
 }
+
+const REBATE_MODEL_OPTIONS = [
+  { value: 'no_refund', label: 'Free replacement only (no refund)' },
+  { value: 'pro_rated', label: 'Pro-rated refund' },
+  { value: 'full_refund', label: 'Full refund' },
+]
 
 // Create/edit form for a placement-fee invoice. Only ever creates or edits
 // a DRAFT — an invoice that's already been sent/paid/void renders read-only
@@ -56,6 +80,8 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
   const [lineItems, setLineItems] = useState([newRow()])
   const [jobs, setJobs] = useState([])
   const [allCandidates, setAllCandidates] = useState([])
+  const [teamMembers, setTeamMembers] = useState([])
+  const [splits, setSplits] = useState([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -78,6 +104,8 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
         due_date: invoice.due_date || '',
         tax_rate: String(invoice.tax_rate ?? 0),
         notes: invoice.notes || '',
+        guarantee_days: invoice.guarantee_days != null ? String(invoice.guarantee_days) : '90',
+        rebate_model: invoice.rebate_model || 'no_refund',
       })
       const items = invoice.invoice_line_items?.length
         ? invoice.invoice_line_items
@@ -87,10 +115,12 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
         : [newRow()]
       setLineItems(items)
       if (invoice.company_id) loadJobs(invoice.company_id)
+      loadSplits(invoice.id)
     } else {
       setForm({ ...EMPTY, ...prefill })
       setLineItems([newRow()])
       setJobs([])
+      setSplits([])
       prefillFromTeamDefaults()
       // Mirrors handleCompanyChange/handleJobChange's own loadJobs-then-fee-
       // prefill sequence below, just triggered by an incoming prefill
@@ -113,6 +143,7 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
       }
     }
     loadCandidates()
+    loadTeamMembers()
   }, [open, invoice, prefill])
 
   // Best-effort — a failed load just leaves the built-in EMPTY defaults
@@ -164,6 +195,32 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
     }
   }
 
+  // Roster for the commission-split pickers below — best-effort like the
+  // loads above; a failed load just leaves the split section without
+  // anyone to pick, it doesn't block the rest of the form.
+  async function loadTeamMembers() {
+    try {
+      const m = await listTeamMembers()
+      setTeamMembers(m)
+    } catch (err) {
+      reportClientError('Invoice form: failed to load team roster for splits', err)
+      setTeamMembers([])
+    }
+  }
+
+  // Existing splits on an invoice being edited — mapped from the saved
+  // row shape (user_id/role_type/split_pct) to the local editable shape
+  // (userId/roleType/splitPct), same key-per-row pattern as line items.
+  async function loadSplits(invoiceId) {
+    try {
+      const rows = await listSplitsForInvoice(invoiceId)
+      setSplits(rows.map(r => newSplit({ roleType: r.role_type, userId: r.user_id, splitPct: String(r.split_pct) })))
+    } catch (err) {
+      reportClientError('Invoice form: failed to load commission splits', err, { invoiceId })
+      setSplits([])
+    }
+  }
+
   // Candidates linked to whichever job is currently selected — 'placed'
   // ones sorted first, since that's the most likely person to actually be
   // invoiced for, but any candidate on the job can still be picked (see
@@ -199,6 +256,12 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
   function addRow() { setLineItems(prev => [...prev, newRow()]) }
   function removeRow(key) { setLineItems(prev => prev.length > 1 ? prev.filter(r => r.key !== key) : prev) }
 
+  function updateSplit(key, fields) {
+    setSplits(prev => prev.map(s => s.key === key ? { ...s, ...fields } : s))
+  }
+  function addSplit() { setSplits(prev => [...prev, newSplit()]) }
+  function removeSplit(key) { setSplits(prev => prev.filter(s => s.key !== key)) }
+
   const computedLineItems = useMemo(() => lineItems.map(li => ({
     ...li,
     amount: lineItemAmount(li.quantity, li.unitAmount),
@@ -211,6 +274,15 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
     if (!form.bill_to_name.trim()) return setError('Bill-to name is required')
     const validItems = computedLineItems.filter(li => li.description.trim())
     if (!validItems.length) return setError('Add at least one line item with a description')
+    // A split row the recruiter added but never touched (no member picked,
+    // no percentage typed) is silently dropped rather than treated as an
+    // error — same "ignore the untouched blank" leniency as the line-item
+    // filter above. A row that's PARTIALLY filled in still has to be
+    // completed or removed: validateSplits (invoiceSplits.js) is what
+    // enforces that, plus the 100%-per-role rule, before anything is sent.
+    const nonEmptySplits = splits.filter(s => s.userId || s.splitPct)
+    const splitsError = validateSplits(nonEmptySplits)
+    if (splitsError) return setError(splitsError)
 
     setSaving(true)
     setError('')
@@ -224,12 +296,23 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
         bill_to_address: form.bill_to_address.trim() || null,
         currency: form.currency,
         issue_date: form.issue_date || today(),
+        // Ties the guarantee window to the issue date rather than leaving
+        // it null until some later action sets it — the migration only
+        // backfilled this for rows that already existed
+        // (2026-09-03-agency-dynamics-batch.sql); every new invoice needs
+        // it set here or getGuaranteeStatus() would report "not started"
+        // forever. Safe to keep resyncing on every save: the form is
+        // locked (see `locked` above) the moment an invoice leaves draft,
+        // so this can't drift after the guarantee period actually begins.
+        guarantee_starts_at: form.issue_date || today(),
         due_date: form.due_date || null,
         subtotal: totals.subtotal,
         tax_rate: Number(form.tax_rate) || 0,
         tax_amount: totals.taxAmount,
         total: totals.total,
         notes: form.notes.trim() || null,
+        guarantee_days: Number(form.guarantee_days) || 90,
+        rebate_model: form.rebate_model || 'no_refund',
         updated_at: new Date().toISOString(),
       }
       const itemsForSave = validItems.map(li => ({ description: li.description.trim(), quantity: Number(li.quantity) || 1, unitAmount: Number(li.unitAmount) || 0, amount: li.amount }))
@@ -241,6 +324,11 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
       } else {
         result = await createInvoice(invoiceRow, itemsForSave, user.id)
       }
+      // `result` always carries team_id here — stamped by the same
+      // fill_team_id() trigger on create, and already present on the row
+      // being updated (getInvoice's own `*` select) — so there's no
+      // separate "what team am I on" lookup needed just for this.
+      await replaceSplits(result.id, result.team_id, nonEmptySplits)
       onSaved?.(result)
       onClose()
     } catch (err) {
@@ -310,6 +398,32 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
             <button type="button" onClick={addRow} className="text-xs text-gold-ink font-semibold hover:underline mt-2">+ Add line</button>
           </div>
 
+          {/* 2026-09-03, Michael ("commission/fee splits"): optional —
+              validateSplits (invoiceSplits.js) only enforces the 100%
+              rule for a role once ANY split exists for it, so a solo
+              recruiter with nothing to split can just leave this empty. */}
+          <div className="border-t border-gray-100 pt-3">
+            <label className="label">Commission split (optional)</label>
+            <p className="text-xs text-gray-400 mb-2">Only needed when more than one person is credited on this placement. Candidate-side and job-side are tracked separately, and each must add up to 100% if used.</p>
+            <div className="space-y-2">
+              {splits.map(s => (
+                <div key={s.key} className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-start">
+                  <select className="input sm:col-span-4" value={s.roleType} onChange={e => updateSplit(s.key, { roleType: e.target.value })}>
+                    <option value="candidate_owner">Candidate-side</option>
+                    <option value="job_owner">Job-side</option>
+                  </select>
+                  <select className="input sm:col-span-5" value={s.userId} onChange={e => updateSplit(s.key, { userId: e.target.value })}>
+                    <option value="">Select team member</option>
+                    {teamMembers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                  <input className="input sm:col-span-2" type="number" min="0" max="100" placeholder="%" value={s.splitPct} onChange={e => updateSplit(s.key, { splitPct: e.target.value })} />
+                  <button type="button" onClick={() => removeSplit(s.key)} className="sm:col-span-1 text-red-400 hover:text-red-600 text-sm h-10 w-10">✕</button>
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={addSplit} className="text-xs text-gold-ink font-semibold hover:underline mt-2">+ Add split</button>
+          </div>
+
           {/* 2026-08-31 audit fix, mobile: no responsive variant at all —
               currency/issue date/due date squeezed into one row left a
               date input almost no room to show its own value at phone
@@ -325,8 +439,18 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
             <div><label className="label" htmlFor="inv-issue-date">Issue date</label><input id="inv-issue-date" type="date" className="input" value={form.issue_date} onChange={e => setForm(p => ({ ...p, issue_date: e.target.value }))} /></div>
             <div><label className="label" htmlFor="inv-due-date">Due date</label><input id="inv-due-date" type="date" className="input" value={form.due_date} onChange={e => setForm(p => ({ ...p, due_date: e.target.value }))} /></div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div><label className="label" htmlFor="inv-tax-rate">Tax rate (%)</label><input id="inv-tax-rate" type="number" min="0" max="100" className="input" value={form.tax_rate} onChange={e => setForm(p => ({ ...p, tax_rate: e.target.value }))} /></div>
+            <div>
+              <label className="label" htmlFor="inv-guarantee-days">Guarantee period (days)</label>
+              <input id="inv-guarantee-days" type="number" min="0" className="input" value={form.guarantee_days} onChange={e => setForm(p => ({ ...p, guarantee_days: e.target.value }))} />
+            </div>
+            <div>
+              <label className="label" htmlFor="inv-rebate-model">If the candidate leaves within the period</label>
+              <select id="inv-rebate-model" className="input" value={form.rebate_model} onChange={e => setForm(p => ({ ...p, rebate_model: e.target.value }))}>
+                {REBATE_MODEL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
           </div>
           <div><label className="label" htmlFor="inv-notes">Notes</label><textarea id="inv-notes" className="input resize-none" rows={2} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Anything you'd like to appear on the invoice itself" /></div>
 
