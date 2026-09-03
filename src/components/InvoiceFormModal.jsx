@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { createInvoice, updateInvoice, replaceLineItems } from '../lib/data/invoices'
+import { createTask } from '../lib/data/tasks'
 import { listJobsForCompany } from '../lib/data/jobs'
 import { listCandidatesForInvoicePicker } from '../lib/data/candidates'
 import { getInvoicingDetails } from '../lib/data/invoicingDetails'
@@ -58,6 +59,10 @@ const EMPTY = {
   // 'none' is the right default for the overwhelming majority of
   // placements that aren't referrals at all.
   referral_payout_status: 'none', referral_payout_amount: '', referral_payout_notes: '',
+  // 2026-09-06, gap-analysis batch 3 ("WPS-aware contract invoicing"):
+  // recruiter-toggled, not inferred — see the migration's own column
+  // comment for why.
+  is_wps_cycle: false, wps_labour_card_no: '', wps_wage_account: '', wps_days_worked: '', wps_overtime_hours: '', wps_sif_due_date: '',
 }
 
 const REBATE_MODEL_OPTIONS = [
@@ -120,6 +125,12 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
         referral_payout_status: invoice.referral_payout_status || 'none',
         referral_payout_amount: invoice.referral_payout_amount != null ? String(invoice.referral_payout_amount) : '',
         referral_payout_notes: invoice.referral_payout_notes || '',
+        is_wps_cycle: !!invoice.is_wps_cycle,
+        wps_labour_card_no: invoice.wps_labour_card_no || '',
+        wps_wage_account: invoice.wps_wage_account || '',
+        wps_days_worked: invoice.wps_days_worked != null ? String(invoice.wps_days_worked) : '',
+        wps_overtime_hours: invoice.wps_overtime_hours != null ? String(invoice.wps_overtime_hours) : '',
+        wps_sif_due_date: invoice.wps_sif_due_date || '',
       })
       const items = invoice.invoice_line_items?.length
         ? invoice.invoice_line_items
@@ -196,6 +207,30 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
       // empty picker.
       reportClientError('Invoice form: failed to load jobs for company', err, { companyId })
       setJobs([])
+    }
+  }
+
+  const [sifTaskState, setSifTaskState] = useState('idle') // 'idle' | 'saving' | 'created' | 'error'
+  // 2026-09-06, gap-analysis batch 3 ("WPS-aware contract invoicing"):
+  // "even flagging 'this SIF is due' as a task would beat spreadsheets
+  // outright" — a real bd_tasks row, not just a date sitting on the
+  // invoice unnoticed. Only creatable once the invoice itself has been
+  // saved (needs a real invoice.id/candidate_id to reference).
+  async function flagSifAsTask() {
+    if (!invoice || !form.wps_sif_due_date) return
+    setSifTaskState('saving')
+    try {
+      const { error: err } = await createTask({
+        title: `Submit WPS Salary Information File — ${form.bill_to_name || 'contract placement'}`,
+        notes: 'Auto-flagged from a WPS-cycle invoice — labour card, wage account, days worked, overtime all recorded on the invoice itself.',
+        due_date: form.wps_sif_due_date,
+        priority: 'high',
+        candidate_id: form.candidate_id || null,
+      }, user.id)
+      if (err) throw err
+      setSifTaskState('created')
+    } catch {
+      setSifTaskState('error')
     }
   }
 
@@ -330,6 +365,12 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
         referral_payout_status: form.referral_payout_status || 'none',
         referral_payout_amount: form.referral_payout_amount ? Number(form.referral_payout_amount) : null,
         referral_payout_notes: form.referral_payout_notes.trim() || null,
+        is_wps_cycle: form.is_wps_cycle,
+        wps_labour_card_no: form.wps_labour_card_no.trim() || null,
+        wps_wage_account: form.wps_wage_account.trim() || null,
+        wps_days_worked: form.wps_days_worked ? parseInt(form.wps_days_worked, 10) : null,
+        wps_overtime_hours: form.wps_overtime_hours ? Number(form.wps_overtime_hours) : null,
+        wps_sif_due_date: form.wps_sif_due_date || null,
         updated_at: new Date().toISOString(),
       }
       const itemsForSave = validItems.map(li => ({ description: li.description.trim(), quantity: Number(li.quantity) || 1, unitAmount: Number(li.unitAmount) || 0, amount: li.amount }))
@@ -494,6 +535,33 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
               </>
             )}
           </div>
+          {/* 2026-09-06, gap-analysis batch 3 ("WPS-aware contract
+              invoicing"): structured fields for a recurring contract/temp
+              salary cycle — off by default, since most placements here
+              are still one-off permanent fees. */}
+          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+            <input type="checkbox" checked={form.is_wps_cycle} onChange={e => setForm(p => ({ ...p, is_wps_cycle: e.target.checked }))} />
+            📋 This is a recurring contract/temp WPS salary cycle
+          </label>
+          {form.is_wps_cycle && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-gray-50 rounded-lg p-4">
+              <div><label className="label" htmlFor="inv-wps-labour-card">Labour card no.</label><input id="inv-wps-labour-card" className="input" value={form.wps_labour_card_no} onChange={e => setForm(p => ({ ...p, wps_labour_card_no: e.target.value }))} /></div>
+              <div><label className="label" htmlFor="inv-wps-wage-account">Wage account</label><input id="inv-wps-wage-account" className="input" value={form.wps_wage_account} onChange={e => setForm(p => ({ ...p, wps_wage_account: e.target.value }))} /></div>
+              <div><label className="label" htmlFor="inv-wps-days">Days worked</label><input id="inv-wps-days" type="number" min="0" className="input" value={form.wps_days_worked} onChange={e => setForm(p => ({ ...p, wps_days_worked: e.target.value }))} /></div>
+              <div><label className="label" htmlFor="inv-wps-overtime">Overtime (hours)</label><input id="inv-wps-overtime" type="number" min="0" step="0.5" className="input" value={form.wps_overtime_hours} onChange={e => setForm(p => ({ ...p, wps_overtime_hours: e.target.value }))} /></div>
+              <div className="sm:col-span-2 flex items-end gap-2">
+                <div className="flex-1">
+                  <label className="label" htmlFor="inv-wps-sif-due">SIF due date</label>
+                  <input id="inv-wps-sif-due" type="date" className="input" value={form.wps_sif_due_date} onChange={e => setForm(p => ({ ...p, wps_sif_due_date: e.target.value }))} />
+                </div>
+                {invoice && form.wps_sif_due_date && (
+                  <button type="button" onClick={flagSifAsTask} disabled={sifTaskState === 'saving'} className="btn-ghost text-xs flex-shrink-0">
+                    {sifTaskState === 'created' ? '✓ Task created' : sifTaskState === 'error' ? 'Could not create — try again' : 'Flag as task'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           <div><label className="label" htmlFor="inv-notes">Notes</label><textarea id="inv-notes" className="input resize-none" rows={2} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Anything you'd like to appear on the invoice itself" /></div>
 
           <div className="bg-gray-50 rounded-lg p-4 text-sm space-y-1">

@@ -50,6 +50,12 @@ const EMPTY = {
   // referrer_candidate_id is resolved best-effort in save() below, never
   // typed directly — the form only ever collects the free-text name.
   referrer_name: '', referrer_candidate_id: null,
+  // 2026-09-06, gap-analysis batch 3 ("silver-medalist / job-change
+  // reactivation alerts"): a manual "keep on my radar" flag, distinct from
+  // is_hotlisted (candidate-LED proactive marketing) — see the
+  // migration's own column comment for the honest scope of what this is
+  // and isn't.
+  watch_for_reactivation: false, reactivation_note: '',
 }
 
 // Friendly labels for the CV auto-fill banner ("Annie read this CV and
@@ -160,6 +166,9 @@ export default function Candidates() {
   // hotlisted candidate can sit at any stage — so this ANDs with them
   // rather than being folded into the STAGES filter chips.
   const [hotlistOnly, setHotlistOnly] = useState(false)
+  // 2026-09-06, gap-analysis batch 3: same independent-of-stage reasoning
+  // as hotlistOnly above — a watched candidate is very often 'rejected'.
+  const [reactivationOnly, setReactivationOnly] = useState(false)
 
   useEffect(() => { load() }, [user])
 
@@ -218,7 +227,11 @@ export default function Candidates() {
     () => (hotlistOnly ? ownerFiltered.filter(c => c.is_hotlisted) : ownerFiltered),
     [ownerFiltered, hotlistOnly]
   )
-  const stageFiltered = useMemo(() => filterCandidatesByStage(hotlistFiltered, filter), [hotlistFiltered, filter])
+  const reactivationFiltered = useMemo(
+    () => (reactivationOnly ? hotlistFiltered.filter(c => c.watch_for_reactivation) : hotlistFiltered),
+    [hotlistFiltered, reactivationOnly]
+  )
+  const stageFiltered = useMemo(() => filterCandidatesByStage(reactivationFiltered, filter), [reactivationFiltered, filter])
   const sorted = useMemo(() => sortCandidates(stageFiltered, sortBy), [stageFiltered, sortBy])
   const groups = filter === 'all' ? groupCandidatesByStage(sorted) : null
 
@@ -247,6 +260,7 @@ export default function Candidates() {
       is_hotlisted: !!c.is_hotlisted, hotlist_note: c.hotlist_note || '',
       visa_status: c.visa_status || '', visa_type: c.visa_type || '', visa_sponsor: c.visa_sponsor || '', visa_expiry: c.visa_expiry || '',
       referrer_name: c.referrer_name || '', referrer_candidate_id: c.referrer_candidate_id || null,
+      watch_for_reactivation: !!c.watch_for_reactivation, reactivation_note: c.reactivation_note || '',
     })
     setEditId(c.id)
     setCvFile(null)
@@ -528,6 +542,8 @@ export default function Candidates() {
         // Best-effort re-resolve on every save (not just at typing time) —
         // cheap, and picks up a referrer who gets added to the CRM later.
         referrer_candidate_id: form.referrer_name.trim() ? await findCandidateIdByExactName(form.referrer_name).catch(() => null) : null,
+        watch_for_reactivation: form.watch_for_reactivation,
+        reactivation_note: form.reactivation_note.trim() || null,
         cv_path: cvPath,
         updated_at: new Date().toISOString(),
       }
@@ -610,6 +626,9 @@ export default function Candidates() {
                   )}
                   {c.referrer_name && (
                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600" title={c.referrer_candidate_id ? 'Linked to an existing candidate record' : 'Referrer not yet in the CRM'}>🤝 Referred by {c.referrer_name}</span>
+                  )}
+                  {c.watch_for_reactivation && (
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700" title={c.reactivation_note || 'Flagged to revisit for a future role'}>👁️ Reactivation watch</span>
                   )}
                 </div>
                 <p className="text-xs text-gray-500 mt-0.5">{[c.role, c.company].filter(Boolean).join(' · ')}</p>
@@ -722,6 +741,13 @@ export default function Candidates() {
             title="Candidate-led marketing: strong/available candidates being proactively marketed, regardless of stage"
           >
             🔥 Hotlist <span className="opacity-70">({ownerFiltered.filter(c => c.is_hotlisted).length})</span>
+          </button>
+          <button
+            onClick={() => setReactivationOnly(v => !v)}
+            className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 ${reactivationOnly ? 'bg-blue-500 border-blue-500 text-white' : 'border-gray-200 text-gray-600'}`}
+            title="Candidates flagged to revisit for a future role, regardless of stage"
+          >
+            👁️ Reactivation <span className="opacity-70">({ownerFiltered.filter(c => c.watch_for_reactivation).length})</span>
           </button>
           <div className="flex flex-wrap gap-1.5">
             <button onClick={() => setFilter('all')} className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 ${filter === 'all' ? 'bg-navy border-navy text-white' : 'border-gray-200 text-gray-600'}`}>
@@ -1022,6 +1048,22 @@ export default function Candidates() {
                 <div className="col-span-2">
                   <label className="label" htmlFor="candidate-hotlist-note">Hotlist note (optional)</label>
                   <input id="candidate-hotlist-note" className="input" placeholder="What makes them worth marketing right now" value={form.hotlist_note} onChange={e => setForm(p => ({ ...p, hotlist_note: e.target.value }))} />
+                </div>
+              )}
+              {/* 2026-09-06, gap-analysis batch 3 ("silver-medalist / job-
+                  change reactivation alerts"): distinct from hotlist above —
+                  this is specifically "didn't get this role, worth
+                  revisiting for the next one", most useful once rejected. */}
+              <div className="col-span-2 flex items-start gap-2">
+                <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer mt-1.5">
+                  <input type="checkbox" checked={form.watch_for_reactivation} onChange={e => setForm(p => ({ ...p, watch_for_reactivation: e.target.checked }))} />
+                  👁️ Watch for reactivation — revisit for future roles
+                </label>
+              </div>
+              {form.watch_for_reactivation && (
+                <div className="col-span-2">
+                  <label className="label" htmlFor="candidate-reactivation-note">Reactivation note (optional)</label>
+                  <input id="candidate-reactivation-note" className="input" placeholder="Why they're worth revisiting" value={form.reactivation_note} onChange={e => setForm(p => ({ ...p, reactivation_note: e.target.value }))} />
                 </div>
               )}
               {/* 2026-09-06, gap-analysis batch 1: the single field every GCC
