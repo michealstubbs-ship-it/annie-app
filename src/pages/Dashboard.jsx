@@ -18,6 +18,7 @@ const Meetings = lazy(() => import('../components/Meetings'))
 const Tasks = lazy(() => import('../components/Tasks'))
 const Companies = lazy(() => import('../components/Companies'))
 const Jobs = lazy(() => import('../components/Jobs'))
+const JobPipeline = lazy(() => import('../components/JobPipeline'))
 const Overview = lazy(() => import('../components/Overview'))
 const Billing = lazy(() => import('../components/Billing'))
 const Invoices = lazy(() => import('../components/Invoices'))
@@ -80,6 +81,8 @@ export default function Dashboard() {
               <Route path="tasks" element={<Tasks />} />
               <Route path="companies" element={<Companies />} />
               <Route path="jobs" element={<Jobs />} />
+              {/* 2026-09-03: the real build behind mockups/pipeline-v2-mockup.html — one job's full candidate pipeline board. */}
+              <Route path="jobs/:jobId/pipeline" element={<JobPipeline />} />
               <Route path="invoices" element={<Invoices />} />
               <Route path="contacts" element={<Contacts />} />
               <Route path="pipeline" element={<Pipeline />} />

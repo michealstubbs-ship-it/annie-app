@@ -1,7 +1,11 @@
 import { supabase } from '../supabase'
 import { reportClientError } from '../errorReporting'
 
-const TABLES = ['candidates', 'contacts', 'companies', 'jobs']
+// 2026-09-03: candidate_job_links added for the Job Pipeline feature — each
+// pipeline entry has its own owner_id (see the migration's is_primary
+// comment), reassignable the same way as any other record via this same
+// reassignOwner/getOwnershipHistory pair, rather than a parallel mechanism.
+const TABLES = ['candidates', 'contacts', 'companies', 'jobs', 'candidate_job_links']
 
 // Reassigns a record's owner_id and logs the change to ownership_history —
 // 2026-09-03, Michael: "if there is more than one person on a seat... you

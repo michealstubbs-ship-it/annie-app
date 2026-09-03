@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { listJobsWithCompanies, deleteJob } from '../lib/data/jobs'
 import { listCandidateJobLinks } from '../lib/data/candidates'
@@ -38,7 +38,7 @@ function stars(n) { return '★'.repeat(n) + '☆'.repeat(5 - n) }
 // every expanded card) since — unlike the old free client-side scorer —
 // this is a real, rate-capped AI call; recState caches the result per job
 // so re-expanding a card already fetched this session doesn't re-spend it.
-function JobCard({ j, count, expanded, onToggleExpand, recState, onRecommend, currencyPrefix }) {
+function JobCard({ j, count, expanded, onToggleExpand, recState, onRecommend, currencyPrefix, onOpenPipeline }) {
   return (
     <div className="card p-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -69,9 +69,17 @@ function JobCard({ j, count, expanded, onToggleExpand, recState, onRecommend, cu
         </div>
       </div>
 
-      <button onClick={() => onToggleExpand.match(j.id)} className="text-xs font-semibold text-gold-ink mt-3 hover:underline">
-        {expanded ? '▾ Hide Annie’s recommendations' : '✨ Annie’s candidate recommendations'}
-      </button>
+      <div className="flex items-center gap-3 mt-3 flex-wrap">
+        {/* 2026-09-03: the real build behind mockups/pipeline-v2-mockup.html
+            — every candidate submitted to THIS job, on its own kanban board,
+            not just the AI recommendations panel below. */}
+        <button onClick={() => onOpenPipeline(j.id)} className="text-xs font-semibold text-navy bg-page-bg border border-gray-200 rounded-full px-3 py-1 hover:border-gold-ink">
+          🗂️ Pipeline {count > 0 ? `(${count})` : ''}
+        </button>
+        <button onClick={() => onToggleExpand.match(j.id)} className="text-xs font-semibold text-gold-ink hover:underline">
+          {expanded ? '▾ Hide Annie’s recommendations' : '✨ Annie’s candidate recommendations'}
+        </button>
+      </div>
       {expanded && (
         <div className="mt-2 pt-3 border-t border-gray-100 space-y-2">
           {(!recState || recState.status === 'idle') && (
@@ -118,6 +126,7 @@ export default function Jobs() {
   // 2026-08-30: JobCard is module-level, so the resolved prefix is passed down.
   const { currencyPrefix } = useMarketCurrency()
   const location = useLocation()
+  const navigate = useNavigate()
   const [jobs, setJobs] = useState([])
   const [candCounts, setCandCounts] = useState({})
   const [expandedJobIds, setExpandedJobIds] = useState(() => new Set())
@@ -226,6 +235,7 @@ export default function Jobs() {
         recState={recommendState[j.id]}
         onRecommend={requestRecommendations}
         currencyPrefix={currencyPrefix}
+        onOpenPipeline={id => navigate(`/dashboard/jobs/${id}/pipeline`)}
       />
     )
   }

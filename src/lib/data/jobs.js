@@ -73,6 +73,19 @@ export async function listJobsForPipelineSummary() {
   return data || []
 }
 
+// JobPipeline.jsx's own header — one job, with its linked company name and
+// owner_id (resolved to a name client-side via nameForMember, same pattern
+// as OwnershipPanel), for the pipeline board's title/stats bar.
+export async function getJob(id) {
+  const { data, error } = await supabase
+    .from('jobs')
+    .select('*, companies(name)')
+    .eq('id', id)
+    .single()
+  if (error) throw error
+  return data
+}
+
 export function createJob(row, userId) {
   return supabase.from('jobs').insert({ ...row, user_id: userId }).select().single()
 }

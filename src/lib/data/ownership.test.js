@@ -90,6 +90,17 @@ describe('reassignOwner', () => {
   })
 })
 
+describe('reassignOwner — 2026-09-03 candidate_job_links extension', () => {
+  it('accepts candidate_job_links as a known ownership table (Job Pipeline entries)', async () => {
+    const updateBuilder = makeBuilder({ data: { id: 'link1', owner_id: 'u2', team_id: 'team1' }, error: null })
+    const historyBuilder = makeBuilder({ data: null, error: null })
+    fromMock.mockReturnValueOnce(updateBuilder).mockReturnValueOnce(historyBuilder)
+    const result = await reassignOwner('candidate_job_links', 'link1', 'u2', 'actor1', 'u1')
+    expect(fromMock).toHaveBeenNthCalledWith(1, 'candidate_job_links')
+    expect(result).toEqual({ id: 'link1', owner_id: 'u2', team_id: 'team1' })
+  })
+})
+
 describe('getOwnershipHistory', () => {
   it('rejects an unknown table before ever calling Supabase', async () => {
     await expect(getOwnershipHistory('deals', 'r1')).rejects.toThrow('Unknown ownership table')

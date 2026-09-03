@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase'
 import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, findCandidateDuplicateByEmail, findDuplicateSubmission } from '../lib/data/candidates'
 import { listActiveJobsForPicker } from '../lib/data/jobs'
 import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
-import { STAGES, STAGE_LABEL, searchCandidates, filterCandidatesByStage, sortCandidates, groupCandidatesByStage } from '../lib/candidatesView'
+import { STAGES, STAGE_LABEL, STAGE_COLOR, searchCandidates, filterCandidatesByStage, sortCandidates, groupCandidatesByStage } from '../lib/candidatesView'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import { logSignalOutcome } from '../lib/signalOutcomes'
@@ -21,18 +21,6 @@ import OwnershipPanel from './OwnershipPanel'
 import { useMarketCurrency } from '../lib/useMarketCurrency'
 import { CURRENCY_OPTIONS, currencySymbol } from '../lib/invoiceCalc'
 import { parseCvViaAnnie, triggerBulkCvImport, fetchCvBulkStatus } from '../lib/cvParseClient'
-
-const STAGE_COLOR = {
-  sourced: 'bg-slate-100 text-slate-600',
-  screening: 'bg-blue-100 text-blue-700',
-  shortlisted: 'bg-purple-100 text-purple-700',
-  presented: 'bg-amber-100 text-amber-700',
-  interviewing: 'bg-orange-100 text-orange-700',
-  offer: 'bg-emerald-100 text-emerald-700',
-  placed: 'bg-yellow-100 text-gold',
-  rejected: 'bg-red-100 text-red-600',
-  withdrawn: 'bg-gray-100 text-gray-500',
-}
 
 const EMPTY = {
   name: '', role: '', company: '', location: '', industry: '', nationality: '', email: '', phone: '',

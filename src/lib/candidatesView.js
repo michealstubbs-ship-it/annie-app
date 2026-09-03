@@ -25,6 +25,22 @@ export const STAGE_LABEL = {
   withdrawn: 'Withdrawn',
 }
 
+// 2026-09-03: moved here from Candidates.jsx (previously defined inline,
+// only used there) so the Job Pipeline board's cards/columns can share the
+// exact same 9-stage colour set instead of a second, driftable copy —
+// same "one source of truth" reasoning as STAGES/STAGE_LABEL above.
+export const STAGE_COLOR = {
+  sourced: 'bg-slate-100 text-slate-600',
+  screening: 'bg-blue-100 text-blue-700',
+  shortlisted: 'bg-purple-100 text-purple-700',
+  presented: 'bg-amber-100 text-amber-700',
+  interviewing: 'bg-orange-100 text-orange-700',
+  offer: 'bg-emerald-100 text-emerald-700',
+  placed: 'bg-yellow-100 text-gold',
+  rejected: 'bg-red-100 text-red-600',
+  withdrawn: 'bg-gray-100 text-gray-500',
+}
+
 export function searchCandidates(candidates, search) {
   const q = (search || '').trim().toLowerCase()
   if (!q) return candidates

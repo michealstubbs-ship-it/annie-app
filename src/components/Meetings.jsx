@@ -11,8 +11,12 @@ import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
 import ContactSearchSelect from './ContactSearchSelect'
 
-const TYPE_LABEL = { call: 'Call', video: 'Video', in_person: 'In person' }
-const TYPE_ICON = { call: '📞', video: '💻', in_person: '🤝' }
+// 'interview' added 2026-09-03 — the Job Pipeline feature's own interview
+// scheduling (updatePipelineLinkInterview in pipelineLinks.js) creates a
+// real meetings row of this type so it appears here too, not just on
+// Overview's Today's schedule.
+const TYPE_LABEL = { call: 'Call', video: 'Video', in_person: 'In person', interview: 'Interview' }
+const TYPE_ICON = { call: '📞', video: '💻', in_person: '🤝', interview: '🎯' }
 
 const EMPTY = { title: '', meeting_type: 'call', meeting_date: '', contact_id: '', outcome: '', next_steps: '', follow_up_date: '', notes: '' }
 

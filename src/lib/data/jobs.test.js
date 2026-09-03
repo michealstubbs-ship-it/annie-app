@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
 
-import { listJobsMinimal, listActiveJobsForPicker, listJobsWithCompanies, listJobsForCompany, listJobsForPipelineSummary, createJob, updateJob, deleteJob } from './jobs.js'
+import { listJobsMinimal, listActiveJobsForPicker, listJobsWithCompanies, listJobsForCompany, listJobsForPipelineSummary, getJob, createJob, updateJob, deleteJob } from './jobs.js'
 
 function makeBuilder(result) {
   const builder = {}
@@ -121,6 +121,24 @@ describe('listJobsForPipelineSummary', () => {
     builder = makeBuilder({ data: null, error: { message: 'db down' } })
     fromMock.mockReturnValue(builder)
     await expect(listJobsForPipelineSummary()).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+describe('getJob', () => {
+  it('reads one job by id, joining its linked company', async () => {
+    builder = makeBuilder({ data: { id: 'job1', title: 'CFO', companies: { name: 'Acme' } }, error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await getJob('job1')
+    expect(fromMock).toHaveBeenCalledWith('jobs')
+    expect(builder.select).toHaveBeenCalledWith('*, companies(name)')
+    expect(builder.eq).toHaveBeenCalledWith('id', 'job1')
+    expect(result).toEqual({ id: 'job1', title: 'CFO', companies: { name: 'Acme' } })
+  })
+
+  it('throws when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(getJob('job1')).rejects.toEqual({ message: 'db down' })
   })
 })
 
