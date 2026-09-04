@@ -19,6 +19,11 @@ import { resolveSignalContact } from '../../lib/resolveSignalContact'
 import { saveResolvedContact } from '../../lib/stream/logContact'
 
 export default function ContactLookup({ item, onResolved, linkedinRoute, userId, onSaved }) {
+  // When the recruiter already has someone at this company, clicking is a
+  // request for a DIFFERENT person — the decision-maker — not a repeat of what
+  // the card already shows them. Saying so stops the button reading as though
+  // Annie has forgotten the contact directly above it.
+  const alreadyHasSomeone = !!item.wayIn?.person
   const [status, setStatus] = useState('idle') // idle | searching | none | capped | error
   const [result, setResult] = useState(null)
   const [message, setMessage] = useState(null)
@@ -169,7 +174,7 @@ export default function ContactLookup({ item, onResolved, linkedinRoute, userId,
       disabled={status === 'searching'}
       className="inline-flex items-center gap-2 text-[12.5px] font-bold px-3 py-1.5 rounded-lg bg-navy text-gold hover:bg-navy-light transition-colors disabled:opacity-60"
     >
-      {status === 'searching' ? 'Searching Apollo…' : 'Find me the contact'}
+      {status === 'searching' ? 'Searching Apollo…' : alreadyHasSomeone ? 'Find the decision-maker' : 'Find me the contact'}
       {status !== 'searching' && <span className="font-medium text-[10.5px] text-gold/70 border-l border-gold/30 pl-2">1 credit if found</span>}
     </button>
   )

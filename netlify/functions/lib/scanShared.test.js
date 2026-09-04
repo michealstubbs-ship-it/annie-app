@@ -23,6 +23,7 @@ import {
   logMarketCoverage, getMarketCoverageReport,
   getCustomerWatchlistCompanies, buildCustomerWatchlistHint,
   buildLiveJobBoardHint, buildTargetFirmHint,
+  verifySourceUrl,
 } from './scanShared.js'
 
 // Full behavioural coverage for extractJson now lives in
@@ -4066,6 +4067,54 @@ describe('verifyContact — a paid-for LinkedIn profile is never discarded', () 
     const { supabase } = makeMockSupabase()
     const result = await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_1', null, 'u1')
     expect(result).toBeNull()
+    vi.unstubAllGlobals()
+  })
+})
+
+// 2026-09-04. This result is now shown to the customer on every card, so a
+// false negative is no longer a private detail — it puts a doubt next to a
+// perfectly good link. Measured on production: 30% of a week's 530 signals came
+// back false, and two opened by hand were real, live pages. The cause is that a
+// bare fetch from a data centre gets 403'd by many publishers, and only 405/501
+// fell through to a GET.
+describe('verifySourceUrl — not calling a good link bad', () => {
+  it('falls through to GET when the server refuses a HEAD from a bot', async () => {
+    const calls = []
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      calls.push(opts.method)
+      if (opts.method === 'HEAD') return { ok: false, status: 403 }
+      return { ok: true, status: 200 }
+    }))
+    await expect(verifySourceUrl('https://www.zawya.com/en/some-real-article')).resolves.toBe(true)
+    expect(calls).toEqual(['HEAD', 'GET'])
+    vi.unstubAllGlobals()
+  })
+
+  it('sends a real browser User-Agent, which is what most of those refusals want', async () => {
+    let sent = null
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      sent = opts.headers
+      return { ok: true, status: 200 }
+    }))
+    await verifySourceUrl('https://example.com/a')
+    expect(sent['User-Agent']).toMatch(/Mozilla/)
+    vi.unstubAllGlobals()
+  })
+
+  it('still reports a genuinely missing page as unverified', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404 })))
+    await expect(verifySourceUrl('https://example.com/gone')).resolves.toBe(false)
+    vi.unstubAllGlobals()
+  })
+
+  it('does not waste a GET on a 404 — only on refusals it cannot interpret', async () => {
+    const calls = []
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      calls.push(opts.method)
+      return { ok: false, status: 404 }
+    }))
+    await verifySourceUrl('https://example.com/gone')
+    expect(calls).toEqual(['HEAD'])
     vi.unstubAllGlobals()
   })
 })

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeCompanyName, companiesMatch, findWarmContacts } from './companyMatch.js'
+import { normalizeCompanyName, companiesMatch } from './companyMatch.js'
 
 describe('normalizeCompanyName', () => {
   it('strips common legal suffixes', () => {
@@ -41,18 +41,5 @@ describe('companiesMatch', () => {
   })
 })
 
-describe('findWarmContacts', () => {
-  it('finds contacts at the target company by fuzzy name match', () => {
-    const contacts = [
-      { id: 1, company: 'Acme Limited' },
-      { id: 2, company: 'Zenith Group' },
-    ]
-    expect(findWarmContacts('Acme Ltd', contacts)).toEqual([{ id: 1, company: 'Acme Limited' }])
-  })
-
-  it('returns an empty array, never throws, when nothing matches', () => {
-    expect(findWarmContacts('Acme Ltd', [{ id: 1, company: 'Zenith Group' }])).toEqual([])
-    expect(findWarmContacts('', [])).toEqual([])
-    expect(findWarmContacts('Acme Ltd', null)).toEqual([])
-  })
-})
+// findWarmContacts was removed on 2026-09-04 — see companyMatch.js for why.
+// The way-in ladder (src/lib/stream/wayIn.js) replaces it and has its own tests.

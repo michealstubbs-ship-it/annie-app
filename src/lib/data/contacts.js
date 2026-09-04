@@ -68,9 +68,12 @@ export async function listContactsMinimal(userId) {
   return data || []
 }
 
-// IntelligenceFeed.jsx's "warm door" check (see findWarmContacts) — every
-// contact, just enough fields to match a signal's company against and to
-// show if a match is found.
+// Every contact, with just enough fields to work out how the recruiter can get
+// into a company. 2026-09-04: this used to serve companyMatch.js's "warm door"
+// check, which called any name at the target company a warm route in. The
+// Intelligence Feed's way-in ladder replaced it — see src/lib/stream/wayIn.js —
+// and the ladder needs `notes` and `last_contacted` too, because those are the
+// only evidence that a relationship actually exists.
 export async function listContactsForMatching(userId) {
   const { data, error } = await supabase.from('contacts').select('id, name, title, company, linkedin_url')
   if (error) throw error

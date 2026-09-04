@@ -185,13 +185,35 @@ export async function fetchWithRetry(url, options = {}, timeoutMs = 12000, retri
 // hallucinated or malformed link. HEAD first (cheap, no body download);
 // falls back to GET only if the server doesn't support HEAD at all (405/501
 // are "method not supported", not "page doesn't exist").
+//
+// 2026-09-04: this check has real false negatives, and they matter now that the
+// result is shown to the customer on every card. Measured on production, 30% of
+// the last week's 530 signals carried source_verified false. Two of those were
+// opened by hand and were perfectly good live pages — a GulfTalent CRO posting
+// and a Zawya DFSA appointment. The cause is that a bare fetch from a data
+// centre, with no User-Agent, gets 403'd by a great many publishers, and only
+// 405/501 fell through to a GET.
+//
+// Two changes, both aimed at not calling a good link bad:
+//   * send a real browser User-Agent, which is what most of those 403s want
+//   * treat "the server refused to talk to a bot" (401/403/406/429/451/999)
+//     as a HEAD it will not answer, and fall through to the GET, rather than
+//     as proof the page does not exist
+// The UI is separately careful: a false here now shows nothing at all rather
+// than a badge implying the link is broken. Only a genuine 404-class answer
+// should read as "this link is not real", and this function still cannot tell
+// those two apart with enough confidence to say so on a card.
+const HEAD_UNANSWERABLE = new Set([401, 403, 405, 406, 429, 451, 501, 999])
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+
 export async function verifySourceUrl(url) {
   if (!url) return false
+  const headers = { 'User-Agent': BROWSER_UA, Accept: 'text/html,application/xhtml+xml,*/*' }
   try {
-    const head = await fetchWithTimeout(url, { method: 'HEAD', redirect: 'follow' }, 8000)
+    const head = await fetchWithTimeout(url, { method: 'HEAD', redirect: 'follow', headers }, 8000)
     if (head.ok) return true
-    if (head.status !== 405 && head.status !== 501) return false
-    const get = await fetchWithTimeout(url, { method: 'GET', redirect: 'follow' }, 8000)
+    if (!HEAD_UNANSWERABLE.has(head.status)) return false
+    const get = await fetchWithTimeout(url, { method: 'GET', redirect: 'follow', headers }, 8000)
     return get.ok
   } catch (err) {
     console.error(`[scanShared] source URL verification failed for "${url}":`, err.message)

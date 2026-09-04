@@ -88,10 +88,15 @@ export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen
 
         {/* The source, on every item. All 530 signals from the last seven days
             already stored source_url and source_label — 100% of them. Nothing
-            in the product ever displayed one. "Not yet checked" is
-            deliberately weaker than "unverified": source_verified false means
-            nobody has opened the link, not that it is fake. Two unchecked ones
-            were opened by hand on 2026-09-04 and were real pages. */}
+            in the product ever displayed one.
+
+            Only the POSITIVE state is shown. source_verified false does not
+            mean the link is bad: verifySourceUrl HEADs the page from a data
+            centre, and a great many publishers 403 that. Measured, 30% of a
+            week's signals came back false, and two opened by hand were
+            perfectly good live pages. Putting a warning badge on a link that
+            is probably fine is worse than saying nothing, so when we could not
+            confirm it, we say nothing and let the recruiter click. */}
         {item.source.url && (
           <div className="flex items-center gap-2 flex-wrap mt-2.5 pb-4">
             <a
@@ -102,10 +107,8 @@ export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen
             >
               {item.source.label || 'source'} <span aria-hidden="true">↗</span>
             </a>
-            {item.source.checked ? (
+            {item.source.checked && (
               <span className="text-[10.5px] px-1.5 py-0.5 rounded border border-emerald-200 bg-emerald-50 text-emerald-700">link checked</span>
-            ) : (
-              <span className="text-[10.5px] px-1.5 py-0.5 rounded border border-dashed border-gray-200 text-gray-400">link not yet checked</span>
             )}
           </div>
         )}

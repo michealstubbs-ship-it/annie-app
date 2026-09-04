@@ -43,11 +43,14 @@ export function companiesMatch(a, b) {
   return false
 }
 
-// A cold outbound email and "someone I already know works there" are not the
-// same opportunity. This finds any of the recruiter's own contacts who
-// already work at a signal's target company, so the dashboard can offer a
-// warm door instead of only ever suggesting a cold approach.
-export function findWarmContacts(companyName, contacts) {
-  if (!companyName || !contacts?.length) return []
-  return contacts.filter(c => c.company && companiesMatch(c.company, companyName))
-}
+// findWarmContacts was removed on 2026-09-04. It returned every contact whose
+// company name matched a signal's, and its own comment described the result as
+// "a warm door" the dashboard could offer "instead of only ever suggesting a
+// cold approach". Nothing about a name in a CRM makes a door warm: measured on
+// the production account, 753 contacts had ZERO notes and ZERO logged calls,
+// every one bulk-imported, so that claim was false for all of them.
+//
+// The Intelligence Feed's way-in ladder replaces it (src/lib/stream/wayIn.js).
+// It ranks a route in by the evidence that actually exists — a note the
+// recruiter wrote, a candidate who works there now, a bare CRM name, or
+// nothing — and only the first of those is ever allowed to read as warm.
