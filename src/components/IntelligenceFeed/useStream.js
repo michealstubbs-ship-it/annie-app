@@ -23,6 +23,9 @@ export function useStream({ user }) {
   const [signals, setSignals] = useState([])
   const [contacts, setContacts] = useState([])
   const [candidates, setCandidates] = useState([])
+  // Only used to give a drafted approach the recruiter's own sectors, markets
+  // and writing style. Loaded once, never blocks the stream.
+  const [onboarding, setOnboarding] = useState(null)
   const [credits, setCredits] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -34,15 +37,17 @@ export function useStream({ user }) {
       // Contacts and candidates are team-scoped by RLS and deliberately not
       // filtered by user_id — a colleague's contact at the target company is
       // still a way in. Signals are personal (see data/signals.js's header).
-      const [signalRows, contactRes, candidateRows] = await Promise.all([
+      const [signalRows, contactRes, candidateRows, onboardingRes] = await Promise.all([
         listActiveSignals(user.id),
         supabase.from('contacts').select('id, name, company, title, email, linkedin_url, notes, last_contacted').limit(1000),
         listCandidatesForMatching(user.id),
+        supabase.from('onboarding').select('sectors, functions, locations, tone, writing_style').eq('user_id', user.id).maybeSingle(),
       ])
       if (contactRes.error) throw contactRes.error
       setSignals(signalRows || [])
       setContacts(contactRes.data || [])
       setCandidates(candidateRows || [])
+      setOnboarding(onboardingRes?.data || null)
     } catch (err) {
       setError(err.message || 'Could not load your stream.')
     } finally {
@@ -133,5 +138,20 @@ export function useStream({ user }) {
     if (result?.credits && Number.isFinite(result.credits.limit)) setCredits(result.credits)
   }, [patchSignal])
 
-  return { items, counts, credits, loading, error, setError, refresh: load, setState, markDone, dismiss, markSeen, applyResolvedContact }
+  // A note just logged against a contact. Patching contacts locally is what
+  // moves the card from "In CRM" to "Spoken to" immediately — the whole point
+  // of putting the note field on the card in the first place.
+  const applyContactLogged = useCallback((contactId, patch) => {
+    setContacts(prev => prev.map(c => (c.id === contactId ? { ...c, ...patch } : c)))
+  }, [])
+
+  // A contact just saved from a resolved Apollo lookup. Adding it locally means
+  // every other card at that company drops from cold to a real rung without a
+  // reload — and without spending the credit again.
+  const applyContactSaved = useCallback((contact) => {
+    if (!contact?.id) return
+    setContacts(prev => (prev.some(c => c.id === contact.id) ? prev : [...prev, contact]))
+  }, [])
+
+  return { items, counts, credits, loading, error, setError, onboarding, refresh: load, setState, markDone, dismiss, markSeen, applyResolvedContact, applyContactLogged, applyContactSaved }
 }

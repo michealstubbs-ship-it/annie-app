@@ -2,6 +2,8 @@ import { useState } from 'react'
 import CompanyLogo from '../CompanyLogo'
 import WayInPanel from './WayInPanel'
 import ContactLookup from './ContactLookup'
+import LogNote from './LogNote'
+import DraftPanel from './DraftPanel'
 import { SIGNAL_TYPE_META } from '../../lib/signalTypes'
 import { STATE_NEW, STATE_WORKING, STATE_PARKED } from '../../lib/stream/buildStream'
 
@@ -22,7 +24,7 @@ const STATES = [
   { key: STATE_PARKED, label: 'Park' },
 ]
 
-export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen, onResolved }) {
+export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen, onResolved, onContactLogged, onContactSaved, userId, profile, onboarding }) {
   const [open, setOpen] = useState(false)
   const s = item.signal
   const meta = SIGNAL_TYPE_META[s.signal_type] || { label: s.signal_type, icon: '📌' }
@@ -111,7 +113,24 @@ export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen
 
       <WayInPanel wayIn={item.wayIn} companyName={s.company_name}>
         <div className="flex gap-2 flex-wrap mt-3 items-center">
-          <ContactLookup item={item} onResolved={onResolved} linkedinRoute={item.linkedinRoute} />
+          <ContactLookup
+            item={item}
+            onResolved={onResolved}
+            linkedinRoute={item.linkedinRoute}
+            userId={userId}
+            onSaved={onContactSaved}
+          />
+
+          {/* Written on request, never in advance. The old page ran an AI copy
+              pass across every item before it could render, paying to write an
+              approach for leads nobody opened. */}
+          <DraftPanel item={item} profile={profile} onboarding={onboarding} />
+
+          {/* The only thing in the product that creates rung 1 — see LogNote's
+              own header. Offered wherever there is a real person on the card. */}
+          {item.wayIn.person?.id && item.wayIn.kind !== 'candidate' && (
+            <LogNote contact={item.wayIn.person} onLogged={onContactLogged} />
+          )}
 
           {item.linkedinRoute && (
             <a

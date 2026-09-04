@@ -1657,7 +1657,11 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase,
         contact_title: result?.title || null,
         contact_linkedin_url: result?.linkedin_url || null,
         contact_email: result?.email || null,
-        contact_verified: !!result,
+        // A partial identity (first name plus a profile, no confirmed surname)
+        // is a real Apollo match and a real way in, but it is NOT a verified
+        // person and must never wear that badge. CLAUDE.md: contact_verified
+        // only ever from a confirmed match.
+        contact_verified: !!result && !result.partialIdentity,
         checked_at: new Date().toISOString(),
       }, { onConflict: 'company_name_key,title_key' })
       if (error) console.error(`[scanShared] contact cache write failed for "${company}" (${titleKey}):`, error.message)
@@ -1793,6 +1797,10 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
     }
 
     let sawIndeterminate = false
+    // The best incomplete record seen: a real first name plus a LinkedIn URL
+    // the reveal was billed for. Kept so a company whose people all come back
+    // last-name-less still hands over a route in rather than nothing.
+    let partial = null
     for (const p of candidates.slice(0, MAX_REVEAL_ATTEMPTS)) {
       const revealed = await revealApolloPerson(apolloKey, p.id, supabase, userId, caps, `"${company}"/"${p.first_name}"`)
       if (revealed?.capBlocked || revealed?.failed) {
@@ -1807,6 +1815,8 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
       const lastName = revealed.last_name
       if (!firstName || !lastName) {
         console.log(`[scanShared] verifyContact: reveal for "${company}"/"${p.first_name}" returned no usable last name — trying the next candidate rather than showing a first-name-only record`)
+        const linkedin = revealed.linkedin_url || p.linkedin_url
+        if (linkedin && !partial) partial = { first_name: firstName, title: revealed.title || p.title || '', linkedin_url: linkedin }
         continue
       }
       return {
@@ -1820,9 +1830,30 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
       }
     }
 
-    // Everyone we tried came back unusable. If any attempt was cap-blocked or
-    // errored we cannot conclude anything; otherwise Apollo genuinely has
-    // nothing complete for this company/role.
+    // Everyone we tried came back unusable as a full record. Before giving up:
+    // if one of them DID come back with a first name and a LinkedIn URL, that
+    // was paid for and it is still a way in. Michael, 2026-09-04: "always give
+    // a LinkedIn profile."
+    //
+    // The old code returned null here and discarded it. The bar for a NAMED
+    // contact is deliberately unchanged — a first-name-only record must never
+    // be presented as a verified person, and this partial is flagged so
+    // callers can offer the profile without claiming the identity.
+    if (partial) {
+      return {
+        contact: {
+          name: partial.first_name,
+          title: partial.title || '',
+          linkedin_url: partial.linkedin_url,
+          email: null,
+          // Not a confirmed identity: first name plus a profile, nothing more.
+          // Never write contact_verified true off the back of this.
+          partialIdentity: true,
+        },
+        conclusive: !sawIndeterminate,
+      }
+    }
+
     return { contact: null, conclusive: !sawIndeterminate }
   } catch (err) {
     console.error(`[scanShared] verifyContact failed for "${company}":`, err.message)

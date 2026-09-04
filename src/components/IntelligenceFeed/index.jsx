@@ -34,8 +34,8 @@ const VIEWS = [
 ]
 
 export default function IntelligenceFeed() {
-  const { user } = useAuth()
-  const { items, counts, credits, loading, error, setState, markDone, dismiss, markSeen, applyResolvedContact } = useStream({ user })
+  const { user, profile } = useAuth()
+  const { items, counts, credits, loading, error, onboarding, setState, markDone, dismiss, markSeen, applyResolvedContact, applyContactLogged, applyContactSaved } = useStream({ user })
   const [view, setView] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
 
@@ -150,11 +150,16 @@ export default function IntelligenceFeed() {
             <StreamItem
               key={item.id}
               item={item}
+              userId={user?.id}
+              profile={profile}
+              onboarding={onboarding}
               onSetState={setState}
               onDone={markDone}
               onDismiss={dismiss}
               onSeen={markSeen}
               onResolved={applyResolvedContact}
+              onContactLogged={applyContactLogged}
+              onContactSaved={applyContactSaved}
             />
           ))}
         </div>

@@ -4003,3 +4003,69 @@ describe('buildEnrichedSignalRow — contacts are opt-in at scan time', () => {
     vi.unstubAllGlobals()
   })
 })
+
+// Michael, 2026-09-04: "always give a LinkedIn profile." Apollo bills for a
+// reveal the moment it matches a real person, and the old code then threw the
+// whole record away whenever that person came back without a surname —
+// discarding a LinkedIn URL it had just paid two credits for.
+describe('verifyContact — a paid-for LinkedIn profile is never discarded', () => {
+  it('keeps the profile when every candidate comes back without a surname, flagged as a partial identity', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      const body = JSON.parse(opts.body)
+      if (url.includes('mixed_people/api_search')) {
+        return { ok: true, json: async () => ({ people: [{ id: 'p1', first_name: 'Rehman', has_email: true }] }) }
+      }
+      return {
+        ok: true,
+        json: async () => ({ person: { id: body.id, match_confidence: 'high', first_name: 'Rehman', last_name: null, title: 'Group CFO', linkedin_url: 'https://www.linkedin.com/in/rehman' } }),
+      }
+    }))
+    const { supabase, upsertCalls } = makeMockSupabase()
+    const result = await verifyContact('apollo-key', 'ALAS Emirates Ready Mix', ['CFO'], supabase, 'org_1', null, 'u1')
+
+    expect(result.linkedin_url).toBe('https://www.linkedin.com/in/rehman')
+    expect(result.name).toBe('Rehman')
+    expect(result.partialIdentity).toBe(true)
+
+    // A real Apollo match and a real way in — but NOT a verified person, and it
+    // must never wear that badge (CLAUDE.md).
+    expect(upsertCalls[0].contact_verified).toBe(false)
+    expect(upsertCalls[0].contact_linkedin_url).toBe('https://www.linkedin.com/in/rehman')
+    vi.unstubAllGlobals()
+  })
+
+  it('still prefers a complete record over a partial one when both are available', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      const body = JSON.parse(opts.body)
+      if (url.includes('mixed_people/api_search')) {
+        return { ok: true, json: async () => ({ people: [
+          { id: 'partial', first_name: 'Rehman', has_email: true },
+          { id: 'complete', first_name: 'Dana', has_email: true },
+        ] }) }
+      }
+      if (body.id === 'partial') {
+        return { ok: true, json: async () => ({ person: { id: 'partial', match_confidence: 'high', first_name: 'Rehman', last_name: null, linkedin_url: 'https://www.linkedin.com/in/rehman' } }) }
+      }
+      return { ok: true, json: async () => ({ person: { id: 'complete', match_confidence: 'high', first_name: 'Dana', last_name: 'Riaz', title: 'CFO' } }) }
+    }))
+    const { supabase, upsertCalls } = makeMockSupabase()
+    const result = await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_1', null, 'u1')
+    expect(result.name).toBe('Dana Riaz')
+    expect(result.partialIdentity).toBeUndefined()
+    expect(upsertCalls[0].contact_verified).toBe(true)
+    vi.unstubAllGlobals()
+  })
+
+  it('returns nothing at all when there is no profile to fall back on either', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_people/api_search')) {
+        return { ok: true, json: async () => ({ people: [{ id: 'p1', first_name: 'Rehman', has_email: false }] }) }
+      }
+      return { ok: true, json: async () => ({ person: { id: 'p1', match_confidence: 'high', first_name: 'Rehman', last_name: null } }) }
+    }))
+    const { supabase } = makeMockSupabase()
+    const result = await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_1', null, 'u1')
+    expect(result).toBeNull()
+    vi.unstubAllGlobals()
+  })
+})

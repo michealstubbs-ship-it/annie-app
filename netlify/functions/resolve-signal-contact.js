@@ -160,7 +160,10 @@ export default async (req, context) => {
         contact_title: contact?.title || null,
         contact_linkedin_url: contact?.linkedin_url || null,
         contact_email: contact?.email || null,
-        contact_verified: !!contact,
+        // See verifyContact in scanShared.js: a partial identity (first name
+        // plus a LinkedIn profile, no confirmed surname) is a genuine Apollo
+        // match and a usable route in, but never a verified person.
+        contact_verified: !!contact && !contact.partialIdentity,
         contact_candidates: contactCandidates.length ? contactCandidates : null,
       })
       .eq('id', signalId)
@@ -183,7 +186,7 @@ export default async (req, context) => {
       found: true,
       charged: true,
       credits: updatedCredits,
-      contact: contact ? { name: contact.name, title: contact.title, linkedin_url: contact.linkedin_url, email: contact.email } : null,
+      contact: contact ? { name: contact.name, title: contact.title, linkedin_url: contact.linkedin_url, email: contact.email, partialIdentity: !!contact.partialIdentity } : null,
       contactCandidates: contactCandidates.length ? contactCandidates : null,
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })
   } catch (err) {

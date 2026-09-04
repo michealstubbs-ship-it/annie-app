@@ -24,7 +24,10 @@ test.describe('Existing onboarded user login', () => {
     await test.step('Sidebar renders every expected nav section', async () => {
       const nav = page.locator('nav')
       for (const label of [
-        'Overview', "Today's Actions", 'Intelligence Feed', 'Contacts', 'Companies',
+        // 2026-09-04: "Today's Actions" retired into the Intelligence Feed.
+        // One stream now — the two pages read the same table and were divided
+        // only by a contact gate that hid 338 of 446 BD signals a week.
+        'Overview', 'Intelligence Feed', 'Contacts', 'Companies',
         'BD Pipeline', 'Meetings', 'Tasks', 'Ask Annie', 'Jobs & Mandates', 'Candidates',
         'Billing', 'Settings',
       ]) {
@@ -32,6 +35,8 @@ test.describe('Existing onboarded user login', () => {
       }
       // Owner fixture is not an admin — Insights must not appear in nav.
       await expect(nav.getByText('Insights', { exact: true })).toHaveCount(0)
+      // The retired page must not linger in the nav either.
+      await expect(nav.getByText("Today's Actions", { exact: true })).toHaveCount(0)
     })
 
     await test.step('owner profile identity shows in the Sidebar footer', async () => {

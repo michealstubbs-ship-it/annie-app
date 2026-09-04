@@ -16,11 +16,13 @@
 // which also means the number in the meter is "contacts", not "attempts".
 import { useState } from 'react'
 import { resolveSignalContact } from '../../lib/resolveSignalContact'
+import { saveResolvedContact } from '../../lib/stream/logContact'
 
-export default function ContactLookup({ item, onResolved, linkedinRoute }) {
+export default function ContactLookup({ item, onResolved, linkedinRoute, userId, onSaved }) {
   const [status, setStatus] = useState('idle') // idle | searching | none | capped | error
   const [result, setResult] = useState(null)
   const [message, setMessage] = useState(null)
+  const [saveState, setSaveState] = useState('idle') // idle | saving | saved | error
 
   const s = item.signal
   const existing = s.contact_verified && s.contact_name
@@ -52,6 +54,20 @@ export default function ContactLookup({ item, onResolved, linkedinRoute }) {
     setStatus('none')
   }
 
+  // Saving a resolved contact into the CRM is what stops the same credit ever
+  // being spent on this company again — the next signal there arrives already
+  // on the ladder instead of cold.
+  async function save() {
+    setSaveState('saving')
+    const { data, error } = await saveResolvedContact({ contact: shown, companyName: s.company_name, userId })
+    if (error) {
+      setSaveState('error')
+      return
+    }
+    setSaveState('saved')
+    onSaved?.(data)
+  }
+
   if (shown) {
     return (
       <div className="mt-3 bg-white border border-gray-200 rounded-lg px-3.5 py-3">
@@ -79,7 +95,16 @@ export default function ContactLookup({ item, onResolved, linkedinRoute }) {
             <a className="text-gold-ink font-medium hover:underline" href={shown.linkedin_url} target="_blank" rel="noopener noreferrer">profile</a>
           </div>
         )}
-        {!shown.email && (
+        {shown.partialIdentity && (
+          // Apollo billed for this reveal but returned no surname. The old
+          // pipeline threw the whole record away at that point, discarding the
+          // LinkedIn URL it had just paid for. Kept now — but it is a first
+          // name and a profile, not a confirmed identity, and the copy says so.
+          <p className="text-[12px] text-amber-700 mt-2">
+            Apollo confirmed a real person here but not their full name. First name and profile only — check the profile before you use it.
+          </p>
+        )}
+        {!shown.email && !shown.partialIdentity && (
           // The verifyContact fix, surfaced. The scan pipeline used to throw
           // this whole record away when the reveal returned no last name,
           // discarding the LinkedIn URL it had just paid for.
@@ -87,6 +112,21 @@ export default function ContactLookup({ item, onResolved, linkedinRoute }) {
             Apollo matched the person but holds no address. The name and profile are still a way in.
           </p>
         )}
+
+        <div className="flex items-center gap-2 mt-2.5 pt-2.5 border-t border-gray-100">
+          <button
+            type="button"
+            onClick={save}
+            disabled={saveState === 'saving' || saveState === 'saved'}
+            className="text-[12px] font-bold px-2.5 py-1 rounded-md bg-white border border-gray-200 text-navy hover:bg-page-bg transition-colors disabled:opacity-60"
+          >
+            {saveState === 'saved' ? 'Saved to Contacts' : saveState === 'saving' ? 'Saving…' : 'Save to Contacts'}
+          </button>
+          {saveState === 'error' && <span className="text-[12px] text-red-600">Could not save that.</span>}
+          {saveState === 'saved' && (
+            <span className="text-[11px] text-gray-400">Next signal at {s.company_name} will already show them.</span>
+          )}
+        </div>
       </div>
     )
   }
