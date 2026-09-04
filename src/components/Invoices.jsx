@@ -7,7 +7,6 @@ import { useMarketCurrency } from '../lib/useMarketCurrency'
 import InvoiceFormModal from './InvoiceFormModal'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBanner from './ErrorBanner'
-import InfoTip from './InfoTip'
 import Spinner from './Spinner'
 
 const STATUS_LABEL = { draft: 'Draft', sent: 'Sent', paid: 'Paid', void: 'Void' }
@@ -396,7 +395,6 @@ export default function Invoices() {
         <div>
           <h1 className="text-3xl font-bold text-navy flex items-center">
             Invoices
-            <InfoTip text="Generate a professional placement-fee invoice naming the role and candidate placed, with your own bank details on it. Annie never collects payment itself — your client pays you directly by bank transfer, and you mark it paid yourself once it lands." />
           </h1>
           <p className="text-gray-500 mt-1">
             {currencyTotals.map((c, i) => (
@@ -406,6 +404,7 @@ export default function Invoices() {
               </span>
             ))}
           </p>
+          <p className="text-gray-400 text-xs mt-1">Annie doesn't collect payment. Your client pays you directly by bank transfer, and you mark it paid yourself once it lands.</p>
         </div>
         {/* 2026-08-31 audit fix, cosmetic: every other page's primary create
             button follows "+ Add {Entity}" in Title Case (Contact, Job,

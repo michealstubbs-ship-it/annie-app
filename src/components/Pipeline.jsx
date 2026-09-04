@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { listDeals, createDeal, updateDeal, deleteDeal } from '../lib/data/deals'
 import { listJobsForPipelineSummary } from '../lib/data/jobs'
-import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
@@ -200,7 +199,6 @@ export default function Pipeline() {
         <div>
           <h1 className="text-3xl font-bold text-navy flex items-center">
             BD Pipeline
-            <InfoTip text="Track every deal from first contact to signed client here. Move deals through stages as conversations progress, and set a probability to estimate what's likely to close." />
           </h1>
           <p className="text-gray-500 mt-1">{deals.length} deals tracked</p>
         </div>

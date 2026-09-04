@@ -9,7 +9,6 @@ import { listJobsMinimal } from '../lib/data/jobs'
 import { listCompanyDocuments, createCompanyDocument, deleteCompanyDocument } from '../lib/data/companyDocuments'
 import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
 import { listIndustries, searchCompanies, filterCompaniesByIndustry, sortCompanies, QUOTA_BAND_LABEL, QUOTA_BAND_COLOR, quotaDeadlineBadge } from '../lib/companiesView'
-import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
 import ContactDetailModal from './ContactDetailModal'
 import JobFormModal from './JobFormModal'
@@ -285,7 +284,6 @@ export default function Companies() {
         <div>
           <h1 className="text-3xl font-bold text-navy flex items-center">
             Companies
-            <InfoTip text="The single source of truth for every client. Contacts and jobs attach to a company from a dropdown, so the same client never gets added twice." />
           </h1>
           <p className="text-gray-500 mt-1">{companies.length} companies</p>
         </div>

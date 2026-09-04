@@ -3,7 +3,6 @@ import { useAuth } from '../contexts/AuthContext'
 import { listTasksWithLinks, createTask, updateTask, deleteTask } from '../lib/data/tasks'
 import { listContactsMinimal } from '../lib/data/contacts'
 import { listCandidatesMinimal } from '../lib/data/candidates'
-import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
@@ -176,7 +175,6 @@ export default function Tasks() {
         <div>
           <h1 className="text-3xl font-bold text-navy flex items-center">
             Tasks
-            <InfoTip text="Keep track of follow-ups and to-dos, optionally linked to a contact or candidate, so nothing falls through the cracks." />
           </h1>
           <p className="text-gray-500 mt-1">{totalOpen} open{overdue.length > 0 ? `, ${overdue.length} overdue` : ''}</p>
         </div>

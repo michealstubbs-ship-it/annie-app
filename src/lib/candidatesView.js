@@ -10,14 +10,19 @@
 // Candidates.jsx) so there's exactly one source of truth for the pipeline
 // stage list, same reasoning as every other lib/*.js extraction in this
 // codebase.
+//
+// 2026-09-07, Michael, real report, looking at a candidate's stage-progress
+// checklist: "there is too many options here. He can get rid of sourced,
+// screening and presented." Dropped from the working funnel down to four
+// stages, Shortlisted, Interviewing, Offer, Placed, plus the two terminal
+// outcomes Rejected/Withdrawn (unchanged, still excluded from MAIN_STAGES
+// below). See supabase-migrations/2026-09-07-simplify-pipeline-stages.sql
+// for how existing 'sourced'/'screening'/'presented' rows were remapped.
 
-export const STAGES = ['sourced', 'screening', 'shortlisted', 'presented', 'interviewing', 'offer', 'placed', 'rejected', 'withdrawn']
+export const STAGES = ['shortlisted', 'interviewing', 'offer', 'placed', 'rejected', 'withdrawn']
 
 export const STAGE_LABEL = {
-  sourced: 'Sourced',
-  screening: 'Screening',
   shortlisted: 'Shortlisted',
-  presented: 'Presented',
   interviewing: 'Interviewing',
   offer: 'Offer',
   placed: 'Placed',
@@ -27,13 +32,10 @@ export const STAGE_LABEL = {
 
 // 2026-09-03: moved here from Candidates.jsx (previously defined inline,
 // only used there) so the Job Pipeline board's cards/columns can share the
-// exact same 9-stage colour set instead of a second, driftable copy —
-// same "one source of truth" reasoning as STAGES/STAGE_LABEL above.
+// exact same stage colour set instead of a second, driftable copy, same
+// "one source of truth" reasoning as STAGES/STAGE_LABEL above.
 export const STAGE_COLOR = {
-  sourced: 'bg-slate-100 text-slate-600',
-  screening: 'bg-blue-100 text-blue-700',
   shortlisted: 'bg-purple-100 text-purple-700',
-  presented: 'bg-amber-100 text-amber-700',
   interviewing: 'bg-orange-100 text-orange-700',
   offer: 'bg-emerald-100 text-emerald-700',
   placed: 'bg-yellow-100 text-gold',

@@ -1,6 +1,7 @@
 import { supabase } from '../supabase'
 import { updateCandidate } from './candidates'
 import { createMeeting } from './meetings'
+import { markJobFilledIfOpen } from './jobs'
 
 // Same hand-rolled "today" bounds Overview.jsx already uses for its own
 // meetings query — no date-fns dependency in this project, so this matches
@@ -95,6 +96,16 @@ export async function updatePipelineLinkStage(linkId, newStage, { isPrimary, can
     if (candError) throw candError
   }
 
+  // 2026-09-07, gap-analysis batch 8: the pipeline board is very likely the
+  // more common place a placement actually happens (a drag to the Placed
+  // column, or the detail panel's "Advance stage" button), so this needs
+  // the same job-status side effect Candidates.jsx's own save() triggers
+  // when its status field is edited directly. See markJobFilledIfOpen's
+  // own header comment for the full reasoning.
+  if (newStage === 'placed') {
+    await markJobFilledIfOpen(data.job_id)
+  }
+
   return data
 }
 
@@ -158,6 +169,21 @@ export async function countPipelinesPerCandidate(candidateIds) {
 // listCandidatesMinimal/listCandidatesForInvoicePicker in candidates.js.
 export async function listCandidatesForPipelinePicker() {
   const { data, error } = await supabase.from('candidates').select('id, name, role, company').order('name')
+  if (error) throw error
+  return data || []
+}
+
+// Jobs.jsx's own "Pipeline (N)" badge. 2026-09-07, gap-analysis batch 8:
+// replaces the old listCandidateJobLinks(candidates.job_id) count, which
+// only ever reflected a candidate's ONE primary job and silently
+// undercounted the moment a candidate got submitted to a second job from
+// the pipeline board's own "add candidate to pipeline" picker
+// (createPipelineLink, is_primary: false, above). Clicking this exact
+// badge opens JobPipeline.jsx's own board, which already reads every row
+// (primary AND secondary) via listPipelineForJob, which keeps the two
+// counts honest with each other.
+export async function listAllPipelineLinkCounts() {
+  const { data, error } = await supabase.from('candidate_job_links').select('job_id')
   if (error) throw error
   return data || []
 }

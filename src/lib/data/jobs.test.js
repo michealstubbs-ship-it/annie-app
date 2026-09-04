@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
 
-import { listJobsMinimal, listActiveJobsForPicker, listJobsWithCompanies, listJobsForCompany, listJobsForPipelineSummary, getJob, createJob, updateJob, deleteJob } from './jobs.js'
+import { listJobsMinimal, listActiveJobsForPicker, listJobsWithCompanies, listJobsForCompany, listJobsForPipelineSummary, getJob, createJob, updateJob, deleteJob, markJobFilledIfOpen } from './jobs.js'
 
 function makeBuilder(result) {
   const builder = {}
@@ -17,6 +17,7 @@ function makeBuilder(result) {
     update: vi.fn(chain),
     delete: vi.fn(chain),
     single: vi.fn(chain),
+    maybeSingle: vi.fn(chain),
     then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
   })
   return builder
@@ -162,5 +163,64 @@ describe('deleteJob', () => {
     await deleteJob('job1')
     expect(builder.delete).toHaveBeenCalled()
     expect(builder.eq).toHaveBeenCalledWith('id', 'job1')
+  })
+})
+
+// 2026-09-07, gap-analysis batch 8: a candidate marked Placed used to
+// never flip their own job to 'filled', anywhere. See this function's own
+// header comment in jobs.js for the full reasoning and both real call
+// sites (Candidates.jsx's own status field, and the pipeline board's
+// updatePipelineLinkStage in pipelineLinks.js).
+describe('markJobFilledIfOpen', () => {
+  it('does nothing, makes no Supabase call at all, when jobId is falsy', async () => {
+    await markJobFilledIfOpen(null)
+    expect(fromMock).not.toHaveBeenCalled()
+  })
+
+  it('flips an active job to filled', async () => {
+    builder = makeBuilder({ data: { id: 'job1', status: 'active' }, error: null })
+    fromMock.mockReturnValue(builder)
+    await markJobFilledIfOpen('job1')
+    expect(fromMock).toHaveBeenCalledTimes(2)
+    expect(builder.select).toHaveBeenCalledWith('id, status')
+    expect(builder.eq).toHaveBeenCalledWith('id', 'job1')
+    expect(builder.update).toHaveBeenCalledWith({ status: 'filled' })
+  })
+
+  it('flips an onhold job to filled too', async () => {
+    builder = makeBuilder({ data: { id: 'job1', status: 'onhold' }, error: null })
+    fromMock.mockReturnValue(builder)
+    await markJobFilledIfOpen('job1')
+    expect(builder.update).toHaveBeenCalledWith({ status: 'filled' })
+  })
+
+  it('is a no-op for a job that is already filled, no update call', async () => {
+    builder = makeBuilder({ data: { id: 'job1', status: 'filled' }, error: null })
+    fromMock.mockReturnValue(builder)
+    await markJobFilledIfOpen('job1')
+    expect(fromMock).toHaveBeenCalledTimes(1)
+    expect(builder.update).not.toHaveBeenCalled()
+  })
+
+  it('never overwrites a job a recruiter separately marked lost', async () => {
+    builder = makeBuilder({ data: { id: 'job1', status: 'lost' }, error: null })
+    fromMock.mockReturnValue(builder)
+    await markJobFilledIfOpen('job1')
+    expect(fromMock).toHaveBeenCalledTimes(1)
+    expect(builder.update).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op when the job cannot be found', async () => {
+    builder = makeBuilder({ data: null, error: null })
+    fromMock.mockReturnValue(builder)
+    await markJobFilledIfOpen('job1')
+    expect(fromMock).toHaveBeenCalledTimes(1)
+    expect(builder.update).not.toHaveBeenCalled()
+  })
+
+  it('throws when the fetch itself errors', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(markJobFilledIfOpen('job1')).rejects.toEqual({ message: 'db down' })
   })
 })

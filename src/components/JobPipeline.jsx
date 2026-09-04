@@ -11,6 +11,7 @@ import {
   countPipelinesPerCandidate,
   listCandidatesForPipelinePicker,
 } from '../lib/data/pipelineLinks'
+import { createCandidate } from '../lib/data/candidates'
 import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
 import { reassignOwner } from '../lib/data/ownership'
 import { STAGES, STAGE_LABEL, STAGE_COLOR } from '../lib/candidatesView'
@@ -20,7 +21,6 @@ import OwnerFilter from './OwnerFilter'
 import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
 import Modal from './Modal'
-import InfoTip from './InfoTip'
 
 // 2026-09-03, Michael: "we got distracted, you have to go back and build
 // the whole job mock you created" — the real build behind
@@ -121,10 +121,44 @@ export default function JobPipeline() {
   const [ownerSaving, setOwnerSaving] = useState(false)
   const [detailError, setDetailError] = useState('')
 
+  // 2026-09-07, Michael, real report, looking at the pipeline stage
+  // checklist: "when you move to interviewing, it should have a pop up
+  // where you set the interview date and time, and as we may have coded
+  // already that will show up in todays schedule on overview." The
+  // scheduling itself, and the Today's Schedule wiring, already existed
+  // (updatePipelineLinkInterview creates a `meetings` row for a today-dated
+  // interview, see its own header in pipelineLinks.js). It just only ever
+  // ran from inside the detail side panel, which nothing prompted a
+  // recruiter to open right after a move. This popup is the missing
+  // prompt: it fires the instant a single card lands on Interviewing (drag
+  // a card there, or "Advance stage" from the detail panel), reusing the
+  // same updatePipelineLinkInterview call the detail panel's own interview
+  // form already uses. Deliberately NOT fired from bulkAdvance (see its
+  // own `{ silent: true }` call below). Popping one modal per candidate
+  // in a multi-select bulk move would just be a wall of interruptions; a
+  // bulk-moved card still lands on the board showing "Not scheduled" so
+  // nothing is silently lost, it's just set from the card/detail panel
+  // afterward instead.
+  const [scheduleModalLink, setScheduleModalLink] = useState(null)
+  const [scheduleForm, setScheduleForm] = useState({ round: '1', at: '' })
+  const [scheduleSaving, setScheduleSaving] = useState(false)
+  const [scheduleError, setScheduleError] = useState('')
+
   const [addOpen, setAddOpen] = useState(false)
   const [addSearch, setAddSearch] = useState('')
   const [addCandidates, setAddCandidates] = useState(null) // null = not loaded yet
   const [addSavingId, setAddSavingId] = useState(null)
+
+  // 2026-09-07, Michael, real report: "when you have an option to add
+  // candidate to pipeline, you should have the option to add a candidate to
+  // the system and the job at the same time. Not only the option to add a
+  // candidate that is already on the system." Nested inside the same
+  // "Add candidate to pipeline" modal, same "pick existing, or add new"
+  // shape as CompanySelect.jsx's own "+ Add new company..." pattern.
+  const [addCreateOpen, setAddCreateOpen] = useState(false)
+  const [newCandForm, setNewCandForm] = useState({ name: '', role: '', company: '', email: '', phone: '' })
+  const [newCandSaving, setNewCandSaving] = useState(false)
+  const [newCandError, setNewCandError] = useState('')
 
   const [candViewData, setCandViewData] = useState({}) // candidate_id -> other links (loaded lazily)
   const [candViewLoading, setCandViewLoading] = useState(false)
@@ -179,12 +213,17 @@ export default function JobPipeline() {
 
   // ---- stage moves (drag-and-drop + Advance stage) ----
 
-  const moveLinkToStage = useCallback(async (link, newStage) => {
+  const moveLinkToStage = useCallback(async (link, newStage, { silent } = {}) => {
     if (link.stage === newStage) return
     const stampedAt = new Date().toISOString()
     setLinks(prev => prev.map(l => (l.id === link.id ? { ...l, stage: newStage, stage_changed_at: stampedAt } : l)))
     try {
       await updatePipelineLinkStage(link.id, newStage, { isPrimary: link.is_primary, candidateId: link.candidate_id })
+      if (newStage === 'interviewing' && !silent) {
+        setScheduleForm({ round: '1', at: '' })
+        setScheduleError('')
+        setScheduleModalLink({ ...link, stage: newStage, stage_changed_at: stampedAt })
+      }
     } catch (err) {
       setListError(err.message || 'Could not move this candidate. Please try again.')
       await load() // revert to the real server state rather than leave an unsaved optimistic move on screen
@@ -239,7 +278,12 @@ export default function JobPipeline() {
     const targets = [...selected].map(id => links.find(l => l.id === id)).filter(Boolean)
     await Promise.all(targets.map(link => {
       const next = nextStage(link.stage)
-      return next ? moveLinkToStage(link, next) : Promise.resolve()
+      // silent: a bulk move never pops the schedule-interview modal (see
+      // scheduleModalLink's own header comment above). One popup per
+      // candidate in a multi-select move would just be a wall of
+      // interruptions, and the board card itself already shows "Not
+      // scheduled" for anyone who lands on Interviewing without a time set.
+      return next ? moveLinkToStage(link, next, { silent: true }) : Promise.resolve()
     }))
     clearSelection()
   }
@@ -294,6 +338,34 @@ export default function JobPipeline() {
       setDetailError(err.message || 'Could not save the interview time.')
     } finally {
       setInterviewSaving(false)
+    }
+  }
+
+  // ---- schedule-interview popup (fires right after a single card lands on
+  // Interviewing, see scheduleModalLink's own header comment above) ----
+
+  function closeScheduleModal() { setScheduleModalLink(null); setScheduleError('') }
+
+  async function saveScheduleModal() {
+    if (!scheduleModalLink) return
+    setScheduleSaving(true)
+    setScheduleError('')
+    try {
+      const atIso = scheduleForm.at ? new Date(scheduleForm.at).toISOString() : null
+      await updatePipelineLinkInterview(scheduleModalLink.id, {
+        round: scheduleForm.round ? Number(scheduleForm.round) : null,
+        at: atIso,
+        candidateId: scheduleModalLink.candidate_id,
+        candidateName: scheduleModalLink.candidates?.name,
+        jobTitle: job?.title,
+        userId: user.id,
+      })
+      setLinks(prev => prev.map(l => (l.id === scheduleModalLink.id ? { ...l, interview_round: scheduleForm.round ? Number(scheduleForm.round) : null, interview_at: atIso } : l)))
+      setScheduleModalLink(null)
+    } catch (err) {
+      setScheduleError(err.message || 'Could not save the interview time.')
+    } finally {
+      setScheduleSaving(false)
     }
   }
 
@@ -354,6 +426,53 @@ export default function JobPipeline() {
     }
   }
 
+  function openCreateCandidate() {
+    setNewCandForm({ name: '', role: '', company: '', email: '', phone: '' })
+    setNewCandError('')
+    setAddCreateOpen(true)
+  }
+
+  // Sets job_id directly on the new candidate, the same field
+  // Candidates.jsx's own "Job / mandate" picker writes. That's what makes
+  // this their PRIMARY pipeline link, auto-inserted by the
+  // trg_sync_primary_candidate_job_link trigger (see
+  // supabase-migrations/2026-09-03-candidate-job-pipeline-links.sql's own
+  // header), not a second createPipelineLink call. Deliberately NOT the
+  // createPipelineLink path createPipelineLink/addToPipeline above use for
+  // an EXISTING candidate, which inserts a secondary (is_primary: false)
+  // link, and the migration's own comment is explicit that the app must
+  // never write is_primary: true directly, only ever via candidates.job_id
+  // through this trigger. Reloads from the server afterward (`load()`)
+  // rather than constructing a synthetic link locally, since the trigger's
+  // insert happens server-side and this is the simplest way to get back
+  // its real id/stage/stage_changed_at.
+  async function saveNewCandidateToPipeline() {
+    const name = newCandForm.name.trim()
+    if (!name) return setNewCandError('Name is required')
+    setNewCandSaving(true)
+    setNewCandError('')
+    try {
+      const { error: err } = await createCandidate({
+        name,
+        role: newCandForm.role.trim() || null,
+        company: newCandForm.company.trim() || null,
+        email: newCandForm.email.trim() || null,
+        phone: newCandForm.phone.trim() || null,
+        status: 'shortlisted',
+        source: 'Added from job pipeline',
+        job_id: jobId,
+      }, user.id)
+      if (err) throw err
+      setAddCreateOpen(false)
+      setAddOpen(false)
+      await load()
+    } catch (err) {
+      setNewCandError(err.message || 'Could not create this candidate.')
+    } finally {
+      setNewCandSaving(false)
+    }
+  }
+
   // ---- candidate view (multi-pipeline) ----
 
   async function switchToCandidateView() {
@@ -391,7 +510,6 @@ export default function JobPipeline() {
         <div>
           <h1 className="text-2xl font-bold text-navy flex items-center">
             {job.title}
-            <InfoTip text="Every candidate submitted to this job, in one board. Drag a card to move its stage, or open it for interview scheduling, owner reassignment, and activity." />
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             <b className="text-navy font-semibold">{job.companies?.name || 'No company'}</b>
@@ -675,10 +793,21 @@ export default function JobPipeline() {
       {/* ---- add candidate to pipeline ---- */}
       <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add candidate to pipeline" maxWidth="max-w-md">
         <input className="input mb-3" placeholder="Search your candidates…" value={addSearch} onChange={e => setAddSearch(e.target.value)} autoFocus />
+        {/* 2026-09-07, Michael, real report: "when you have an option to add
+            candidate to pipeline, you should have the option to add a
+            candidate to the system and the job at the same time. Not only
+            the option to add a candidate that is already on the system."
+            Same "pick existing, or add new" pattern CompanySelect already
+            established for companies elsewhere in the app, always visible,
+            not just when a search comes up empty, since the recruiter often
+            knows upfront this is a brand-new person, not an existing one. */}
+        <button onClick={openCreateCandidate} className="w-full text-left px-3 py-2 rounded-lg border border-dashed border-gray-300 text-gold-ink font-semibold text-sm hover:border-gold-ink hover:bg-gold/5 mb-2">
+          ＋ Add a new candidate to this pipeline…
+        </button>
         {addCandidates === null ? (
           <div className="flex justify-center py-8"><Spinner /></div>
         ) : addPickerResults.length === 0 ? (
-          <p className="text-sm text-gray-400 py-4 text-center">No matching candidate — everyone matching is already in this pipeline.</p>
+          <p className="text-sm text-gray-400 py-4 text-center">No existing candidate matches, add them as new above.</p>
         ) : (
           <div className="space-y-1 max-h-80 overflow-y-auto">
             {addPickerResults.map(c => (
@@ -697,6 +826,57 @@ export default function JobPipeline() {
             ))}
           </div>
         )}
+      </Modal>
+
+      {/* ---- add a brand-new candidate, straight into this job's pipeline ---- */}
+      <Modal open={addCreateOpen} onClose={() => setAddCreateOpen(false)} title="Add new candidate" maxWidth="max-w-sm">
+        <p className="text-xs text-gray-500 mb-3">This creates a real candidate record in your CRM and submits them to {job.title} at the same time, same as adding them from the Candidates page first.</p>
+        {newCandError && <ErrorBanner>{newCandError}</ErrorBanner>}
+        <div className="space-y-3">
+          <div><label className="label" htmlFor="pipeline-new-cand-name">Name *</label><input id="pipeline-new-cand-name" className="input" value={newCandForm.name} onChange={e => setNewCandForm(p => ({ ...p, name: e.target.value }))} autoFocus /></div>
+          <div><label className="label" htmlFor="pipeline-new-cand-role">Role</label><input id="pipeline-new-cand-role" className="input" value={newCandForm.role} onChange={e => setNewCandForm(p => ({ ...p, role: e.target.value }))} /></div>
+          <div><label className="label" htmlFor="pipeline-new-cand-company">Current company</label><input id="pipeline-new-cand-company" className="input" value={newCandForm.company} onChange={e => setNewCandForm(p => ({ ...p, company: e.target.value }))} /></div>
+          <div className="grid grid-cols-2 gap-2">
+            <div><label className="label" htmlFor="pipeline-new-cand-email">Email</label><input id="pipeline-new-cand-email" type="email" className="input" value={newCandForm.email} onChange={e => setNewCandForm(p => ({ ...p, email: e.target.value }))} /></div>
+            <div><label className="label" htmlFor="pipeline-new-cand-phone">Phone</label><input id="pipeline-new-cand-phone" className="input" value={newCandForm.phone} onChange={e => setNewCandForm(p => ({ ...p, phone: e.target.value }))} /></div>
+          </div>
+        </div>
+        <p className="text-[11px] text-gray-400 mt-2">The rest of their profile, CV, salary expectations, notice period, and so on, can be filled in any time from the Candidates page.</p>
+        <div className="flex gap-3 justify-end mt-5">
+          <button onClick={() => setAddCreateOpen(false)} className="btn-ghost">Cancel</button>
+          <button onClick={saveNewCandidateToPipeline} disabled={newCandSaving} className="btn-primary">{newCandSaving ? 'Adding…' : 'Add to pipeline'}</button>
+        </div>
+      </Modal>
+
+      {/* ---- schedule-interview popup, fires right after a move to Interviewing (see scheduleModalLink's own header comment) ---- */}
+      <Modal
+        open={!!scheduleModalLink}
+        onClose={closeScheduleModal}
+        title={scheduleModalLink?.candidates?.name ? `Schedule interview for ${scheduleModalLink.candidates.name}` : 'Schedule interview'}
+        maxWidth="max-w-sm"
+      >
+        {scheduleError && <ErrorBanner>{scheduleError}</ErrorBanner>}
+        <p className="text-sm text-gray-500 mb-3">
+          {(scheduleModalLink?.candidates?.name?.split(' ')[0]) || 'This candidate'} just moved to Interviewing. Set the date and time now and it'll show up on <b>Today's Schedule</b> the day it happens, or skip this and set it later from the card.
+        </p>
+        <div className="grid grid-cols-2 gap-2 mb-3">
+          <div>
+            <label className="text-[11px] text-gray-400 block mb-1" htmlFor="schedule-modal-round">Round</label>
+            <select id="schedule-modal-round" className="input py-1.5 px-2 text-xs" value={scheduleForm.round} onChange={e => setScheduleForm(p => ({ ...p, round: e.target.value }))}>
+              <option value="1">1st round</option>
+              <option value="2">2nd round</option>
+              <option value="3">3rd round</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] text-gray-400 block mb-1" htmlFor="schedule-modal-at">Date &amp; time</label>
+            <input id="schedule-modal-at" type="datetime-local" className="input py-1.5 px-2 text-xs" value={scheduleForm.at} onChange={e => setScheduleForm(p => ({ ...p, at: e.target.value }))} autoFocus />
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={closeScheduleModal} className="btn-ghost flex-1 justify-center">I'll set this later</button>
+          <button onClick={saveScheduleModal} disabled={scheduleSaving} className="btn-primary flex-1 justify-center">{scheduleSaving ? 'Saving…' : 'Save interview time'}</button>
+        </div>
       </Modal>
     </div>
   )

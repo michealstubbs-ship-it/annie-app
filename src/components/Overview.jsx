@@ -411,7 +411,13 @@ export default function Overview() {
     const onhold = jobs.filter(j => j.status === 'onhold')
     const filled = jobs.filter(j => j.status === 'filled')
     const lost = jobs.filter(j => j.status === 'lost')
-    const pipelineValue = active.reduce((sum, j) => sum + (Number(j.fee_value) || 0), 0)
+    // 2026-09-07, gap-analysis batch 8: this used to sum active jobs only,
+    // while Pipeline.jsx's own "Pipeline Value" (labeled "Fees on your open
+    // Jobs & Mandates") sums active AND onhold, the same underlying
+    // number read two different ways on two different dashboards. Matches
+    // Pipeline.jsx's definition now, and Jobs.jsx's own "open" grouping
+    // (active + onhold together), rather than inventing a third definition.
+    const pipelineValue = active.concat(onhold).reduce((sum, j) => sum + (Number(j.fee_value) || 0), 0)
     const max = Math.max(active.length, onhold.length, filled.length, 1)
     return { active, onhold, filled, lost, pipelineValue, max }
   }, [jobs])
@@ -572,7 +578,7 @@ export default function Overview() {
           than a number that's simply wrong for a second. */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
         <div className="bg-white rounded-xl border border-gray-100 p-4">
-          <div className="text-xs text-gray-400 font-medium mb-1.5">Active pipeline</div>
+          <div className="text-xs text-gray-400 font-medium mb-1.5">Open pipeline</div>
           {loading ? (
             <>
               <div className="h-[22px] w-20 bg-gray-100 rounded animate-pulse" />
@@ -581,7 +587,7 @@ export default function Overview() {
           ) : (
             <>
               <div className="text-[22px] font-bold text-navy tracking-tight">{pipelineCurrencyPrefix}{jobStats.pipelineValue.toLocaleString()}</div>
-              <div className="text-[11px] text-gray-400 mt-1">{jobStats.active.length} active mandate{jobStats.active.length === 1 ? '' : 's'}</div>
+              <div className="text-[11px] text-gray-400 mt-1">{jobStats.active.length + jobStats.onhold.length} open mandate{(jobStats.active.length + jobStats.onhold.length) === 1 ? '' : 's'}</div>
             </>
           )}
         </div>

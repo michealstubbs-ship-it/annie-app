@@ -4,7 +4,6 @@ import { useAuth } from '../contexts/AuthContext'
 import { listContacts, deleteContact } from '../lib/data/contacts'
 import { listTeamMembers } from '../lib/data/teamMembers'
 import { CONTACT_STATUSES, CONTACT_STATUS_LABELS, searchContacts, filterContactsByStatus, sortContacts, groupContactsByStatus } from '../lib/contactsView'
-import InfoTip from './InfoTip'
 import ContactFormModal from './ContactFormModal'
 import ContactDetailModal from './ContactDetailModal'
 import ConfirmDialog from './ConfirmDialog'
@@ -148,7 +147,6 @@ export default function Contacts() {
         <div>
           <h1 className="text-3xl font-bold text-navy flex items-center">
             Contacts
-            <InfoTip text="Hot means at one of your target companies, warm means in your focus sectors, cold means low priority for now. Annie monitors hot and warm contacts for signals." />
           </h1>
           <p className="text-gray-500 mt-1">{contacts.length} contacts in your network</p>
         </div>

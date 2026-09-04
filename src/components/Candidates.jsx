@@ -3,11 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, findCandidateDuplicateByEmail, findDuplicateSubmission, findCandidateIdByExactName } from '../lib/data/candidates'
-import { listActiveJobsForPicker } from '../lib/data/jobs'
+import { listActiveJobsForPicker, markJobFilledIfOpen } from '../lib/data/jobs'
 import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
 import { STAGES, STAGE_LABEL, STAGE_COLOR, searchCandidates, filterCandidatesByStage, sortCandidates, groupCandidatesByStage, VISA_TYPE_LABEL, visaExpiryBadge } from '../lib/candidatesView'
 import { searchCandidatesBoolean } from '../lib/booleanSearch'
-import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import { logSignalOutcome } from '../lib/signalOutcomes'
 import { companiesMatch } from '../lib/companyMatch'
@@ -26,7 +25,7 @@ import { parseCvViaAnnie, triggerBulkCvImport, fetchCvBulkStatus } from '../lib/
 const EMPTY = {
   name: '', role: '', company: '', location: '', industry: '', nationality: '', email: '', phone: '',
   curr_sal: '', curr_sal_currency: '', want_sal: '', want_sal_currency: '', notice_period: '', availability: '', linkedin_url: '',
-  status: 'sourced', source: '', follow_up_date: '', notes: '', job_id: '', add_as_contact: false,
+  status: 'shortlisted', source: '', follow_up_date: '', notes: '', job_id: '', add_as_contact: false,
   // 2026-09-03, Michael's second oversights batch: counter_offer_risk is a
   // recruiter judgment call (no competitor CRM has this as a named field —
   // see counter_offer_risk's own column comment in the migration), and
@@ -253,7 +252,7 @@ export default function Candidates() {
       email: c.email || '', phone: c.phone || '', curr_sal: c.curr_sal || '', curr_sal_currency: c.curr_sal_currency || currencyCode,
       want_sal: c.want_sal || '', want_sal_currency: c.want_sal_currency || currencyCode,
       notice_period: c.notice_period || '', availability: c.availability || '', linkedin_url: c.linkedin_url || '',
-      status: c.status || 'sourced', source: c.source || '', follow_up_date: c.follow_up_date || '', notes: c.notes || '', job_id: c.job_id || '',
+      status: c.status || 'shortlisted', source: c.source || '', follow_up_date: c.follow_up_date || '', notes: c.notes || '', job_id: c.job_id || '',
       add_as_contact: false,
       titles: Array.isArray(c.titles) ? c.titles : [], industries: Array.isArray(c.industries) ? c.industries : [],
       counter_offer_risk: c.counter_offer_risk || '', counter_offer_notes: c.counter_offer_notes || '',
@@ -403,14 +402,28 @@ export default function Candidates() {
     }
   }
 
+  // 2026-09-07, gap-analysis batch 8 ("really make sure everything on
+  // annie is wired up"): editing a candidate's own status field to Placed
+  // used to never touch their job's status at all. See
+  // markJobFilledIfOpen's own header comment in jobs.js for the full
+  // reasoning and the same fix's other call site (the pipeline board's own
+  // drag-to-Placed / Advance stage path, in pipelineLinks.js).
+  async function maybeMarkJobFilled(row, previousStatus) {
+    if (row.status !== 'placed' || previousStatus === 'placed' || !row.job_id) return
+    try {
+      await markJobFilledIfOpen(row.job_id)
+    } catch {
+      // Best-effort, never let this block or fail the actual candidate save.
+    }
+  }
+
   // "Add invoice prompt on candidate placement" — same trigger condition as
   // maybeLogPlacement above (status just flipped to "placed"), but this one
   // surfaces something the recruiter can act on immediately instead of a
-  // silent background log. candidateId is only ever known for an edit
-  // (editId); a brand-new row saved as already-placed has no id back from
-  // createCandidate (it doesn't select() its insert) — the prompt still
-  // fires, InvoiceFormModal's own "Candidate placed" dropdown just won't be
-  // pre-selected, matching the same "best-effort, never block" precedent.
+  // silent background log. candidateId comes from editId for an edit, or
+  // (2026-09-07) the freshly-created row's own id for a brand-new
+  // already-placed candidate, now that createCandidate selects its own
+  // insert back. See that function's own header comment.
   function maybeOfferInvoicePrompt(row, previousStatus, candidateId, candidateName) {
     if (row.status !== 'placed' || previousStatus === 'placed' || !row.company) return
     setPlacementPrompt({ candidateId: candidateId || null, candidateName, company: row.company.trim(), jobId: row.job_id || null })
@@ -550,16 +563,22 @@ export default function Candidates() {
 
       const previousStatus = editId ? candidates.find(c => c.id === editId)?.status : null
 
+      let newCandidateId = null
       if (editId) {
         const { error: err } = await updateCandidate(editId, row)
         if (err) throw err
       } else {
-        const { error: err } = await createCandidate(row, user.id)
+        const { data: created, error: err } = await createCandidate(row, user.id)
         if (err) throw err
+        newCandidateId = created?.id || null
       }
       maybeLogPlacement(row, previousStatus)
+      maybeMarkJobFilled(row, previousStatus)
       maybeAddAsContact({ ...row, add_as_contact: form.add_as_contact })
-      maybeOfferInvoicePrompt(row, previousStatus, editId, row.name)
+      // 2026-09-07: createCandidate now selects its own insert back (see its
+      // own header comment), so a brand-new placed candidate's invoice
+      // prompt can pre-select them too, not just an edit.
+      maybeOfferInvoicePrompt(row, previousStatus, editId || newCandidateId, row.name)
       setDupWarning(null)
       await load()
       setShowModal(false)
@@ -676,7 +695,6 @@ export default function Candidates() {
         <div>
           <h1 className="text-3xl font-bold text-navy flex items-center">
             Candidates
-            <InfoTip text="Your candidate pipeline, from sourced through to placed. Attach a CV, track salary expectations and notice period, and hand off to Ask Annie for pitch help." />
           </h1>
           <p className="text-gray-500 mt-1">{metrics.total} candidates, {metrics.active} active</p>
         </div>
@@ -922,11 +940,9 @@ export default function Candidates() {
                 <input id="candidate-industry" className="input" value={form.industry} onChange={e => setForm(p => ({ ...p, industry: e.target.value }))} />
               </div>
               <div>
-                <label className="label" htmlFor="candidate-nationality">
-                  Nationality
-                  <InfoTip text="Saudi and Emirati candidates are only ever suggested for jobs based in Saudi Arabia or the UAE respectively — never elsewhere." />
-                </label>
+                <label className="label" htmlFor="candidate-nationality">Nationality</label>
                 <input id="candidate-nationality" className="input" value={form.nationality} onChange={e => setForm(p => ({ ...p, nationality: e.target.value }))} />
+                <p className="text-gray-400 text-xs mt-1">Saudi and Emirati candidates are only ever suggested for jobs based in Saudi Arabia or the UAE respectively, never elsewhere.</p>
               </div>
               {/* 2026-09-05: Annie's own CV-parse read on every OTHER title/
                   industry this candidate's real experience could plausibly

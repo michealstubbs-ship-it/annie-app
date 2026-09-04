@@ -3,9 +3,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 const { updateCandidateMock } = vi.hoisted(() => ({ updateCandidateMock: vi.fn() }))
 const { createMeetingMock } = vi.hoisted(() => ({ createMeetingMock: vi.fn() }))
+const { markJobFilledIfOpenMock } = vi.hoisted(() => ({ markJobFilledIfOpenMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
 vi.mock('./candidates', () => ({ updateCandidate: updateCandidateMock }))
 vi.mock('./meetings', () => ({ createMeeting: createMeetingMock }))
+vi.mock('./jobs', () => ({ markJobFilledIfOpen: markJobFilledIfOpenMock }))
 
 import {
   listPipelineForJob,
@@ -15,6 +17,7 @@ import {
   updatePipelineLinkInterview,
   countPipelinesPerCandidate,
   listCandidatesForPipelinePicker,
+  listAllPipelineLinkCounts,
 } from './pipelineLinks.js'
 
 function makeBuilder(result) {
@@ -42,6 +45,7 @@ beforeEach(() => {
   fromMock.mockReturnValue(builder)
   updateCandidateMock.mockResolvedValue({ error: null })
   createMeetingMock.mockResolvedValue({ error: null })
+  markJobFilledIfOpenMock.mockResolvedValue(undefined)
 })
 
 describe('listPipelineForJob', () => {
@@ -146,6 +150,32 @@ describe('updatePipelineLinkStage', () => {
     updateCandidateMock.mockResolvedValue({ error: { message: 'candidate write failed' } })
     await expect(updatePipelineLinkStage('link1', 'offer', { isPrimary: true, candidateId: 'cand1' })).rejects.toEqual({ message: 'candidate write failed' })
   })
+
+  // 2026-09-07, gap-analysis batch 8: the pipeline board is likely the more
+  // common place a placement actually happens (a drag to Placed, or the
+  // detail panel's "Advance stage" button). See markJobFilledIfOpen's own
+  // header comment in jobs.js for why this needed the same job-status side
+  // effect Candidates.jsx's own status field already triggers.
+  it('marks the job filled when the new stage is placed', async () => {
+    builder = makeBuilder({ data: { id: 'link1', stage: 'placed', job_id: 'job1' }, error: null })
+    fromMock.mockReturnValue(builder)
+    await updatePipelineLinkStage('link1', 'placed')
+    expect(markJobFilledIfOpenMock).toHaveBeenCalledWith('job1')
+  })
+
+  it('does not touch job status for any stage other than placed', async () => {
+    builder = makeBuilder({ data: { id: 'link1', stage: 'interviewing', job_id: 'job1' }, error: null })
+    fromMock.mockReturnValue(builder)
+    await updatePipelineLinkStage('link1', 'interviewing')
+    expect(markJobFilledIfOpenMock).not.toHaveBeenCalled()
+  })
+
+  it('propagates an error from markJobFilledIfOpen rather than swallowing it', async () => {
+    builder = makeBuilder({ data: { id: 'link1', stage: 'placed', job_id: 'job1' }, error: null })
+    fromMock.mockReturnValue(builder)
+    markJobFilledIfOpenMock.mockRejectedValue(new Error('jobs write failed'))
+    await expect(updatePipelineLinkStage('link1', 'placed')).rejects.toThrow('jobs write failed')
+  })
 })
 
 describe('updatePipelineLinkInterview', () => {
@@ -246,5 +276,32 @@ describe('listCandidatesForPipelinePicker', () => {
     builder = makeBuilder({ data: null, error: { message: 'db down' } })
     fromMock.mockReturnValue(builder)
     await expect(listCandidatesForPipelinePicker()).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+// 2026-09-07, gap-analysis batch 8: replaces the old
+// listCandidateJobLinks(candidates.job_id) count Jobs.jsx used to use for
+// its own "Pipeline (N)" badge, which only ever reflected a candidate's
+// ONE primary job, so it silently undercounted the moment a candidate got
+// submitted to a second job from this board's own "add candidate to
+// pipeline" picker (createPipelineLink, is_primary: false, above).
+describe('listAllPipelineLinkCounts', () => {
+  it('reads every job_id off candidate_job_links, primary and secondary alike', async () => {
+    builder = makeBuilder({ data: [{ job_id: 'job1' }, { job_id: 'job1' }, { job_id: 'job2' }], error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await listAllPipelineLinkCounts()
+    expect(fromMock).toHaveBeenCalledWith('candidate_job_links')
+    expect(builder.select).toHaveBeenCalledWith('job_id')
+    expect(result).toEqual([{ job_id: 'job1' }, { job_id: 'job1' }, { job_id: 'job2' }])
+  })
+
+  it('returns an empty array rather than null when there are no rows', async () => {
+    expect(await listAllPipelineLinkCounts()).toEqual([])
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listAllPipelineLinkCounts()).rejects.toEqual({ message: 'db down' })
   })
 })

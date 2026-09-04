@@ -18,8 +18,16 @@ export async function listCandidatesWithJobs(userId) {
   return data || []
 }
 
+// 2026-09-07: now selects its own insert back (previously just fired the
+// insert and returned {error}). Candidates.jsx's own comment on this used
+// to note that a brand-new candidate's id was unknown right after Save, so
+// the "raise an invoice now" placement prompt couldn't pre-select them, and
+// the new "create a candidate from a job's pipeline" flow (JobPipeline.jsx,
+// gap-analysis batch 8) needs the fresh id to add the right row to
+// candidate_job_links. Every existing caller destructures only `{ error }`
+// off the result, so this is additive, not a breaking change.
 export function createCandidate(row, userId) {
-  return supabase.from('candidates').insert({ ...row, user_id: userId })
+  return supabase.from('candidates').insert({ ...row, user_id: userId }).select().single()
 }
 
 // 2026-09-03, Michael: "in case there are any ownerships" — before a second
@@ -95,14 +103,6 @@ export function updateCandidate(id, row) {
 
 export function deleteCandidate(id) {
   return supabase.from('candidates').delete().eq('id', id)
-}
-
-// Jobs.jsx's per-job candidate count — just the job_id of every candidate
-// that's linked to one, counted client-side (see candCounts in Jobs.jsx).
-export async function listCandidateJobLinks(userId) {
-  const { data, error } = await supabase.from('candidates').select('job_id').not('job_id', 'is', null)
-  if (error) throw error
-  return data || []
 }
 
 // Today's Actions' pipeline-match check (see matchCandidatesToSignal) —

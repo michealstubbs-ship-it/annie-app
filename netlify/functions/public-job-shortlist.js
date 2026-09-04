@@ -14,14 +14,13 @@ import { createClient } from '@supabase/supabase-js'
 import { createTimeoutFetch } from './lib/scanShared.js'
 import { jsonError } from './lib/httpError.js'
 
-// Client-ready stage labels only — internal-only early stages (sourced,
-// screening) collapse into "In review" rather than exposing Annie's own
-// pipeline vocabulary to someone outside the agency.
+// Client-ready stage labels only. 2026-09-07: the internal pipeline
+// dropped sourced/screening/presented as separate stages (see
+// candidatesView.js's own header comment), so this map is just the
+// client-facing wording for each remaining internal stage now, nothing
+// collapses into "In review" anymore.
 const CLIENT_STAGE_LABEL = {
-  sourced: 'In review',
-  screening: 'In review',
   shortlisted: 'Shortlisted',
-  presented: 'Presented to you',
   interviewing: 'Interviewing',
   offer: 'Offer stage',
   placed: 'Placed',

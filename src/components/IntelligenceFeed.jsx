@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useSupabaseQuery } from '../lib/useSupabaseQuery'
 import { listActiveSignals, markSignalSeen, markSignalActioned, markSignalManuallyAdded } from '../lib/data/signals'
-import InfoTip from './InfoTip'
 import CompanyLogo from './CompanyLogo'
 import { logSignalOutcome } from '../lib/signalOutcomes'
 import { trackEvent } from '../lib/analytics'
@@ -190,7 +189,6 @@ export default function IntelligenceFeed() {
                 cadence (intelligence-scan.js's cron, every 12 hours) is
                 twice a day, plus on demand whenever the customer runs a
                 manual scan. */}
-            <InfoTip text="Annie researches your sectors and markets in the background twice a day, plus whenever you ask her to look again — this is everything she's found, newest first. Today's Actions pulls its best picks from the same list." />
           </h1>
           <p className="text-gray-500 text-[13px] mt-0.5">Newest first, exactly when it happened. Annie's already watching, even when you're not looking.</p>
         </div>

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
 
-import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, listCandidateJobLinks, listCandidatesForMatching, listCandidatesMinimal, listCandidatesForInvoicePicker, findCandidateDuplicateByEmail, findDuplicateSubmission, findCandidateIdByExactName } from './candidates.js'
+import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, listCandidatesForMatching, listCandidatesMinimal, listCandidatesForInvoicePicker, findCandidateDuplicateByEmail, findDuplicateSubmission, findCandidateIdByExactName } from './candidates.js'
 
 function makeBuilder(result) {
   const builder = {}
@@ -18,6 +18,7 @@ function makeBuilder(result) {
     delete: vi.fn(chain),
     ilike: vi.fn(chain),
     limit: vi.fn(chain),
+    single: vi.fn(chain),
     maybeSingle: vi.fn(() => Promise.resolve(result)),
     then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
   })
@@ -60,6 +61,18 @@ describe('createCandidate', () => {
     await createCandidate({ name: 'Jo' }, 'user_1')
     expect(builder.insert).toHaveBeenCalledWith({ name: 'Jo', user_id: 'user_1' })
   })
+
+  // 2026-09-07: this used to just fire the insert with no select(). See
+  // this function's own header comment for why the fresh id is now needed.
+  it('selects its own insert back, so the caller gets the new row (including its id)', async () => {
+    builder = makeBuilder({ data: { id: 'new-cand-1', name: 'Jo' }, error: null })
+    fromMock.mockReturnValue(builder)
+    const { data, error } = await createCandidate({ name: 'Jo' }, 'user_1')
+    expect(builder.select).toHaveBeenCalled()
+    expect(builder.single).toHaveBeenCalled()
+    expect(data).toEqual({ id: 'new-cand-1', name: 'Jo' })
+    expect(error).toBeNull()
+  })
 })
 
 describe('updateCandidate', () => {
@@ -75,24 +88,6 @@ describe('deleteCandidate', () => {
     await deleteCandidate('cand1')
     expect(builder.delete).toHaveBeenCalled()
     expect(builder.eq).toHaveBeenCalledWith('id', 'cand1')
-  })
-})
-
-describe('listCandidateJobLinks', () => {
-  it('excludes candidates with no job_id, no client-side user_id filter', async () => {
-    builder = makeBuilder({ data: [{ job_id: 'job1' }], error: null })
-    fromMock.mockReturnValue(builder)
-    const result = await listCandidateJobLinks('user_1')
-    expect(builder.select).toHaveBeenCalledWith('job_id')
-    expect(builder.eq).not.toHaveBeenCalledWith('user_id', expect.anything())
-    expect(builder.not).toHaveBeenCalledWith('job_id', 'is', null)
-    expect(result).toEqual([{ job_id: 'job1' }])
-  })
-
-  it('throws instead of silently returning [] when Supabase reports an error', async () => {
-    builder = makeBuilder({ data: null, error: { message: 'db down' } })
-    fromMock.mockReturnValue(builder)
-    await expect(listCandidateJobLinks('user_1')).rejects.toEqual({ message: 'db down' })
   })
 })
 

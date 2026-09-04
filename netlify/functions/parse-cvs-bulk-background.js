@@ -95,7 +95,7 @@ async function parseOneFile(supabase, anthropicKey, caps, userId, path) {
     titles: parsed.titles,
     industries: parsed.industries,
     cv_path: path,
-    status: 'sourced',
+    status: 'shortlisted',
     source: 'Bulk CV import',
   }
 

@@ -4,7 +4,6 @@ import { useAuth } from '../contexts/AuthContext'
 import { listMeetingsWithContacts, createMeeting, updateMeeting, deleteMeeting } from '../lib/data/meetings'
 import { listContactsMinimal } from '../lib/data/contacts'
 import { createContactNote } from '../lib/data/contactNotes'
-import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
@@ -194,7 +193,6 @@ export default function Meetings() {
         <div>
           <h1 className="text-3xl font-bold text-navy flex items-center">
             Meetings
-            <InfoTip text="Log every BD call, video call and in-person meeting, with outcomes and next steps, so nothing said in a conversation gets lost." />
           </h1>
           <p className="text-gray-500 mt-1">{meetings.length} logged, {upcoming.length} upcoming</p>
         </div>

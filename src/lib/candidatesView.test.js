@@ -9,12 +9,29 @@ import {
 } from './candidatesView.js'
 
 const CANDIDATES = [
-  { id: '1', name: 'Zara Khan', role: 'CFO', company: 'Acme', location: 'Dubai', industry: 'Fintech', email: 'zara@acme.com', status: 'sourced', want_sal: 50000 },
+  { id: '1', name: 'Zara Khan', role: 'CFO', company: 'Acme', location: 'Dubai', industry: 'Fintech', email: 'zara@acme.com', status: 'interviewing', want_sal: 50000 },
   { id: '2', name: 'Amir Ali', role: 'CEO', company: 'Beta', location: 'Abu Dhabi', industry: 'Logistics', email: 'amir@beta.com', status: 'shortlisted', want_sal: 90000 },
-  { id: '3', name: 'Beth Cole', role: 'COO', company: 'Acme', location: 'Dubai', industry: 'Fintech', email: 'beth@acme.com', status: 'sourced', want_sal: 70000 },
+  { id: '3', name: 'Beth Cole', role: 'COO', company: 'Acme', location: 'Dubai', industry: 'Fintech', email: 'beth@acme.com', status: 'interviewing', want_sal: 70000 },
   { id: '4', name: 'Dana Fox', role: 'VP Sales', company: 'Gamma', location: 'Sharjah', industry: 'Retail', email: 'dana@gamma.com', status: 'placed', want_sal: null },
   { id: '5', name: 'Evan Grey', role: null, company: null, location: null, industry: null, email: null, status: 'withdrawn', want_sal: null },
 ]
+
+// 2026-09-07, Michael, real report, looking at a candidate's stage-progress
+// checklist: "there is too many options here. He can get rid of sourced,
+// screening and presented." Pins the simplified four-stage working funnel
+// (plus the two terminal outcomes) so a future edit can't silently
+// reintroduce a retired stage.
+describe('STAGES (2026-09-07 pipeline simplification)', () => {
+  it('no longer includes the three retired early stages', () => {
+    expect(STAGES).not.toContain('sourced')
+    expect(STAGES).not.toContain('screening')
+    expect(STAGES).not.toContain('presented')
+  })
+
+  it('is exactly shortlisted, interviewing, offer, placed, rejected, withdrawn, in that order', () => {
+    expect(STAGES).toEqual(['shortlisted', 'interviewing', 'offer', 'placed', 'rejected', 'withdrawn'])
+  })
+})
 
 describe('searchCandidates', () => {
   it('returns everything unchanged for a blank search', () => {
@@ -41,7 +58,7 @@ describe('filterCandidatesByStage', () => {
   })
 
   it('narrows to exactly the matching stage', () => {
-    expect(filterCandidatesByStage(CANDIDATES, 'sourced').map(c => c.id)).toEqual(['1', '3'])
+    expect(filterCandidatesByStage(CANDIDATES, 'interviewing').map(c => c.id)).toEqual(['1', '3'])
     expect(filterCandidatesByStage(CANDIDATES, 'offer')).toEqual([])
   })
 })
@@ -70,9 +87,9 @@ describe('sortCandidates', () => {
 describe('groupCandidatesByStage', () => {
   it('groups into stage-ordered sections, omitting empty ones', () => {
     const groups = groupCandidatesByStage(CANDIDATES)
-    expect(groups.map(g => g.stage)).toEqual(['sourced', 'shortlisted', 'placed', 'withdrawn'])
-    expect(groups.find(g => g.stage === 'sourced').candidates.map(c => c.id)).toEqual(['1', '3'])
-    expect(groups.find(g => g.stage === 'sourced').label).toBe('Sourced')
+    expect(groups.map(g => g.stage)).toEqual(['shortlisted', 'interviewing', 'placed', 'withdrawn'])
+    expect(groups.find(g => g.stage === 'interviewing').candidates.map(c => c.id)).toEqual(['1', '3'])
+    expect(groups.find(g => g.stage === 'interviewing').label).toBe('Interviewing')
   })
 
   it('buckets an unrecognized status value into an "Other" group instead of dropping it', () => {

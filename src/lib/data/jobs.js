@@ -97,3 +97,28 @@ export function updateJob(id, row) {
 export function deleteJob(id) {
   return supabase.from('jobs').delete().eq('id', id)
 }
+
+// 2026-09-07, gap-analysis batch 8 ("really make sure everything on annie
+// is wired up... some things operating in separate buckets instead of a
+// fluid app"): a candidate marked Placed used to leave their own job
+// showing as active/onhold forever, everywhere jobs.status is read
+// (Overview's "Open jobs" tile, Companies.jsx's per-company badge,
+// Pipeline.jsx's own pipeline-value total). Nothing anywhere ever flipped
+// it, no matter which of the two real places a recruiter marks a placement
+// from (Candidates.jsx's own status field, or dragging a card to Placed on
+// the job's pipeline board; see both call sites of this function).
+// Assumes one hire fills the mandate, the same single-hire assumption
+// Jobs.jsx's own status set (active/onhold/filled/lost) already encodes.
+// A job that genuinely needs several hires still flips to 'filled' on the
+// first placement, a real, known scope limit worth a second pass if
+// Michael ever runs a multi-hire mandate through Annie. Only touches a job
+// that's currently active/onhold: never overwrites one a recruiter
+// separately marked 'lost', and is a no-op if it's already 'filled'.
+export async function markJobFilledIfOpen(jobId) {
+  if (!jobId) return
+  const { data: job, error: fetchError } = await supabase.from('jobs').select('id, status').eq('id', jobId).maybeSingle()
+  if (fetchError) throw fetchError
+  if (!job || !['active', 'onhold'].includes(job.status)) return
+  const { error } = await supabase.from('jobs').update({ status: 'filled' }).eq('id', jobId)
+  if (error) throw error
+}

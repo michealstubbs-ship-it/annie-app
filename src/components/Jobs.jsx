@@ -2,9 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { listJobsWithCompanies, deleteJob } from '../lib/data/jobs'
-import { listCandidateJobLinks } from '../lib/data/candidates'
+import { listAllPipelineLinkCounts } from '../lib/data/pipelineLinks'
 import { recommendCandidatesForJob } from '../lib/candidateRecommendClient'
-import InfoTip from './InfoTip'
 import JobFormModal from './JobFormModal'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBanner from './ErrorBanner'
@@ -153,10 +152,14 @@ export default function Jobs() {
     // 2026-08-26 audit fix: each of these now throws on a real Supabase
     // error instead of quietly returning [] — previously that looked
     // identical to "you have no jobs yet".
+    // 2026-09-07: swapped listCandidateJobLinks (candidates.job_id, PRIMARY
+    // links only) for listAllPipelineLinkCounts (candidate_job_links, every
+    // row). See that function's own header comment for why this exact
+    // badge was undercounting against the board it links to.
     try {
       const [j, c] = await Promise.all([
         listJobsWithCompanies(user.id),
-        listCandidateJobLinks(user.id),
+        listAllPipelineLinkCounts(),
       ])
       setJobs(j)
       const counts = {}
@@ -246,7 +249,6 @@ export default function Jobs() {
         <div>
           <h1 className="text-3xl font-bold text-navy flex items-center">
             Jobs & Mandates
-            <InfoTip text="Every job attaches to a real company record, picked from a dropdown, so the same client never gets created twice under a different spelling. Link candidates to a job from the Candidates page, or ask Annie for candidate recommendations on a job to see who in your CRM might already fit." />
           </h1>
           <p className="text-gray-500 mt-1">{open.length} open, {closed.length} closed</p>
         </div>
