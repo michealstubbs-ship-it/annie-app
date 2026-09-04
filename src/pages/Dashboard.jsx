@@ -22,6 +22,7 @@ const JobPipeline = lazy(() => import('../components/JobPipeline'))
 const Overview = lazy(() => import('../components/Overview'))
 const Billing = lazy(() => import('../components/Billing'))
 const Invoices = lazy(() => import('../components/Invoices'))
+const TeamPerformance = lazy(() => import('../components/TeamPerformance'))
 
 function RoutePageLoader() {
   return (
@@ -84,6 +85,11 @@ export default function Dashboard() {
               {/* 2026-09-03: the real build behind mockups/pipeline-v2-mockup.html — one job's full candidate pipeline board. */}
               <Route path="jobs/:jobId/pipeline" element={<JobPipeline />} />
               <Route path="invoices" element={<Invoices />} />
+              {/* 2026-09-06: gated inside the component itself (owner-only),
+                  not here. The role check needs an async listTeamMembers()
+                  call rather than a value already sitting on `profile`, same
+                  reasoning as this file's own header comment on AdminRoute. */}
+              <Route path="team-performance" element={<TeamPerformance />} />
               <Route path="contacts" element={<Contacts />} />
               <Route path="pipeline" element={<Pipeline />} />
               <Route path="chat" element={<Chat />} />

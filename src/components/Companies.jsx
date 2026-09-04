@@ -84,6 +84,7 @@ export default function Companies() {
   const [documents, setDocuments] = useState([])
   const [docsLoading, setDocsLoading] = useState(false)
   const [docFile, setDocFile] = useState(null)
+  const [docCreditedTo, setDocCreditedTo] = useState('')
   const [docUploading, setDocUploading] = useState(false)
   const [docError, setDocError] = useState('')
   const [confirmDeleteDocId, setConfirmDeleteDocId] = useState(null)
@@ -91,6 +92,10 @@ export default function Companies() {
   useEffect(() => { load() }, [user])
   useEffect(() => { if (location.state?.autoOpenAdd) openAddCo() }, [location.state])
   useEffect(() => { if (selected) loadDocuments(selected.id) }, [selected?.id])
+  // 2026-09-06, Michael: "just add a drop down of who added them". Defaults
+  // to whoever's uploading (the common case, an assistant uploading on
+  // someone else's behalf is the exception), editable before Upload.
+  useEffect(() => { if (user) setDocCreditedTo(user.id) }, [user])
 
   async function loadDocuments(companyId) {
     setDocsLoading(true)
@@ -115,9 +120,11 @@ export default function Companies() {
       if (upErr) throw new Error('Upload failed: ' + upErr.message)
       const { error: err } = await createCompanyDocument({
         company_id: selected.id, user_id: user.id, file_name: docFile.name, file_path: path,
+        credited_to: docCreditedTo || user.id,
       })
       if (err) throw err
       setDocFile(null)
+      setDocCreditedTo(user.id)
       await loadDocuments(selected.id)
     } catch (err) {
       setDocError(err.message)
@@ -547,12 +554,25 @@ export default function Companies() {
               {tab === 'documents' && (
                 <div>
                   <ErrorBanner>{docError}</ErrorBanner>
-                  <div className="flex items-center gap-2 mb-4">
+                  <div className="flex flex-wrap items-center gap-2 mb-4">
                     <input
                       type="file"
                       onChange={e => setDocFile(e.target.files?.[0] || null)}
-                      className="text-xs flex-1"
+                      className="text-xs flex-1 min-w-[140px]"
                     />
+                    {teamMembers.length > 1 && (
+                      <select
+                        value={docCreditedTo}
+                        onChange={e => setDocCreditedTo(e.target.value)}
+                        className="input text-xs py-2 w-auto max-w-[180px]"
+                        aria-label="Credited to"
+                        title="Who gets credit for this document, for Team Performance reporting"
+                      >
+                        {teamMembers.map(m => (
+                          <option key={m.id} value={m.id}>Credited to: {m.name}</option>
+                        ))}
+                      </select>
+                    )}
                     <button onClick={uploadDocument} disabled={!docFile || docUploading} className="btn-primary flex-shrink-0">
                       {docUploading ? 'Uploading...' : 'Upload'}
                     </button>
@@ -567,7 +587,10 @@ export default function Companies() {
                         <div key={d.id} className="flex items-center justify-between p-3 rounded-lg border border-gray-100">
                           <div className="min-w-0">
                             <div className="font-semibold text-navy text-sm truncate">📄 {d.file_name}</div>
-                            <div className="text-xs text-gray-400">{new Date(d.uploaded_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
+                            <div className="text-xs text-gray-400">
+                              {new Date(d.uploaded_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                              {teamMembers.length > 1 && <> &middot; Credited to: {nameForMember(teamMembers, d.credited_to)}</>}
+                            </div>
                           </div>
                           <div className="flex items-center gap-3 flex-shrink-0">
                             <button onClick={() => viewDocument(d.file_path)} className="text-xs font-semibold text-gold-ink hover:underline">View</button>

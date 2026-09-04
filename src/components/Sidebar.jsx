@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { IconHome, IconZap, IconRadio, IconUsers, IconBuilding, IconTrendingUp, IconCalendar, IconCheckSquare, IconMessageCircle, IconBriefcase, IconUser, IconSettings, IconCreditCard, IconReceipt } from './icons'
+import { IconHome, IconZap, IconRadio, IconUsers, IconBuilding, IconTrendingUp, IconCalendar, IconCheckSquare, IconMessageCircle, IconBriefcase, IconUser, IconSettings, IconCreditCard, IconReceipt, IconBarChart } from './icons'
 
 // "Signals" was retired as a standalone page — the same BD-trigger data now
 // lives on the Intelligence Feed, so this nav no longer links anywhere dead.
@@ -21,6 +21,13 @@ const RECRUITMENT_NAV = [
   { to: '/dashboard/jobs', label: 'Jobs & Mandates', Icon: IconBriefcase },
   { to: '/dashboard/candidates', label: 'Candidates', Icon: IconUser },
   { to: '/dashboard/invoices', label: 'Invoices', Icon: IconReceipt },
+  // 2026-09-06, Michael: per-recruiter pipeline, meetings, terms signed and
+  // revenue, for a manager reviewing the desk. Route itself gates on team
+  // role (owner-only), same reasoning as Billing.jsx's own myRole check.
+  // This link is shown to everyone since a member with no permission just
+  // sees a friendly explanation, not a dead end with no way to understand
+  // why, matching how Insights already handles its own admin-only gate.
+  { to: '/dashboard/team-performance', label: 'Team Performance', Icon: IconBarChart },
 ]
 
 const SETTINGS_NAV = [

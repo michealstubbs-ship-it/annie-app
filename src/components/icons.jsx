@@ -31,3 +31,8 @@ export const IconCreditCard = p => <Svg {...p}><rect x="2" y="5" width="20" heig
 // reads distinctly from Billing's IconCreditCard right above it in the
 // sidebar, even though both are "money" pages.
 export const IconReceipt = p => <Svg {...p}><path d="M6 2h12v19l-3-2-3 2-3-2-3 2V2z" /><path d="M9 7h6M9 11h6M9 15h4" /></Svg>
+// 2026-09-06, Team Performance nav entry: a simple bar chart, distinct
+// from IconTrendingUp (BD Pipeline's line-trend glyph) even though both
+// read as "performance", since this one is about per-person totals, not a
+// trend over time.
+export const IconBarChart = p => <Svg {...p}><path d="M3 21h18" /><rect x="5" y="13" width="3.4" height="8" /><rect x="10.3" y="8" width="3.4" height="13" /><rect x="15.6" y="3" width="3.4" height="18" /></Svg>
