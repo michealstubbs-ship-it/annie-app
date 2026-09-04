@@ -5,7 +5,6 @@ import Spinner from '../components/Spinner'
 import ErrorBoundary from '../components/ErrorBoundary'
 import { useAuth } from '../contexts/AuthContext'
 
-const TodaysActions = lazy(() => import('../components/TodaysActions'))
 const Contacts = lazy(() => import('../components/Contacts'))
 const Pipeline = lazy(() => import('../components/Pipeline'))
 const Chat = lazy(() => import('../components/Chat'))
@@ -75,7 +74,11 @@ export default function Dashboard() {
           <Suspense fallback={<RoutePageLoader />}>
             <Routes>
               <Route index element={<Overview />} />
-              <Route path="actions" element={<TodaysActions />} />
+              {/* 2026-09-04: Today's Actions merged into the Intelligence
+                  Feed. The old path still resolves so bookmarks, the support
+                  widget's copy and any link in a sent email land on the real
+                  page rather than a blank route. */}
+              <Route path="actions" element={<Navigate to="/dashboard/intelligence-feed" replace />} />
               <Route path="intelligence-feed" element={<IntelligenceFeed />} />
               <Route path="candidates" element={<Candidates />} />
               <Route path="meetings" element={<Meetings />} />

@@ -58,3 +58,23 @@ export function markSignalActioned(id) {
 export function markSignalManuallyAdded(id) {
   return supabase.from('intelligence_signals').update({ manually_added_at: new Date().toISOString() }).eq('id', id)
 }
+
+// The two states the recruiter sets themselves, added 2026-09-04 with the
+// single-stream rebuild. intelligence_signals.status already carried
+// new/seen/actioned; these sit alongside them and, crucially, are NOT
+// 'actioned' — so a working or parked item still comes back from every read
+// in the app (they all filter on .neq('status','actioned')) and stays in the
+// stream where the recruiter put it.
+export function markSignalWorking(id) {
+  return supabase.from('intelligence_signals').update({ status: 'working' }).eq('id', id)
+}
+
+export function markSignalParked(id) {
+  return supabase.from('intelligence_signals').update({ status: 'parked' }).eq('id', id)
+}
+
+// Back to the undifferentiated pile. 'seen' rather than 'new' because the
+// recruiter has demonstrably looked at it.
+export function markSignalOpen(id) {
+  return supabase.from('intelligence_signals').update({ status: 'seen' }).eq('id', id)
+}

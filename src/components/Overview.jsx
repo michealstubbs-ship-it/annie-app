@@ -21,7 +21,7 @@ import {
 // step (Overview only ever shows a headline/company preview, never the full
 // card), not a second, hand-maintained opinion of what belongs here.
 import {
-  buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool, buildSourcedPool,
+  buildDormantPool, buildMeetingPool, buildRelationshipPool, buildNewClientPool,
   selectDailyItems, resolveTodaysActions,
 } from '../lib/todaysActions/index.js'
 import { useMarketCurrency } from '../lib/useMarketCurrency'
@@ -337,12 +337,24 @@ export default function Overview() {
     // never shows the full card, just a headline/company preview) — see
     // the import comment above for why this replaces the old actions_cache
     // read.
+    // 2026-09-04: `sourced` is gone from this pipeline. It was the pool that
+    // turned a market signal into a to-do, and it carried the contact gate
+    // (isEligibleSourced's `if (!s.contact_verified && !s.contact_candidates
+    // ?.length) return false`) that hid 338 of 446 BD signals over seven
+    // days. Market signals now live in the Intelligence Feed, which ranks
+    // them by the strength of the route in and hides none of them.
+    //
+    // What remains here is what this card was always best at and what the
+    // stream is deliberately no longer cluttered with: CRM housekeeping —
+    // dormant contacts, meetings to prep, relationships to keep warm, new
+    // clients to bed in. On day one of the snag week Today's Actions showed
+    // nine cards and every one was one of these, which is exactly why it read
+    // as a to-do list rather than intelligence.
     const pools = {
       dormant: buildDormantPool(fullContacts || []),
       meeting: buildMeetingPool(deals || [], fullContacts || []),
       relationship: buildRelationshipPool(allSignalRows || [], fullContacts || []),
       new_client: buildNewClientPool(fullContacts || [], deals || []),
-      sourced: buildSourcedPool(allSignalRows || [], fullContacts || []),
     }
     const selected = selectDailyItems(pools)
     const shaped = selected.map(item => {
@@ -668,10 +680,10 @@ export default function Overview() {
                     <p className="text-[12.5px] text-gray-400 mb-3">{scanCopy.detail}</p>
                   </>
                 ) : (
-                  <p className="text-sm text-gray-400 mb-3">Generate today's actions to see your top items here.</p>
+                  <p className="text-sm text-gray-400 mb-3">Nothing needs chasing right now.</p>
                 )}
                 <div className="flex items-center gap-4 flex-wrap">
-                  <button onClick={() => navigate('/dashboard/actions')} className="text-xs font-semibold text-navy">Go to Today's Actions →</button>
+                  <button onClick={() => navigate('/dashboard/intelligence-feed')} className="text-xs font-semibold text-navy">Go to the Intelligence Feed →</button>
                   {!researching && scanCopy?.canRetryNow && (
                     <button onClick={runAnotherScanNow} disabled={retrying} className="text-xs font-semibold text-navy disabled:opacity-60">
                       {retrying ? 'Starting…' : 'Ask Annie to look again'}
@@ -692,8 +704,8 @@ export default function Overview() {
                     </Tag>
                   </div>
                 ))}
-                <a onClick={() => navigate('/dashboard/actions')} className="inline-flex items-center gap-1 text-xs font-semibold text-navy mt-2.5 cursor-pointer">
-                  View all {totalActions} today's actions <IconArrowRight className="w-3.5 h-3.5" />
+                <a onClick={() => navigate('/dashboard/contacts')} className="inline-flex items-center gap-1 text-xs font-semibold text-navy mt-2.5 cursor-pointer">
+                  View all {totalActions} follow-ups <IconArrowRight className="w-3.5 h-3.5" />
                 </a>
               </>
             )}

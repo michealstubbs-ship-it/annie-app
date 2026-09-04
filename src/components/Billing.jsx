@@ -264,7 +264,7 @@ export default function Billing() {
           <h2 className="text-lg font-bold text-navy mb-1">Team members</h2>
           <p className="text-sm text-gray-500 mb-4">
             Everyone on your team shares one CRM: the same contacts, jobs, deals, candidates, and meetings, kept in sync for the whole desk.
-            Each person's Intelligence Feed and Today's Actions stay tuned to their own market, since recruiters on the same team can be working entirely different sectors.
+            Each person's Intelligence Feed stays tuned to their own market, since recruiters on the same team can be working entirely different sectors. Contact lookups are the exception — that allowance is shared across the team.
             {subscription.seats > 0 && <> Your plan includes {subscription.seats} seats.</>}
           </p>
 

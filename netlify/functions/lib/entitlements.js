@@ -51,10 +51,27 @@ import { parseIntEnv } from './env.js'
 // Growth and Team stay unlimited (Michael's call: "for Growth there cannot be
 // a significant cap"); see CHAT_ABUSE_ALERT_THRESHOLD in chat.js for the
 // monitoring-only backstop that replaces a limit there.
+// contactCreditsPerMonth, added 2026-09-04 with the single-stream rebuild.
+//
+// Contacts used to be enriched for every signal at scan time whether the
+// customer ever looked at it or not, which is how five test tenants burned
+// through a 2,500/month Apollo plan in under two weeks. They are now fetched
+// only when the recruiter clicks, and this is the allowance for that.
+//
+// A credit is consumed ONLY when a real person comes back. Verified against
+// the live Apollo API on 2026-09-04: a search costs nothing, and an enrichment
+// that matches nobody costs nothing either. So a failed lookup is free to
+// Annie and is free to the customer — there is deliberately no state where
+// someone spends an allowance and receives nothing.
+//
+// That also changes what the number means when it is shown to them: 50 is 50
+// CONTACTS, not 50 attempts, which is both easier to sell and easier to
+// explain at the ceiling. Team's pool is shared across the whole team, which
+// is why usage is keyed on team_id rather than user_id.
 export const TIER_LIMITS = {
-  starter: { chatMessagesPerMonth: 500, deepOnboardingResearch: false },
-  growth: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true },
-  team: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true },
+  starter: { chatMessagesPerMonth: 500, deepOnboardingResearch: false, contactCreditsPerMonth: 50 },
+  growth: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true, contactCreditsPerMonth: 150 },
+  team: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true, contactCreditsPerMonth: 400 },
 }
 
 // The actual numbers behind deepOnboardingResearch above (2026-08-25,
@@ -284,4 +301,41 @@ export async function getEntitlements(supabase, userId) {
   const tier = isEntitled ? sub.tier : DEFAULT_TIER
 
   return { tier, status: sub?.status || null, teamId: membership.team_id, limits: TIER_LIMITS[tier] }
+}
+
+// Reads this team's contact-credit usage for the current calendar month.
+// Never throws: a meter that cannot be read must not stop a customer finding a
+// contact, so a failure here degrades to "no meter shown" rather than an error.
+export async function getContactCredits(supabase, teamId, tier) {
+  const limit = TIER_LIMITS[tier]?.contactCreditsPerMonth ?? TIER_LIMITS[DEFAULT_TIER].contactCreditsPerMonth
+  if (!supabase || !teamId) return { used: 0, limit, remaining: limit }
+  try {
+    const { data, error } = await supabase.rpc('contact_credits_used', { p_team_id: teamId })
+    if (error) {
+      console.error('[entitlements] contact_credits_used RPC failed:', error.message)
+      return { used: 0, limit, remaining: limit }
+    }
+    const used = Number(data) || 0
+    return { used, limit, remaining: Math.max(0, limit - used) }
+  } catch (err) {
+    console.error('[entitlements] contact_credits_used threw:', err.message)
+    return { used: 0, limit, remaining: limit }
+  }
+}
+
+// Consumes one credit. Called ONLY after Apollo has actually returned a
+// person — see the note on contactCreditsPerMonth above.
+export async function consumeContactCredit(supabase, teamId) {
+  if (!supabase || !teamId) return null
+  try {
+    const { data, error } = await supabase.rpc('contact_credits_consume', { p_team_id: teamId, p_credits: 1 })
+    if (error) {
+      console.error('[entitlements] contact_credits_consume RPC failed:', error.message)
+      return null
+    }
+    return Number(data) || 0
+  } catch (err) {
+    console.error('[entitlements] contact_credits_consume threw:', err.message)
+    return null
+  }
 }

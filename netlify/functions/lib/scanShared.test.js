@@ -1512,7 +1512,7 @@ describe('buildEnrichedSignalRow', () => {
     })
     const row = await buildEnrichedSignalRow(
       { entryType: 'live_job', signalType: 'hiring_activity', company: 'Acme Ltd', headline: 'Senior Finance Manager', sourceUrl: 'https://example.com/job', titleKeywords: ['CFO'] },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(row.signal_type).toBe('live_job')
     expect(row.company_name).toBe('Acme Ltd')
@@ -1563,7 +1563,7 @@ describe('buildEnrichedSignalRow', () => {
       const supabase = makeCacheSupabase({ matched: false, contact_verified: false, checked_at: new Date().toISOString() })
       const row = await buildEnrichedSignalRow(
         { entryType: 'signal', signalType: 'funding', company: 'Acme Recruitment Group', headline: 'Raises Series B' },
-        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
       )
       expect(row).not.toBeNull()
       expect(row.company_name).toBe('Acme Recruitment Group')
@@ -1621,7 +1621,7 @@ describe('buildEnrichedSignalRow', () => {
       const supabase = makeCacheSupabase({ matched: false, contact_verified: false, checked_at: new Date().toISOString() })
       const row = await buildEnrichedSignalRow(
         { entryType: 'signal', signalType: 'funding', company: 'AWS User Group SE', headline: 'Some unrelated news' },
-        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
       )
       expect(row).not.toBeNull()
       vi.unstubAllGlobals()
@@ -1717,7 +1717,7 @@ describe('buildEnrichedSignalRow', () => {
     const supabase = makeCacheSupabase({ matched: false, contact_verified: false, contact_checked_at: new Date().toISOString() })
     const row = await buildEnrichedSignalRow(
       { entryType: 'signal', signalType: 'funding', company: 'Acme Ltd', headline: 'Raises Series B' },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(row.signal_type).toBe('funding')
     vi.unstubAllGlobals()
@@ -1742,7 +1742,7 @@ describe('buildEnrichedSignalRow', () => {
     }))
     const row = await buildEnrichedSignalRow(
       { entryType: 'signal', signalType: 'funding', company: 'Rabigh 1', headline: 'Gas plant expansion', titleKeywords: ['Project Development Manager'] },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(row.contact_verified).toBe(false)
     expect(row.contact_name).toBeNull()
@@ -1784,7 +1784,7 @@ describe('buildEnrichedSignalRow', () => {
     }))
     const row = await buildEnrichedSignalRow(
       { entryType: 'signal', signalType: 'funding', company: 'DP World', headline: 'Raises new fund', titleKeywords: ['Chief Financial Officer'] },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(row.contact_candidates?.length || row.contact_verified).toBeTruthy()
     // funding signals go through verifyContactsAcrossFunctions, so this
@@ -1827,7 +1827,7 @@ describe('buildEnrichedSignalRow', () => {
         candidateAngle: 'A strong candidate <cite index="7-1">is available</cite>.',
         benchStrengthAngle: 'We know this space <cite index="8-1">well</cite>.',
       },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(row.headline).toBe('Raises new fund')
     expect(row.why_it_matters).toBe('This signals fresh capital for hiring.')
@@ -1895,7 +1895,7 @@ describe('buildEnrichedSignalRows — filters out entries buildEnrichedSignalRow
       { entryType: 'live_job', company: 'Quik Hire Staffing', headline: 'PE Investment Associate', sourceUrl: 'https://x.com/1' },
       { entryType: 'live_job', company: 'Acme Ltd', headline: 'Finance Manager', sourceUrl: 'https://x.com/2' },
     ]
-    const rows = await buildEnrichedSignalRows(entries, { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' })
+    const rows = await buildEnrichedSignalRows(entries, { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true })
 
     expect(rows).toHaveLength(1)
     expect(rows[0].company_name).toBe('Acme Ltd')
@@ -1933,7 +1933,7 @@ describe('buildEnrichedSignalRows — same-company sequencing (the actual Live J
       { entryType: 'live_job', company: 'Acme Ltd', headline: 'Finance Manager', titleKeywords: ['CFO'], sourceUrl: 'https://x.com/1' },
       { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager', titleKeywords: ['CFO'], sourceUrl: 'https://x.com/2' },
     ]
-    const rows = await buildEnrichedSignalRows(entries, { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' })
+    const rows = await buildEnrichedSignalRows(entries, { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true })
 
     expect(rows).toHaveLength(2)
     expect(rows.every(r => r.contact_verified)).toBe(true)
@@ -1977,7 +1977,7 @@ describe('buildEnrichedSignalRows — same-company sequencing (the actual Live J
       { entryType: 'live_job', company: 'Acme Ltd', headline: 'Finance Manager', titleKeywords: ['CFO'], sourceUrl: 'https://x.com/1' },
       { entryType: 'live_job', company: 'Acme Ltd', headline: 'Head of Engineering', titleKeywords: ['CTO', 'Head of Engineering'], sourceUrl: 'https://x.com/2' },
     ]
-    const rows = await buildEnrichedSignalRows(entries, { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' })
+    const rows = await buildEnrichedSignalRows(entries, { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true })
 
     const financeRow = rows.find(r => r.headline === 'Finance Manager')
     const engRow = rows.find(r => r.headline === 'Head of Engineering')
@@ -2000,7 +2000,7 @@ describe('buildEnrichedSignalRows — same-company sequencing (the actual Live J
       { entryType: 'live_job', company: 'Acme Ltd', headline: 'Finance Manager', sourceUrl: 'https://x.com/1' },
       { entryType: 'live_job', company: 'Zenith Group', headline: 'Ops Director', sourceUrl: 'https://x.com/2' },
     ]
-    const rows = await buildEnrichedSignalRows(entries, { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' })
+    const rows = await buildEnrichedSignalRows(entries, { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true })
     expect(rows.map(r => r.company_name).sort()).toEqual(['Acme Ltd', 'Zenith Group'])
     vi.unstubAllGlobals()
   })
@@ -2440,7 +2440,7 @@ describe('buildEnrichedSignalRow — candidateProfile and leadership_change cont
           widerScope: ['Big Consulting', 'Second Consulting', 'Third Consulting'],
         },
       },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(row.candidate_profile).toEqual({
       yearsMin: 5, yearsMax: 8, functionalExperience: 'Project finance',
@@ -2456,7 +2456,7 @@ describe('buildEnrichedSignalRow — candidateProfile and leadership_change cont
     const supabase = makeTableAwareSupabase()
     const row = await buildEnrichedSignalRow(
       { entryType: 'signal', signalType: 'funding', company: 'Acme Ltd', headline: 'Raises Series B' },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(row.candidate_profile).toBeNull()
     vi.unstubAllGlobals()
@@ -2477,7 +2477,7 @@ describe('buildEnrichedSignalRow — candidateProfile and leadership_change cont
     }))
     await buildEnrichedSignalRow(
       { entryType: 'signal', signalType: 'funding', company: 'Acme Ltd', headline: 'Raises Series B', appointedName: 'Someone Irrelevant', titleKeywords: ['CFO'] },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(nameMatchCalls).toBe(0)
     vi.unstubAllGlobals()
@@ -2496,7 +2496,7 @@ describe('buildEnrichedSignalRow — candidateProfile and leadership_change cont
     }))
     const row = await buildEnrichedSignalRow(
       { entryType: 'signal', signalType: 'leadership_change', company: 'DEWA', headline: 'Appoints new CEO', appointedName: 'Sarah Al Mazrouei' },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(row.contact_verified).toBe(true)
     expect(row.contact_name).toBe('Sarah Al Mazrouei')
@@ -2788,7 +2788,7 @@ describe('buildEnrichedSignalRow — always a contact recommendation on the 4 wh
     }))
     const row = await buildEnrichedSignalRow(
       { entryType: 'signal', signalType: 'funding', company: 'Acme Ltd', headline: 'Raises Series B', likelyRoles: ['Head of Product', 'Head of Engineering'] },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(row.contact_verified).toBe(false)
     expect(row.contact_name).toBeNull()
@@ -2814,7 +2814,7 @@ describe('buildEnrichedSignalRow — always a contact recommendation on the 4 wh
     }))
     const row = await buildEnrichedSignalRow(
       { entryType: 'live_job', company: 'Acme Ltd', headline: 'Finance Manager', sourceUrl: 'https://acme.com/careers/finance-manager', titleKeywords: ['Finance Manager'] },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(row.contact_verified).toBe(false)
     expect(row.contact_candidates.some(c => c.name === 'Omar Khalil')).toBe(true)
@@ -2826,7 +2826,7 @@ describe('buildEnrichedSignalRow — always a contact recommendation on the 4 wh
     const supabase = makeTableAwareSupabase()
     const row = await buildEnrichedSignalRow(
       { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager', sourceUrl: 'https://gulfnews.com/business/acme-hiring-story-1.500469474' },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(row.signal_type).toBe('hiring_activity')
     vi.unstubAllGlobals()
@@ -2837,7 +2837,7 @@ describe('buildEnrichedSignalRow — always a contact recommendation on the 4 wh
     const supabase = makeTableAwareSupabase()
     const row = await buildEnrichedSignalRow(
       { entryType: 'live_job', company: 'Acme Ltd', headline: 'Senior Finance Manager', sourceUrl: 'https://acme.com/careers/senior-finance-manager' },
-      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]', resolveContacts: true },
     )
     expect(row.signal_type).toBe('live_job')
     vi.unstubAllGlobals()
@@ -3967,5 +3967,39 @@ describe('buildTargetFirmHint — Consumer & Retail (2026-09-01)', () => {
     const usOnly = buildTargetFirmHint(['Consumer & Retail'], null, ['United States'])
     expect(usOnly).not.toContain('Tesco')
     expect(usOnly).not.toContain('Majid Al Futtaim')
+  })
+})
+
+// 2026-09-04. The single biggest cost change in the rebuild: the scan no
+// longer buys a contact for every signal it finds.
+describe('buildEnrichedSignalRow — contacts are opt-in at scan time', () => {
+  it('spends NOTHING on contact resolution by default', async () => {
+    // Every signal used to be enriched with a contact whether the recruiter
+    // ever opened it or not, because Today's Actions could not display one
+    // without. That is how five test tenants exhausted a 2,500-credit monthly
+    // Apollo plan in under two weeks, spending most of it on signals nobody
+    // looked at. The Intelligence Feed now shows every lead regardless and
+    // fetches the contact when the recruiter actually asks.
+    const calls = []
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      calls.push(url)
+      if (url.includes('mixed_companies/search')) {
+        return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Acme Ltd', primary_domain: 'acme.com' }] }) }
+      }
+      return { ok: true, json: async () => ({ people: [], person: null, organizations: [] }) }
+    }))
+    const supabase = makeTableAwareSupabase()
+    const row = await buildEnrichedSignalRow(
+      { company: 'Acme Ltd', signalType: 'funding', headline: 'Raised $10m', sourceUrl: 'https://example.com/x', titleKeywords: ['CFO'] },
+      { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+    )
+    expect(row.contact_verified).toBe(false)
+    expect(row.contact_name).toBeNull()
+    // The company itself is still enriched — that is a cached, shared lookup
+    // and it is what gives the Feed a logo, an industry and a country. Only
+    // the per-person contact search is gone.
+    expect(calls.some(u => u.includes('mixed_people/api_search'))).toBe(false)
+    expect(calls.some(u => u.includes('people/match'))).toBe(false)
+    vi.unstubAllGlobals()
   })
 })

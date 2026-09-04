@@ -5,9 +5,15 @@ import { IconHome, IconZap, IconRadio, IconUsers, IconBuilding, IconTrendingUp, 
 
 // "Signals" was retired as a standalone page — the same BD-trigger data now
 // lives on the Intelligence Feed, so this nav no longer links anywhere dead.
+//
+// 2026-09-04: "Today's Actions" retired the same way, into the same place.
+// The two pages read the same table and were divided only by an invisible
+// contact gate that hid 338 of 446 BD signals over seven days. One stream
+// now, under the name customers already know. /dashboard/actions still
+// resolves — it redirects (see Dashboard.jsx) so bookmarks and old links
+// land somewhere real rather than on a blank route.
 const NAV = [
   { to: '/dashboard', label: 'Overview', Icon: IconHome, exact: true },
-  { to: '/dashboard/actions', label: "Today's Actions", Icon: IconZap },
   { to: '/dashboard/intelligence-feed', label: 'Intelligence Feed', Icon: IconRadio },
   { to: '/dashboard/contacts', label: 'Contacts', Icon: IconUsers },
   { to: '/dashboard/companies', label: 'Companies', Icon: IconBuilding },

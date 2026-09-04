@@ -28,7 +28,7 @@ import { enrichCompany, resolveContactForSignal, createTimeoutFetch } from './li
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { jsonError } from './lib/httpError.js'
-import { getEntitlements, resolveResourceCaps } from './lib/entitlements.js'
+import { getEntitlements, resolveResourceCaps, getContactCredits, consumeContactCredit } from './lib/entitlements.js'
 
 export default async (req, context) => {
   if (req.method !== 'POST') {
@@ -71,7 +71,7 @@ export default async (req, context) => {
     // contact for a signal that belongs to someone else's account.
     const { data: signal, error: fetchError } = await supabase
       .from('intelligence_signals')
-      .select('id, user_id, company_name, signal_type, title_keywords, headline, contact_verified, contact_candidates')
+      .select('id, user_id, company_name, signal_type, title_keywords, headline, contact_verified, contact_candidates, contact_name, contact_title, contact_linkedin_url, contact_email')
       .eq('id', signalId)
       .eq('user_id', user.id)
       .maybeSingle()
@@ -82,11 +82,35 @@ export default async (req, context) => {
 
     // Already resolved (a second click, a race with the scan finding one in
     // the meantime) — nothing to do, this is a normal outcome, not an error.
+    const { tier, teamId } = await getEntitlements(supabase, user.id)
+
     if (signal.contact_verified || (Array.isArray(signal.contact_candidates) && signal.contact_candidates.length)) {
-      return new Response(JSON.stringify({ found: true, alreadyResolved: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      // A cache hit costs nothing and must therefore charge nothing.
+      const credits = await getContactCredits(supabase, teamId, tier)
+      return new Response(JSON.stringify({
+        found: true,
+        alreadyResolved: true,
+        contact: signal.contact_name
+          ? { name: signal.contact_name, title: signal.contact_title, linkedin_url: signal.contact_linkedin_url, email: signal.contact_email }
+          : null,
+        contactCandidates: signal.contact_candidates || null,
+        credits,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
 
-    const { tier } = await getEntitlements(supabase, user.id)
+    // 2026-09-04: the monthly contact allowance. Checked BEFORE anything is
+    // spent at Apollo, so a customer at their ceiling is told plainly rather
+    // than having the request quietly fail after the money is gone.
+    const credits = await getContactCredits(supabase, teamId, tier)
+    if (credits.remaining <= 0) {
+      return new Response(JSON.stringify({
+        found: false,
+        capReached: true,
+        credits,
+        error: `You've used all ${credits.limit} contact lookups on your plan this month.`,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+
     const apolloCaps = resolveResourceCaps(tier).apollo
 
     // enrichCompany is cache-backed (company_enrichment, shared across every
@@ -121,7 +145,12 @@ export default async (req, context) => {
     })
 
     if (!contact && !contactCandidates.length) {
-      return new Response(JSON.stringify({ found: false }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      // Apollo genuinely had nobody. Verified 2026-09-04 against the live API:
+      // a search costs nothing and an enrichment that matches nobody costs
+      // nothing, so this outcome is free to Annie and must be free to the
+      // customer. No credit is consumed. The frontend says so out loud and
+      // offers the LinkedIn route instead of pretending the click failed.
+      return new Response(JSON.stringify({ found: false, charged: false, credits }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
 
     const { error: updateError } = await supabase
@@ -142,8 +171,18 @@ export default async (req, context) => {
       return new Response(JSON.stringify({ found: false, error: 'Found a contact but failed to save it — try again' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
 
+    // Only now, with a real person in hand, does this cost the customer
+    // anything. consumeContactCredit returns the new running total so the
+    // meter in the UI updates from the same number the server just wrote.
+    const newTotal = await consumeContactCredit(supabase, teamId)
+    const updatedCredits = newTotal === null
+      ? credits
+      : { used: newTotal, limit: credits.limit, remaining: Math.max(0, credits.limit - newTotal) }
+
     return new Response(JSON.stringify({
       found: true,
+      charged: true,
+      credits: updatedCredits,
       contact: contact ? { name: contact.name, title: contact.title, linkedin_url: contact.linkedin_url, email: contact.email } : null,
       contactCandidates: contactCandidates.length ? contactCandidates : null,
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })

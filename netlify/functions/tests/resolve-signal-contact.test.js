@@ -120,7 +120,14 @@ describe('already resolved', () => {
     mockSignalSelect.mockResolvedValue({ data: { ...BASE_SIGNAL, contact_verified: true }, error: null })
     const res = await handler(makeRequest({ signalId: 'sig_1' }))
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ found: true, alreadyResolved: true })
+    // 2026-09-04: the response now also carries the contact it already had
+    // and the customer's credit meter, so a second click renders the same
+    // card as the first without another round trip. A cache hit costs
+    // nothing and charges nothing.
+    const body = await res.json()
+    expect(body.found).toBe(true)
+    expect(body.alreadyResolved).toBe(true)
+    expect(body.credits).toEqual({ used: 0, limit: 50, remaining: 50 })
     expect(global.fetch).not.toHaveBeenCalled()
   })
 
@@ -165,5 +172,80 @@ describe('live re-resolution', () => {
     expect(body.found).toBe(false)
     expect(body.error).toBeUndefined()
     expect(mockSignalUpdate).not.toHaveBeenCalled()
+  })
+})
+
+// 2026-09-04. Contacts moved from "enriched for every signal at scan time" to
+// "fetched when the recruiter clicks", with a real monthly allowance per plan.
+// Two facts verified against the live Apollo API that day shape every
+// assertion here: a search costs zero credits, and an enrichment that matches
+// nobody costs zero credits. So a failed lookup is free to Annie and must be
+// free to the customer.
+describe('the monthly contact allowance', () => {
+  function withTeam({ used = 0, tier = 'starter' } = {}) {
+    mockCreateClient.mockImplementation(() => ({
+      from: vi.fn((table) => {
+        if (table === 'team_members') {
+          return { select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: { team_id: 'team_1' }, error: null }) }) }) }) }
+        }
+        if (table === 'subscriptions') {
+          return { select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: { tier, status: 'active' }, error: null }) }) }) }
+        }
+        if (table === 'company_enrichment') return { select: () => ({ eq: () => ({ maybeSingle: mockEnrichmentSelect }) }) }
+        if (table === 'intelligence_signals') {
+          return {
+            select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: mockSignalSelect }) }) }),
+            update: () => ({ eq: () => ({ eq: mockSignalUpdate }) }),
+          }
+        }
+        throw new Error(`unexpected table ${table}`)
+      }),
+      rpc: vi.fn(async (name, args) => {
+        if (name === 'contact_credits_used') return { data: used, error: null }
+        if (name === 'contact_credits_consume') return { data: used + (args?.p_credits || 1), error: null }
+        return mockRpc(name, args)
+      }),
+    }))
+  }
+
+  it('refuses BEFORE spending anything at Apollo when the allowance is gone', async () => {
+    withTeam({ used: 50, tier: 'starter' })
+    mockSignalSelect.mockResolvedValue({ data: BASE_SIGNAL, error: null })
+    const fetchSpy = vi.fn()
+    global.fetch = fetchSpy
+
+    const res = await handler(makeRequest({ signalId: 'sig_1' }))
+    const body = await res.json()
+
+    expect(body.capReached).toBe(true)
+    expect(body.found).toBe(false)
+    expect(body.credits.remaining).toBe(0)
+    // The point of checking first: nothing is spent on a request that was
+    // never going to be allowed.
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('charges nothing when Apollo genuinely finds nobody', async () => {
+    withTeam({ used: 3 })
+    mockSignalSelect.mockResolvedValue({ data: BASE_SIGNAL, error: null })
+    mockEnrichmentSelect.mockResolvedValue({ data: null, error: null })
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ organizations: [], people: [], person: null }) })
+
+    const res = await handler(makeRequest({ signalId: 'sig_1' }))
+    const body = await res.json()
+
+    expect(body.found).toBe(false)
+    expect(body.charged).toBe(false)
+    // Unchanged — a lookup that returns nothing is free at Apollo and must be
+    // free here too.
+    expect(body.credits.used).toBe(3)
+  })
+
+  it('gives Growth a larger allowance than Starter', async () => {
+    withTeam({ used: 0, tier: 'growth' })
+    mockSignalSelect.mockResolvedValue({ data: { ...BASE_SIGNAL, contact_verified: true, contact_name: 'Dana Riaz' }, error: null })
+    const res = await handler(makeRequest({ signalId: 'sig_1' }))
+    const body = await res.json()
+    expect(body.credits.limit).toBe(150)
   })
 })

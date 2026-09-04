@@ -23,7 +23,12 @@ export const TIERS = [
     blurb: 'For a solo recruiter or a single desk.',
     monthly: 79,
     yearly: 69,
-    features: ['Full CRM, pipeline & contacts', 'Recurring BD signal scan', "Today's Actions", 'Ask Annie (up to 500 messages/mo)', 'LinkedIn import'],
+    // 2026-09-04: "Today's Actions" retired into the Intelligence Feed, and
+    // contact lookups became a visible, sellable allowance rather than an
+    // invisible cost centre. 50 means 50 CONTACTS RECEIVED — a lookup that
+    // finds nobody costs the customer nothing, because it costs Annie
+    // nothing (verified against the live Apollo API the same day).
+    features: ['Full CRM, pipeline & contacts', 'Recurring BD signal scan', 'Intelligence Feed', 'Ask Annie (up to 500 messages/mo)', '50 contact lookups/mo', 'LinkedIn import'],
   },
   {
     key: 'growth',
@@ -45,7 +50,7 @@ export const TIERS = [
     // confirms Growth's deeper scan budget applies to the ongoing cron
     // permanently, not just a one-time signup bonus, which the old wording
     // undersold.
-    features: ['Everything in Starter', 'Unlimited Ask Annie messages', 'Deeper, ongoing research scans'],
+    features: ['Everything in Starter', 'Unlimited Ask Annie messages', '150 contact lookups/mo', 'Deeper, ongoing research scans'],
     featured: true,
   },
   {
@@ -66,7 +71,7 @@ export const TIERS = [
     // genuinely Team-exclusive (a solo Starter/Growth account has no
     // teammates to share with), so it replaces the fabricated bullet
     // rather than just deleting it.
-    features: ['Everything in Growth, per seat', 'Shared CRM across your team', 'Team admin & insights view', 'Volume pricing on extra seats'],
+    features: ['Everything in Growth, per seat', 'Shared CRM across your team', '400 contact lookups/mo, shared', 'Team admin & insights view', 'Volume pricing on extra seats'],
   },
 ]
 

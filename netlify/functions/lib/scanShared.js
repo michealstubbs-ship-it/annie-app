@@ -2455,7 +2455,7 @@ export async function resolveContactForSignal({ apolloKey, company, signalType, 
   return { contact, contactCandidates }
 }
 
-export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints = [], apolloContactRetry = false, apolloCaps = {} }) {
+export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints = [], apolloContactRetry = false, apolloCaps = {}, resolveContacts = false }) {
   const isLiveJob = s.entryType === 'live_job'
 
   // 2026-09-02: cheapest possible check, before spending anything —
@@ -2546,16 +2546,40 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
   // primary path, falling back to the same multi-function search only if
   // that comes back with nobody, so the "always a contact" guarantee holds
   // for all four types, not just the two with an obvious single person.
-  const { contact, contactCandidates } = await resolveContactForSignal({
-    apolloKey, company: s.company, signalType, titleKeywords: s.titleKeywords,
-    appointedName: signalType === 'leadership_change' ? s.appointedName : null,
-    // roleTitle: the open role's own headline (e.g. "Chief Financial
-    // Officer"), separate from titleKeywords above which describes who to
-    // approach, not the role being filled. See isImplausibleHiringContact's
-    // own header for why this is needed.
-    roleTitle: s.headline,
-    supabase, apolloOrgId: companyInfo?.apolloOrgId, userId, apolloContactRetry, apolloCaps, logPrefix,
-  })
+  //
+  // 2026-09-04, the single biggest change in the rebuild. Contacts are NO
+  // LONGER resolved at scan time by default.
+  //
+  // Every signal used to be enriched with a contact whether the recruiter
+  // ever looked at it or not, because Today's Actions could not display a
+  // signal without one. That is how five test tenants burned through a
+  // 2,500-credit monthly Apollo plan in under two weeks, and it spent the
+  // most on exactly the signals nobody opened.
+  //
+  // Now the Intelligence Feed shows every lead regardless (see
+  // src/lib/stream/), and the contact is fetched when the recruiter clicks —
+  // one deliberate act, against a monthly allowance they can see
+  // (contactCreditsPerMonth in entitlements.js), through
+  // resolve-signal-contact.js. Projected effect at 100 customers: roughly
+  // 5,000 Apollo credits a month instead of ~90,000.
+  //
+  // resolveContacts is left as an explicit opt-in rather than deleted: the
+  // manual resolve endpoint calls resolveContactForSignal directly, and a
+  // future "pre-enrich my top N" feature would want this path back.
+  let contact = null
+  let contactCandidates = []
+  if (resolveContacts) {
+    ;({ contact, contactCandidates } = await resolveContactForSignal({
+      apolloKey, company: s.company, signalType, titleKeywords: s.titleKeywords,
+      appointedName: signalType === 'leadership_change' ? s.appointedName : null,
+      // roleTitle: the open role's own headline (e.g. "Chief Financial
+      // Officer"), separate from titleKeywords above which describes who to
+      // approach, not the role being filled. See isImplausibleHiringContact's
+      // own header for why this is needed.
+      roleTitle: s.headline,
+      supabase, apolloOrgId: companyInfo?.apolloOrgId, userId, apolloContactRetry, apolloCaps, logPrefix,
+    }))
+  }
 
   return {
     user_id: userId,
@@ -2640,7 +2664,7 @@ export async function mapWithConcurrency(items, limit, fn) {
 // Output order becomes "grouped by company" rather than strict input order
 // — harmless, since the result is only ever used as a set for a bulk
 // upsert, never rendered in array order.
-export async function buildEnrichedSignalRows(entries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, concurrency = 4, locationHints = [], apolloContactRetry = false, apolloCaps = {} }) {
+export async function buildEnrichedSignalRows(entries, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, concurrency = 4, locationHints = [], apolloContactRetry = false, apolloCaps = {}, resolveContacts = false }) {
   const groups = new Map()
   for (const s of entries) {
     const key = normalizeCompanyKey(s.company)
@@ -2655,7 +2679,7 @@ export async function buildEnrichedSignalRows(entries, { userId, apolloKey, comp
       // it's deliberately dropping (an agency-posted "role" — see its own
       // header) — never pushed, not even as a placeholder, so it simply
       // never reaches Today's BD Actions or the Feed.
-      const row = await buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints, apolloContactRetry, apolloCaps })
+      const row = await buildEnrichedSignalRow(s, { userId, apolloKey, companiesHouseKey, supabase, logPrefix, locationHints, apolloContactRetry, apolloCaps, resolveContacts })
       if (row) rows.push(row)
     }
     return rows
