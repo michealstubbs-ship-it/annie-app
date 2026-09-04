@@ -165,6 +165,41 @@ describe('computeWayIn — the ladder', () => {
     expect(result.nearMisses).toEqual(expect.arrayContaining(['Capital One', 'Cypher Capital']))
   })
 
+  // 2026-09-04, found by opening the deployed page rather than by a test: a
+  // live_job at "Xantory Tech Reseller General Trading LLC SOC" listed three
+  // rejected near-misses, all matched on the words "general" or "tech". None
+  // was a company anyone could confuse with it. A near miss is only worth
+  // naming when a person could actually make it.
+  it('does not report a near-miss on a shared category word', () => {
+    const result = computeWayIn({ company_name: 'Xantory Tech Reseller General Trading LLC SOC' }, {
+      contacts: [
+        { name: 'A', company: 'Real Estate General Authority' },
+        { name: 'B', company: 'Deep Tech IoT and AI-Powered Smart City Platform' },
+        { name: 'C', company: 'Saudi Arabian General Investment Authority (SAGIA)' },
+      ],
+    })
+    expect(result.rung).toBe(RUNG_COLD)
+    expect(result.nearMisses).toEqual([])
+  })
+
+  it('still reports the near-miss a person would genuinely make', () => {
+    const result = computeWayIn({ company_name: 'Capital Group' }, {
+      contacts: [{ name: 'A', company: 'Capital One' }],
+    })
+    expect(result.nearMisses).toEqual(['Capital One'])
+  })
+
+  it('caps the near-miss list so a card never becomes a list of rejections', () => {
+    const result = computeWayIn({ company_name: 'Investcorp Holdings' }, {
+      contacts: [
+        { name: 'A', company: 'Investcorp Alpha' },
+        { name: 'B', company: 'Investcorp Beta' },
+        { name: 'C', company: 'Investcorp Gamma' },
+      ],
+    })
+    expect(result.nearMisses.length).toBeLessThanOrEqual(2)
+  })
+
   it('never claims a way in when the signal has no company at all', () => {
     const result = computeWayIn({ company_name: null }, { contacts: [{ name: 'X', company: 'Anything' }] })
     expect(result.rung).toBe(RUNG_COLD)

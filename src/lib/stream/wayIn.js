@@ -133,7 +133,7 @@ export function computeWayIn(signal, { contacts = [], candidates = [] } = {}) {
     if (!c?.company) continue
     const relation = companyRelation(company, c.company)
     if (relation) matchedContacts.push({ contact: c, relation })
-    else if (sharesAnyToken(company, c.company)) nearMisses.push(c.company)
+    else if (isNearMiss(company, c.company)) nearMisses.push(c.company)
   }
 
   const matchedCandidates = []
@@ -143,7 +143,7 @@ export function computeWayIn(signal, { contacts = [], candidates = [] } = {}) {
     if (relation) matchedCandidates.push({ candidate: cd, relation })
   }
 
-  const uniqueNearMisses = [...new Set(nearMisses)].slice(0, 3)
+  const uniqueNearMisses = [...new Set(nearMisses)].slice(0, 2)
 
   // Rung 1 — a contact they have actually dealt with. Exact company matches
   // outrank parent matches; among equals, the most recently contacted wins.
@@ -212,12 +212,39 @@ function byRelationThenRecency(a, b) {
   return tb - ta
 }
 
+// Words that carry no identity. A company sharing one of these with another is
+// not a near miss, it is a coincidence — and listing it makes the product look
+// like it cannot tell companies apart.
+//
+// 2026-09-04, found by actually looking at the deployed page: a live_job at
+// "Xantory Tech Reseller General Trading LLC SOC" was reporting near-misses
+// against "Real Estate General Authority", "Disrupt-X : Deep Tech IoT..." and
+// "Saudi Arabian General Investment Authority" — on the strength of the words
+// "general" and "tech". Three rejections listed, none of them a company anyone
+// could mistake for the target.
+const GENERIC_TOKENS = new Set([
+  'tech', 'technology', 'technologies', 'general', 'trading', 'global',
+  'international', 'national', 'digital', 'services', 'solutions', 'systems',
+  'consulting', 'industries', 'enterprises', 'ventures', 'partners',
+  'development', 'projects', 'contracting', 'engineering', 'properties',
+  'estate', 'realty', 'energy', 'power', 'health', 'medical', 'financial',
+  'finance', 'insurance', 'media', 'united', 'first', 'prime', 'advanced',
+  'smart', 'modern', 'middle', 'east', 'gulf', 'arab', 'emirates', 'saudi',
+  'dubai', 'abu', 'dhabi', 'qatar', 'kuwait', 'oman', 'bahrain', 'london',
+])
+
 // Only surfaced so the UI can say "you have contacts at X and Y, they are
-// different companies" — showing the working is what makes the silence read
-// as judgement rather than as a gap. Deliberately token-based and loose,
-// because this is the set the matcher REJECTED, not accepted.
-function sharesAnyToken(a, b) {
-  const ta = tokensOf(a)
-  const tb = new Set(tokensOf(b))
-  return ta.some(t => t.length >= 4 && tb.has(t))
+// different companies" — showing the working is what makes the silence read as
+// judgement rather than as a gap. But it earns that only when the near miss is
+// one a person could actually make.
+//
+// The test is deliberately narrow: the two names must share the FIRST token of
+// the signal's company name — its distinctive head, the part someone would
+// actually confuse. "Capital Group" and "Capital One" share "capital" and are
+// a genuine near miss worth naming. "Xantory Tech" and "Deep Tech IoT" share
+// only a category word and are not.
+function isNearMiss(signalCompany, recordCompany) {
+  const head = tokensOf(signalCompany)[0]
+  if (!head || head.length < 4 || GENERIC_TOKENS.has(head)) return false
+  return tokensOf(recordCompany).includes(head)
 }
