@@ -9,6 +9,7 @@ import { trackEvent } from '../lib/analytics'
 import { resolveSignalContact } from '../lib/resolveSignalContact'
 import { SIGNAL_TYPE_META as TYPE_META, RACY_SIGNAL_TYPES as RACY_TYPES, NEWS_SIGNAL_TYPES } from '../lib/signalTypes'
 import { collapseFeedDuplicates } from '../lib/intelligenceFeedDedup'
+import { looksLikeNonEmployerOrg } from '../lib/agencyMatch'
 import Spinner from './Spinner'
 import ErrorBanner from './ErrorBanner'
 
@@ -83,7 +84,19 @@ export default function IntelligenceFeed() {
   // count/list below is derived from this collapsed view, not raw
   // `signals`, so the "3 new" badge can never disagree with how many cards
   // actually show.
-  const dedupedSignals = useMemo(() => collapseFeedDuplicates(signals), [signals])
+  // 2026-09-08, Michael, real report: this page still showed "COPADO User
+  // Group Hyderabad"/"AWS User Group SE" live_job leads after the
+  // looksLikeNonEmployerOrg fix (agencyMatch.js) shipped — that fix's own
+  // read-time backstop was only ever wired into Today's Actions' own pools
+  // (sourcedPool.js/relationshipPool.js), ONE call site short of covering
+  // every place a stale pre-fix row (or any future edge case the write-time
+  // check misses) could still surface. Same one-line guard, same scope
+  // (live_job only — a funding/expansion/leadership_change signal was never
+  // the failure mode here), just applied to the Feed's own list too.
+  const dedupedSignals = useMemo(
+    () => collapseFeedDuplicates(signals).filter(s => !(s.signal_type === 'live_job' && looksLikeNonEmployerOrg(s.company_name, s.company_industry))),
+    [signals],
+  )
   const newCount = useMemo(() => dedupedSignals.filter(s => s.status === 'new').length, [dedupedSignals])
   const tabSignals = useMemo(
     () => dedupedSignals.filter(s => mainTab === 'news' ? NEWS_SIGNAL_TYPES.includes(s.signal_type) : !NEWS_SIGNAL_TYPES.includes(s.signal_type)),
