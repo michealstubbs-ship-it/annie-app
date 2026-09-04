@@ -1261,23 +1261,148 @@ describe('verifyContact — company + title-bucket contact cache', () => {
     vi.unstubAllGlobals()
   })
 
-  // 4th-pass audit fix: same reserve/release gap as discoverTheirStackJobs
-  // above, applied to verifyContact's own search-call reservation — a
-  // failed Apollo people-search call used to permanently cost the credit
-  // reserved for it.
-  it('releases the reserved search credit when the Apollo people-search call returns a non-ok response', async () => {
+  // 2026-09-04: these two tests used to assert that a failed Apollo
+  // people-SEARCH released a reserved credit. That reservation no longer
+  // exists, because the search itself is free — verified against the live
+  // Apollo API on 2026-09-04, where a real mixed_people/api_search left the
+  // team's consumed lead_credit count unchanged (1359 -> 1359). Reserving for
+  // it charged every customer's daily cap for a call Apollo never billed.
+  // The assertions are inverted rather than deleted: nothing may be reserved
+  // or released for a search, on any path.
+  it('never reserves or releases a credit for the Apollo people-search itself — the search is free', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ people: [] }),
+    }))
+    const { supabase, rpc } = makeMockSupabase()
+    await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123', null, 'u1')
+    expect(rpc).not.toHaveBeenCalledWith('apollo_reserve_credits', expect.anything())
+    expect(rpc).not.toHaveBeenCalledWith('apollo_release_credits', expect.anything())
+    vi.unstubAllGlobals()
+  })
+
+  it('does not reserve or release anything when the Apollo people-search returns a non-ok response', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401, text: async () => 'unauthorized' }))
     const { supabase, rpc } = makeMockSupabase()
     await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123', null, 'u1')
+    expect(rpc).not.toHaveBeenCalledWith('apollo_reserve_credits', expect.anything())
+    expect(rpc).not.toHaveBeenCalledWith('apollo_release_credits', expect.anything())
+    vi.unstubAllGlobals()
+  })
+
+  // The cache poisoning fix. company_contacts is shared across every account,
+  // and a negative row suppresses that company/role for CONTACT_CACHE_TTL_DAYS
+  // (60) for EVERYONE. Measured on production 2026-09-04: 299 of 604 rows were
+  // negative, and re-running one of them by hand (Amana / engineering
+  // director) returned three real people. Only an actual Apollo answer may
+  // write "nobody here".
+  it('does NOT write a negative cache row when the Apollo search fails — that is not evidence about the company', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 429, text: async () => 'rate limited' }))
+    const { supabase, upsertCalls } = makeMockSupabase()
+    await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123', null, 'u1')
+    expect(upsertCalls).toHaveLength(0)
+    vi.unstubAllGlobals()
+  })
+
+  it('does NOT write a negative cache row when the Apollo search throws', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
+    const { supabase, upsertCalls } = makeMockSupabase()
+    await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123', null, 'u1')
+    expect(upsertCalls).toHaveLength(0)
+    vi.unstubAllGlobals()
+  })
+
+  it('does NOT write a negative cache row when the reveal is blocked by the customer daily cap', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_people/api_search')) {
+        return { ok: true, json: async () => ({ people: [{ id: 'p1', first_name: 'Dana', has_email: true }] }) }
+      }
+      throw new Error(`reveal should never have been attempted: ${url}`)
+    }))
+    const { supabase, upsertCalls } = makeMockSupabase()
+    supabase.rpc = vi.fn().mockResolvedValue({ data: 'user_cap', error: null })
+    const result = await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123', null, 'u1')
+    expect(result).toBeNull()
+    expect(upsertCalls).toHaveLength(0)
+    vi.unstubAllGlobals()
+  })
+
+  it('DOES write a negative cache row when Apollo answers cleanly with nobody — that is a real fact', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ people: [] }) }))
+    const { supabase, upsertCalls } = makeMockSupabase()
+    await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123', null, 'u1')
+    expect(upsertCalls).toHaveLength(1)
+    expect(upsertCalls[0].contact_verified).toBe(false)
+    vi.unstubAllGlobals()
+  })
+
+  // match_confidence "none" is Apollo's way of saying "I matched nobody", and
+  // that response is NOT billed — verified live 2026-09-04 (1359 -> 1359 for a
+  // deliberately unmatchable name). Nothing in this file read that field
+  // before, so a free miss was permanently charged against the caps.
+  it('releases the reveal credit when people/match comes back with no confident match', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url.includes('mixed_people/api_search')) {
+        return { ok: true, json: async () => ({ people: [{ id: 'p1', first_name: 'Dana', has_email: true }] }) }
+      }
+      return { ok: true, json: async () => ({ person: { match_confidence: 'none' } }) }
+    }))
+    const { supabase, rpc } = makeMockSupabase()
+    const result = await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123', null, 'u1')
+    expect(result).toBeNull()
     expect(rpc).toHaveBeenCalledWith('apollo_release_credits', { p_credits: 1, p_user_id: 'u1' })
     vi.unstubAllGlobals()
   })
 
-  it('releases the reserved search credit when the Apollo people-search call throws', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
-    const { supabase, rpc } = makeMockSupabase()
-    await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123', null, 'u1')
-    expect(rpc).toHaveBeenCalledWith('apollo_release_credits', { p_credits: 1, p_user_id: 'u1' })
+  // per_page was 1 until 2026-09-04, which committed the single paid reveal to
+  // whoever Apollo happened to rank first. The search is free, so asking for
+  // more candidates costs nothing and lets the paid call target someone Apollo
+  // can actually complete.
+  it('asks for several search candidates and reveals the one Apollo says has an email', async () => {
+    const revealed = []
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      const body = JSON.parse(opts.body)
+      if (url.includes('mixed_people/api_search')) {
+        expect(body.per_page).toBeGreaterThan(1)
+        return {
+          ok: true,
+          json: async () => ({ people: [
+            { id: 'no-email', first_name: 'Amir', has_email: false },
+            { id: 'has-email', first_name: 'Dana', has_email: true },
+          ] }),
+        }
+      }
+      revealed.push(body.id)
+      return { ok: true, json: async () => ({ person: { id: body.id, match_confidence: 'high', first_name: 'Dana', last_name: 'Riaz', title: 'CFO', email: 'dana@acme.com' } }) }
+    }))
+    const { supabase } = makeMockSupabase()
+    const result = await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123', null, 'u1')
+    expect(revealed).toEqual(['has-email'])
+    expect(result.name).toBe('Dana Riaz')
+    expect(result.email).toBe('dana@acme.com')
+    vi.unstubAllGlobals()
+  })
+
+  it('falls through to the next candidate when a reveal comes back without a usable last name', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      const body = JSON.parse(opts.body)
+      if (url.includes('mixed_people/api_search')) {
+        return {
+          ok: true,
+          json: async () => ({ people: [
+            { id: 'partial', first_name: 'Amir', has_email: true },
+            { id: 'complete', first_name: 'Dana', has_email: true },
+          ] }),
+        }
+      }
+      if (body.id === 'partial') {
+        return { ok: true, json: async () => ({ person: { id: 'partial', match_confidence: 'high', first_name: 'Amir', last_name: null } }) }
+      }
+      return { ok: true, json: async () => ({ person: { id: 'complete', match_confidence: 'high', first_name: 'Dana', last_name: 'Riaz', title: 'CFO' } }) }
+    }))
+    const { supabase } = makeMockSupabase()
+    const result = await verifyContact('apollo-key', 'Acme Ltd', ['CFO'], supabase, 'org_123', null, 'u1')
+    expect(result.name).toBe('Dana Riaz')
     vi.unstubAllGlobals()
   })
 
@@ -2246,18 +2371,37 @@ describe('enrichCompany — pickBestOrgMatch (the Stitch / Stitch Fix wrong-comp
 describe('verifyContact — leadership_change name-based lookup', () => {
   it('looks up a named appointee via people/match, passing the name and company rather than a title search', async () => {
     const supabase = makeTableAwareSupabase()
+    // 2026-09-04: ONE people/match call, not two. This used to call the
+    // endpoint twice for the same person — once to resolve the name, once to
+    // reveal the email — and both are billable enrichments, so every
+    // leadership_change contact cost two credits instead of one.
+    // reveal_personal_emails is accepted on the call that resolves the name.
+    const matchCalls = []
     vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
       if (url.includes('people/match')) {
         const body = JSON.parse(opts.body)
-        if (body.id) return { ok: true, json: async () => ({ person: { email: 'sarah@dewa.gov.ae' } }) }
+        matchCalls.push(body)
         expect(body.name).toBe('Sarah Al Mazrouei')
         expect(body.organization_name).toBe('DEWA')
-        return { ok: true, json: async () => ({ person: { first_name: 'Sarah', last_name: 'Al Mazrouei', title: 'CEO', id: 'p1' } }) }
+        expect(body.reveal_personal_emails).toBe(true)
+        return { ok: true, json: async () => ({ person: { first_name: 'Sarah', last_name: 'Al Mazrouei', title: 'CEO', id: 'p1', match_confidence: 'high', email: 'sarah@dewa.gov.ae' } }) }
       }
       throw new Error(`unexpected fetch in this test: ${url}`)
     }))
     const result = await verifyContact('apollo-key', 'DEWA', [], supabase, 'org_1', 'Sarah Al Mazrouei')
     expect(result).toEqual({ name: 'Sarah Al Mazrouei', title: 'CEO', linkedin_url: '', email: 'sarah@dewa.gov.ae' })
+    expect(matchCalls).toHaveLength(1)
+    vi.unstubAllGlobals()
+  })
+
+  it('releases the credit when Apollo cannot confirm the named appointee, and records that as a real negative', async () => {
+    const supabase = makeTableAwareSupabase()
+    const rpc = vi.fn().mockResolvedValue({ data: 'ok', error: null })
+    supabase.rpc = rpc
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ person: { match_confidence: 'none' } }) })))
+    const result = await verifyContact('apollo-key', 'DEWA', [], supabase, 'org_1', 'Nobody Realhere', 'u1')
+    expect(result).toBeNull()
+    expect(rpc).toHaveBeenCalledWith('apollo_release_credits', { p_credits: 1, p_user_id: 'u1' })
     vi.unstubAllGlobals()
   })
 

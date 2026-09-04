@@ -44,7 +44,7 @@
 // per-run signal cap, and the cheaper model.
 import { createClient } from '@supabase/supabase-js'
 import { reportServerError } from './lib/reportError.js'
-import { reserveAnthropicTokens } from './lib/aiUsage.js'
+import { reserveAnthropicTokens, reconcileAnthropicTokens } from './lib/aiUsage.js'
 import { getEntitlements, SCAN_TIER_CONFIG, resolveResourceCaps } from './lib/entitlements.js'
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, fundingFuzzyKey, extractJson, looksTruncatedByTokenLimit,
@@ -494,7 +494,12 @@ async function scanOneCustomer(ob, ctx) {
   if (poolMatches.length) {
     const reserved = await reserveAnthropicTokens(supabase, ob.user_id, POOL_PERSONALIZE_MAX_TOKENS, resourceCaps.anthropicTokens)
     if (reserved) {
-      poolPersonalized = (await personalizePoolHits(anthropicKey, poolMatches, ob)).map(e => ({ ...e, fromPool: true }))
+      poolPersonalized = (await personalizePoolHits(anthropicKey, poolMatches, ob, (billed) => {
+        // 2026-09-04: reconcile the flat 3000-token reservation made just above
+        // against what Anthropic actually charged. Not awaited — accounting
+        // must never stall or fail a scan.
+        reconcileAnthropicTokens(supabase, ob.user_id, POOL_PERSONALIZE_MAX_TOKENS, billed)
+      })).map(e => ({ ...e, fromPool: true }))
       if (poolPersonalized.length) {
         console.log(`[intelligence-scan] signal pool contributed ${poolPersonalized.length} pre-verified signal(s) for`, ob.user_id, '- skipping fresh discovery for those')
       }

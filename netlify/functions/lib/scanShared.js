@@ -142,7 +142,19 @@ export function createTimeoutFetch(timeoutMs = 20000) {
 // same budget three times over for the same guaranteed failure. Jittered
 // backoff so a real outage doesn't turn into every customer's retry landing
 // on the provider in the same instant.
-export async function fetchWithRetry(url, options = {}, timeoutMs = 12000, retries = 2) {
+//
+// 2026-09-04: `billable` added. A client-side timeout is NOT evidence that the
+// request failed at the other end — fetchWithTimeout aborts locally after
+// timeoutMs, but the provider may have already accepted, processed and
+// INVOICED the call. Retrying it then buys the same billed work a second and
+// third time. That mattered most for TheirStack, where one search returns (and
+// charges for) ten job records against a single ten-credit reservation: a
+// search that completed server-side in 13s was aborted at 12s, retried twice,
+// and could bill thirty records while the refund at the call site was computed
+// from only the last response. Apollo's people/match has the same shape at one
+// credit a go. Genuine HTTP responses (429/5xx) are still retried on billable
+// calls, because those are the provider explicitly telling us it did no work.
+export async function fetchWithRetry(url, options = {}, timeoutMs = 12000, retries = 2, { billable = false } = {}) {
   let lastErr = null
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -151,6 +163,11 @@ export async function fetchWithRetry(url, options = {}, timeoutMs = 12000, retri
       lastErr = new Error(`HTTP ${resp.status}`)
     } catch (err) {
       lastErr = err
+      // An abort means "we stopped waiting", not "nothing happened".
+      if (billable && (err?.name === 'AbortError' || /abort/i.test(err?.message || ''))) {
+        console.error(`[scanShared] billable call to ${url} timed out locally after ${timeoutMs}ms — NOT retrying, the provider may already have completed and billed it`)
+        throw err
+      }
     }
     if (attempt < retries) {
       const backoffMs = 500 * Math.pow(2, attempt) + Math.random() * 250
@@ -1232,7 +1249,7 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(body),
-    })
+    }, 12000, 2, { billable: true })
     if (!resp.ok) {
       console.error(`[scanShared] TheirStack jobs/search non-ok response: ${resp.status}`)
       // Nothing was actually returned (so nothing actually billed) — refund
@@ -1541,6 +1558,8 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase,
   // "we already looked for this exact kind of role, nobody findable") so a
   // company/role combination that never yields a contact isn't retried on
   // every single run either.
+  //
+  // 2026-09-04: what may be written as a negative changed — see step 3.
   if (supabase) {
     try {
       // 2026-08-26 audit fix: same gap as the write path below (see its own
@@ -1576,19 +1595,53 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase,
   // different function; nothing here said "and that's also why the contact
   // search never even ran." 2026-08-26: this is now the dominant failure
   // mode this file's own header comment documents, so it gets its own line.
-  if (!apolloOrgId) {
+  if (!apolloOrgId && !appointedName) {
     console.log(`[scanShared] verifyContact: skipping "${company}" (${titleKey}) — no Apollo org id resolved for this company, so there's nobody to search under`)
     return null
   }
-  if (!(await reserveApolloCredits(supabase, userId, 1, caps))) return null
 
-  const result = appointedName
+  // 2026-09-04: no credit is reserved here any more. This function used to
+  // reserve one before calling through, on the assumption that the Apollo
+  // *search* costs a credit. It does not. Verified directly against the live
+  // API on 2026-09-04: mixed_people/api_search ran against a real org and the
+  // team's lead_credit consumed figure was identical before and after
+  // (1359 -> 1359). Only a people/match that returns a real person is
+  // billed. Reserving here therefore charged every customer's daily cap for
+  // a call Apollo never invoiced, roughly doubling the metered cost of every
+  // contact lookup and throttling scans against a budget that was not being
+  // spent. Credits are now reserved at the single point where Apollo
+  // actually bills — the reveal — and released whenever that reveal comes
+  // back without a match (also free, verified the same way:
+  // match_confidence "none" moved the counter 1359 -> 1359).
+  const outcome = appointedName
     ? await lookupContactByName(apolloKey, company, appointedName, supabase, userId, caps)
     : await lookupContact(apolloKey, company, titleKeywords, supabase, apolloOrgId, userId, caps)
 
-  // 3. Write through regardless of hit or miss — a negative result is a
-  // cache-worthy fact too, see the comment on step 1.
-  if (supabase) {
+  const result = outcome?.contact || null
+
+  // 3. Write through ONLY when Apollo actually answered.
+  //
+  // 2026-09-04: this used to write `contact_verified: !!result` on every
+  // path, which meant a null for ANY reason was recorded as the durable,
+  // cross-account fact "nobody findable here" for CONTACT_CACHE_TTL_DAYS
+  // (60). But null was also what came back when this customer hit their own
+  // apolloUserDailyCap, when Apollo returned a 429 or 5xx, and when the
+  // request timed out — none of which are evidence about the company. The
+  // table is deliberately shared across every account (see its use in
+  // enrichCompany), so one customer exhausting their own daily cap, or one
+  // transient Apollo error, blanked that company/role for EVERY account for
+  // two months. Measured on production 2026-09-04: 299 of 604 cached rows
+  // were negative, all written inside the previous 14 days. Spot-checked two
+  // by re-running the (free) search by hand: "Starling Bank / country
+  // manager|general manager|managing director" was genuinely empty, but
+  // "Amana / engineering director|head of engineering|vp engineering"
+  // returned three real people, two of them with emails available. That row
+  // was suppressing a real lead for everyone.
+  //
+  // `conclusive` is true only when Apollo returned a well-formed response we
+  // can draw a conclusion from. Everything else leaves the cache untouched
+  // so the next run retries — which is free, because the search is free.
+  if (supabase && outcome?.conclusive) {
     try {
       // 2026-08-24 Task 5: the try/catch here only ever caught a network-
       // level throw — the Supabase client resolves normally with `error`
@@ -1611,17 +1664,88 @@ export async function verifyContact(apolloKey, company, titleKeywords, supabase,
     } catch (err) {
       console.error(`[scanShared] contact cache write failed for "${company}" (${titleKey}):`, err.message)
     }
+  } else if (supabase && !outcome?.conclusive) {
+    console.log(`[scanShared] verifyContact: not caching a result for "${company}" (${titleKey}) — Apollo never returned a usable answer, so "no contact" would be a guess, not a fact`)
   }
 
   return result
 }
 
+// How many search results to consider before giving up on a title bucket.
+// The search itself is free (see verifyContact's note), so asking for more
+// candidates costs nothing and buys two things: an alternate to fall through
+// to when the first person's reveal comes back unusable, and the has_email
+// flag per person, which lets the paid reveal target someone Apollo can
+// actually complete. This was `per_page: 1` until 2026-09-04, which committed
+// the one paid call to whoever Apollo happened to rank first.
+const CONTACT_SEARCH_CANDIDATES = 10
+
+// How many of those candidates are worth paying to reveal before concluding
+// nobody at this company/role is reachable. Each attempt is only billed if it
+// returns a real person, but each one is still a round trip, and a company
+// where the first two well-chosen candidates both fail is a company where the
+// data is thin.
+const MAX_REVEAL_ATTEMPTS = 3
+
+// Reveals one Apollo person id. Returns the enriched fields, or null.
+// Reserves a credit before the call and RELEASES it whenever Apollo did not
+// actually bill — verified 2026-09-04 against the live API: a people/match
+// that resolves with `match_confidence: "none"` leaves the team's consumed
+// credit count unchanged, so treating that as spend was pure phantom cost.
+async function revealApolloPerson(apolloKey, personId, supabase, userId, caps, label = '') {
+  if (!personId) return null
+  if (!(await reserveApolloCredits(supabase, userId, 1, caps))) {
+    // Cap-blocked. Not evidence about the person — the caller must not turn
+    // this into a cached negative.
+    return { capBlocked: true }
+  }
+  try {
+    const matchResp = await fetchWithRetry('https://api.apollo.io/v1/people/match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
+      body: JSON.stringify({ id: personId, reveal_personal_emails: true }),
+    }, 12000, 1, { billable: true })
+    if (!matchResp.ok) {
+      console.error(`[scanShared] reveal non-ok response for ${label || personId}: ${matchResp.status}`)
+      await releaseApolloCredits(supabase, userId, 1)
+      return { failed: true }
+    }
+    const matchData = await matchResp.json()
+    const person = matchData?.person
+    // Apollo answers 200 with a person-shaped object even when it matched
+    // nothing; match_confidence "none" is the tell, and that response is not
+    // billed. Nothing in this file read that field before 2026-09-04, so the
+    // code could not distinguish a paid match from a free miss.
+    const matched = person && person.match_confidence !== 'none' && (person.id || person.email || person.linkedin_url)
+    if (!matched) {
+      await releaseApolloCredits(supabase, userId, 1)
+      return null
+    }
+    const rawEmail = person?.email
+    const email = rawEmail && !rawEmail.includes('email_not_unlocked') && !rawEmail.includes('locked') ? rawEmail : null
+    return {
+      first_name: person?.first_name || null,
+      last_name: person?.last_name || null,
+      title: person?.title || null,
+      linkedin_url: person?.linkedin_url || null,
+      email,
+    }
+  } catch (err) {
+    console.error(`[scanShared] reveal failed for ${label || personId}:`, err.message)
+    await releaseApolloCredits(supabase, userId, 1)
+    return { failed: true }
+  }
+}
+
+// Returns { contact, conclusive }. See verifyContact step 3 for what
+// `conclusive` governs — in short, only a well-formed Apollo answer is
+// allowed to write a durable "nobody here" into the shared cache.
 async function lookupContact(apolloKey, company, titleKeywords, supabase, apolloOrgId, userId = null, caps = {}) {
   try {
     const resp = await fetchWithRetry('https://api.apollo.io/api/v1/mixed_people/api_search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
-      body: JSON.stringify({ organization_ids: [apolloOrgId], person_titles: titleKeywords?.length ? titleKeywords : undefined, page: 1, per_page: 1 }),
+      body: JSON.stringify({ organization_ids: [apolloOrgId], person_titles: titleKeywords?.length ? titleKeywords : undefined, page: 1, per_page: CONTACT_SEARCH_CANDIDATES }),
     })
     if (!resp.ok) {
       // This used to only go to console.error — invisible the same way the
@@ -1631,98 +1755,79 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
       await reportServerError('scanShared:verifyContact', new Error(`Apollo mixed_people/api_search returned ${resp.status}`), {
         company, apolloOrgId, titleKeywords, status: resp.status, bodyPreview: bodyPreview.slice(0, 500),
       })
-      // 4th-pass audit fix: release the search credit verifyContact reserved
-      // before calling this — the call failed, nothing was returned for it.
-      await releaseApolloCredits(supabase, userId, 1)
-      return null
+      // No credit to release: the search is free and nothing was reserved
+      // for it. Inconclusive, so the caller leaves the cache alone.
+      return { contact: null, conclusive: false }
     }
     const data = await resp.json()
-    const p = (data.people || [])[0]
-    if (!p) {
+    const people = Array.isArray(data.people) ? data.people : []
+    if (!people.length) {
       console.log(`[scanShared] verifyContact: no Apollo person matched any of [${(titleKeywords || []).join(', ')}] at "${company}" (org ${apolloOrgId})`)
-      return null
+      // Apollo answered and had nobody. That IS a fact worth caching.
+      return { contact: null, conclusive: true }
     }
+
     // 2026-08-24: mixed_people/api_search masks last names on this account's
     // Apollo plan tier — the raw response carries `last_name_obfuscated`
     // (e.g. "Re***n"), never a usable `last_name`, confirmed directly
     // against the live API, not assumed. Requiring p.last_name straight off
     // this search result — the previous behavior — meant every single
     // result from this endpoint, for every company, every signal type, was
-    // silently discarded here. That's the actual root cause of Today's BD
-    // Actions going completely empty: the "always require a real contact"
-    // rule was correctly enforcing itself against a pipeline that could
-    // never produce one. A first name is still enough to know there's a
-    // real person worth revealing — the full identity comes from the same
-    // reveal call already made below for the email, which returns an
-    // unmasked name (confirmed live: search gave "Re***n", the reveal call
-    // for that same person id gave "Rehman").
-    if (!p.first_name) {
-      console.log(`[scanShared] verifyContact: Apollo person record for "${company}" (org ${apolloOrgId}) had no first name at all — treating as no usable contact`)
-      return null
+    // silently discarded here. A first name is still enough to know there's
+    // a real person worth revealing — the full identity comes from the
+    // reveal call, which returns an unmasked name (confirmed live: search
+    // gave "Re***n", the reveal for that same person id gave "Rehman").
+    //
+    // 2026-09-04: order the candidates rather than taking people[0] blind.
+    // has_email comes back on every search row and costs nothing to read;
+    // preferring the people Apollo can actually complete is the difference
+    // between a reveal that yields a usable record and one that yields a
+    // first name. Ordering is stable so the same company/role resolves to
+    // the same person run to run.
+    const candidates = people
+      .filter((p) => p && p.id && p.first_name)
+      .sort((a, b) => (b.has_email === true ? 1 : 0) - (a.has_email === true ? 1 : 0))
+    if (!candidates.length) {
+      console.log(`[scanShared] verifyContact: Apollo returned ${people.length} row(s) for "${company}" (org ${apolloOrgId}) but none had both an id and a first name — treating as no usable contact`)
+      return { contact: null, conclusive: true }
     }
 
-    // Reveal is no longer "just for email" — for this endpoint it's now the
-    // only source of the real, unmasked last name too, so it's always
-    // attempted once there's a person id, not conditioned on already having
-    // a full name from search (which this endpoint never actually gives).
-    let email = null
-    let revealedFirstName = null
-    let revealedLastName = null
-    let revealedTitle = null
-    let revealedLinkedin = null
-    if (p.id && (await reserveApolloCredits(supabase, userId, 1, caps))) {
-      try {
-        const matchResp = await fetchWithRetry('https://api.apollo.io/v1/people/match', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
-          body: JSON.stringify({ id: p.id, reveal_personal_emails: true }),
-        }, 12000, 1)
-        if (matchResp.ok) {
-          const matchData = await matchResp.json()
-          const revealedPerson = matchData?.person
-          revealedFirstName = revealedPerson?.first_name || null
-          revealedLastName = revealedPerson?.last_name || null
-          revealedTitle = revealedPerson?.title || null
-          revealedLinkedin = revealedPerson?.linkedin_url || null
-          const revealed = revealedPerson?.email
-          if (revealed && !revealed.includes('email_not_unlocked') && !revealed.includes('locked')) email = revealed
-        } else {
-          console.error(`[scanShared] email reveal non-ok response for "${company}"/"${p.first_name}": ${matchResp.status}`)
-          // 4th-pass audit fix: release the reveal credit just reserved above.
-          await releaseApolloCredits(supabase, userId, 1)
-        }
-      } catch (err) {
-        // Never let a failed reveal cost visibility into why — this is now
-        // also the only source of the last name, so a failure here means
-        // no contact at all, not just no email, and that's worth knowing.
-        console.error(`[scanShared] email reveal failed for "${company}"/"${p.first_name}":`, err.message)
-        await releaseApolloCredits(supabase, userId, 1)
+    let sawIndeterminate = false
+    for (const p of candidates.slice(0, MAX_REVEAL_ATTEMPTS)) {
+      const revealed = await revealApolloPerson(apolloKey, p.id, supabase, userId, caps, `"${company}"/"${p.first_name}"`)
+      if (revealed?.capBlocked || revealed?.failed) {
+        // Cap-blocked or a transient error. Stop trying and make sure the
+        // caller does not record a negative — we learned nothing.
+        sawIndeterminate = true
+        break
+      }
+      if (!revealed) continue // free miss on this person, try the next
+
+      const firstName = revealed.first_name || p.first_name
+      const lastName = revealed.last_name
+      if (!firstName || !lastName) {
+        console.log(`[scanShared] verifyContact: reveal for "${company}"/"${p.first_name}" returned no usable last name — trying the next candidate rather than showing a first-name-only record`)
+        continue
+      }
+      return {
+        contact: {
+          name: `${firstName} ${lastName}`.trim(),
+          title: revealed.title || p.title || '',
+          linkedin_url: revealed.linkedin_url || p.linkedin_url || '',
+          email: revealed.email,
+        },
+        conclusive: true,
       }
     }
 
-    // Same bar as before — a confirmed first AND last name, not a thin
-    // partial record — just checked against the reveal response, the only
-    // place a real (unmasked) last name actually exists, instead of the
-    // search response, which never has one on this plan.
-    const firstName = revealedFirstName || p.first_name
-    const lastName = revealedLastName
-    if (!firstName || !lastName) {
-      console.log(`[scanShared] verifyContact: found a real Apollo person for "${company}" (${p.first_name || '?'}) but the reveal call never returned a usable last name — dropping the contact rather than showing a first-name-only record`)
-      return null
-    }
-    const name = `${firstName} ${lastName}`.trim()
-
-    return { name, title: revealedTitle || p.title || '', linkedin_url: revealedLinkedin || p.linkedin_url || '', email }
+    // Everyone we tried came back unusable. If any attempt was cap-blocked or
+    // errored we cannot conclude anything; otherwise Apollo genuinely has
+    // nothing complete for this company/role.
+    return { contact: null, conclusive: !sawIndeterminate }
   } catch (err) {
     console.error(`[scanShared] verifyContact failed for "${company}":`, err.message)
-    // 4th-pass audit fix: a throw this far up (almost always the initial
-    // fetchWithRetry itself failing) means the search credit reserved
-    // before calling this function was never actually spent on a result —
-    // the reveal step's own credit already releases itself in its own
-    // try/catch above, so this only ever double-covers the search credit.
-    await releaseApolloCredits(supabase, userId, 1)
     await reportServerError('scanShared:verifyContact', err, { company, titleKeywords })
-    return null
+    return { contact: null, conclusive: false }
   }
 }
 
@@ -1733,7 +1838,18 @@ async function lookupContact(apolloKey, company, titleKeywords, supabase, apollo
 // a generic title search within this same call) if Apollo can't confirm a
 // match on the name, since showing a different, unrelated person under "the
 // new leader" would be worse than showing no verified contact at all.
+//
+// 2026-09-04: this used to call people/match TWICE for the same person —
+// once with { name, organization_name } to find them, then again with
+// { id, reveal_personal_emails } to get the email. Both are billable
+// enrichments, so every leadership_change contact cost two credits instead
+// of one. people/match accepts reveal_personal_emails on the same call that
+// resolves the name, so the second call was pure duplication.
 async function lookupContactByName(apolloKey, company, fullName, supabase, userId = null, caps = {}) {
+  if (!(await reserveApolloCredits(supabase, userId, 1, caps))) {
+    console.log(`[scanShared] lookupContactByName: cap reached before looking up "${fullName}" at "${company}" — not treating that as "no such person"`)
+    return { contact: null, conclusive: false }
+  }
   try {
     // people/match (People Enrichment) takes a name plus a company hint, not
     // an organization_id — unlike mixed_people/api_search above, which is a
@@ -1742,56 +1858,45 @@ async function lookupContactByName(apolloKey, company, fullName, supabase, userI
     const resp = await fetchWithRetry('https://api.apollo.io/v1/people/match', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
-      body: JSON.stringify({ name: fullName, organization_name: company }),
-    }, 12000, 1)
+      body: JSON.stringify({ name: fullName, organization_name: company, reveal_personal_emails: true }),
+    }, 12000, 1, { billable: true })
     if (!resp.ok) {
       console.error(`[scanShared] lookupContactByName non-ok response for "${fullName}" at "${company}": ${resp.status}`)
-      // 4th-pass audit fix: release the search credit verifyContact reserved
-      // before calling this — the call failed, nothing was returned for it.
       await releaseApolloCredits(supabase, userId, 1)
-      return null
+      return { contact: null, conclusive: false }
     }
     const data = await resp.json()
     const p = data?.person
-    // Same bar as the title-based lookup: a confirmed first AND last name,
-    // not a thin partial record.
-    if (!p || !p.first_name || !p.last_name) return null
-    const name = `${p.first_name} ${p.last_name}`.trim()
-
-    let email = null
-    if (p.id && (await reserveApolloCredits(supabase, userId, 1, caps))) {
-      try {
-        const matchResp = await fetchWithRetry('https://api.apollo.io/v1/people/match', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'x-api-key': apolloKey },
-          body: JSON.stringify({ id: p.id, reveal_personal_emails: true }),
-        }, 12000, 1)
-        if (matchResp.ok) {
-          const matchData = await matchResp.json()
-          const revealed = matchData?.person?.email
-          if (revealed && !revealed.includes('email_not_unlocked') && !revealed.includes('locked')) email = revealed
-        } else {
-          console.error(`[scanShared] email reveal non-ok response for "${company}"/"${name}": ${matchResp.status}`)
-          // 4th-pass audit fix: release the reveal credit just reserved above.
-          await releaseApolloCredits(supabase, userId, 1)
-        }
-      } catch (err) {
-        console.error(`[scanShared] email reveal failed for "${company}"/"${name}":`, err.message)
-        await releaseApolloCredits(supabase, userId, 1)
-      }
+    const matched = p && p.match_confidence !== 'none' && (p.id || p.email || p.linkedin_url)
+    if (!matched) {
+      // Apollo answered and could not confirm this person. Free, so release.
+      await releaseApolloCredits(supabase, userId, 1)
+      return { contact: null, conclusive: true }
     }
-
-    return { name, title: p.title || '', linkedin_url: p.linkedin_url || '', email }
+    // Same bar as the title-based lookup: a confirmed first AND last name,
+    // not a thin partial record. The credit is NOT released here — Apollo
+    // matched somebody and billed for it; the record simply is not good
+    // enough to show.
+    if (!p.first_name || !p.last_name) {
+      console.log(`[scanShared] lookupContactByName: Apollo matched "${fullName}" at "${company}" but returned no usable last name`)
+      return { contact: null, conclusive: true }
+    }
+    const rawEmail = p.email
+    const email = rawEmail && !rawEmail.includes('email_not_unlocked') && !rawEmail.includes('locked') ? rawEmail : null
+    return {
+      contact: {
+        name: `${p.first_name} ${p.last_name}`.trim(),
+        title: p.title || '',
+        linkedin_url: p.linkedin_url || '',
+        email,
+      },
+      conclusive: true,
+    }
   } catch (err) {
     console.error(`[scanShared] lookupContactByName failed for "${fullName}" at "${company}":`, err.message)
-    // 4th-pass audit fix: a throw this far up (almost always the initial
-    // fetchWithRetry itself failing) means the search credit reserved
-    // before calling this function was never actually spent on a result —
-    // the reveal step's own credit already releases itself in its own
-    // try/catch above, so this only ever double-covers the search credit.
     await releaseApolloCredits(supabase, userId, 1)
     await reportServerError('scanShared:lookupContactByName', err, { company, fullName })
-    return null
+    return { contact: null, conclusive: false }
   }
 }
 
@@ -3458,8 +3563,24 @@ export async function fetchSignalPoolMatches(supabase, ob, existingKeys, limit) 
 // same shape as every existing call to callAnthropic already does.
 export const POOL_PERSONALIZE_MAX_TOKENS = 3000
 
-export async function personalizePoolHits(anthropicKey, poolHits, ob) {
-  if (!anthropicKey || !poolHits?.length) return []
+// onUsage, when given, is called exactly once with the number of tokens
+// Anthropic actually billed — 0 when the call failed and billed nothing.
+// 2026-09-04: callers reserve POOL_PERSONALIZE_MAX_TOKENS (3000) up front and,
+// until now, nothing ever gave any of it back. Both failure paths below
+// returned [] with the full 3000 still counted against that customer's daily
+// cap, and even a successful call left the worst case on the books rather than
+// the ~few hundred tokens it really cost. This module cannot import aiUsage.js
+// to reconcile directly (aiUsage.js imports alertIfConfigured FROM here, so it
+// would be circular), hence the callback.
+export async function personalizePoolHits(anthropicKey, poolHits, ob, onUsage = null) {
+  const reportUsage = (tokens) => {
+    if (typeof onUsage !== 'function') return
+    try { onUsage(tokens) } catch { /* accounting must never break a scan */ }
+  }
+  if (!anthropicKey || !poolHits?.length) {
+    reportUsage(0)
+    return []
+  }
   const firmClause = ob?.firm_name ? ` by name (their firm is called "${ob.firm_name}")` : ' generically (no firm name is on file — do not invent one)'
   const prompt = `You are Annie, an expert BD researcher for a recruitment firm.
 This recruiter's firm: introduce it${firmClause}.
@@ -3490,9 +3611,17 @@ Return a single JSON array, one object per signal, each with exactly: { "index":
     }, 30000, 1)
     if (!resp.ok) {
       console.error('[scanShared] pool personalization call failed:', resp.status)
+      reportUsage(0)
       return []
     }
     const data = await resp.json()
+    // Anthropic reports what it billed; hand the difference back.
+    const u = data?.usage
+    if (u) {
+      const billed = (Number(u.input_tokens) || 0) + (Number(u.output_tokens) || 0)
+        + (Number(u.cache_read_input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0)
+      if (billed > 0) reportUsage(billed)
+    }
     const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
     const parsed = extractJson(text)
     return poolHits.map((h, i) => {
@@ -3518,6 +3647,7 @@ Return a single JSON array, one object per signal, each with exactly: { "index":
     })
   } catch (err) {
     console.error('[scanShared] pool personalization call failed:', err.message)
+    reportUsage(0)
     return []
   }
 }

@@ -272,6 +272,19 @@ Write like a sharp, switched-on colleague typing quickly, not a business documen
         // time for no reason — let the outer catch show that verbatim
         // instead, same as before this fix.
         if (!isGenericNetworkFailure(streamErr)) throw streamErr
+        // 2026-09-04, considered and deliberately NOT deduplicated. This
+        // fallback re-sends the identical payload, so Anthropic generates
+        // (and bills) the answer twice whenever Netlify's 10s streaming
+        // ceiling cuts the first attempt. Suppressing that would need a
+        // server-side idempotency cache keyed on the request, which risks
+        // the worse failure of serving a stale answer, and the real cost is
+        // small: measured on production, ~$0.003 per Haiku message. What was
+        // actually broken here was the ACCOUNTING — the killed first attempt
+        // left its whole 1500-token reservation permanently on the customer's
+        // daily cap. chat.js now reconciles on stream cancel against what
+        // Anthropic reported, so a cut-off attempt is charged for what it
+        // really produced and no more. Revisit the dedupe only if this
+        // fallback's own reportClientError below shows it firing often.
         // 2026-08-30: observability only, no behavior change. Today's
         // Actions' identical callChatStream call sites were traced to a
         // real, measured transport failure (stream:true -> HTTP 504 at

@@ -58,6 +58,54 @@ export async function reserveAnthropicTokens(supabase, userId, tokens, caps) {
   }
 }
 
+// Corrects a reservation once Anthropic has told us what the call actually
+// cost. reserveAnthropicTokens books max_tokens up front because that is the
+// only number available before the call; nothing ever adjusted it afterwards,
+// so anthropic_usage was wrong in three directions at once — output
+// over-counted (Chat.jsx reserves 1500 against a measured ~485), input
+// counted as ZERO despite the system prompt, CRM snapshot, history and every
+// web-search result block all being billed input, and web search tool uses
+// metered as nothing at all.
+//
+// `actual` should be usage.input_tokens + usage.output_tokens straight off
+// the Anthropic response. The delta is applied signed: usually negative
+// (hand budget back), but positive whenever input dominated, which is the
+// case that was previously invisible and is exactly when a customer should
+// be approaching their cap.
+//
+// Best-effort by design. A failure here must never turn a successful reply
+// into an error — the worst case is the old behaviour, an unreconciled
+// reservation.
+export async function reconcileAnthropicTokens(supabase, userId, reservedTokens, actualTokens) {
+  if (!supabase) return
+  if (!Number.isFinite(reservedTokens) || !Number.isFinite(actualTokens)) return
+  if (reservedTokens === actualTokens) return
+  try {
+    const { error } = await supabase.rpc('anthropic_reconcile_tokens', {
+      p_reserved: Math.round(reservedTokens), p_actual: Math.round(actualTokens), p_user_id: userId || null,
+    })
+    if (error) console.error('[aiUsage] anthropic_reconcile_tokens RPC failed:', error.message)
+  } catch (err) {
+    console.error('[aiUsage] anthropic_reconcile_tokens threw:', err.message)
+  }
+}
+
+// Pulls the billable token total out of an Anthropic response body. Handles
+// both the non-streaming shape (top-level `usage`) and the accumulated
+// streaming shape, where message_start carries input_tokens and message_delta
+// carries the final output_tokens. Returns null when Anthropic reported
+// nothing usable, so callers can leave the reservation alone rather than
+// reconcile against a guess.
+export function anthropicBilledTokens(usage) {
+  if (!usage) return null
+  const input = Number(usage.input_tokens) || 0
+  const output = Number(usage.output_tokens) || 0
+  const cacheRead = Number(usage.cache_read_input_tokens) || 0
+  const cacheWrite = Number(usage.cache_creation_input_tokens) || 0
+  const total = input + output + cacheRead + cacheWrite
+  return total > 0 ? total : null
+}
+
 // Per-user, per-minute call-frequency cap — a separate concern from the
 // cost cap above: even within the per-call token ceiling, a valid session
 // could otherwise call chat.js in a tight loop indefinitely. Independent of

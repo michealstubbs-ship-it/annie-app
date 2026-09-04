@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
-import { reserveAnthropicTokens, reserveChatCall } from './lib/aiUsage.js'
+import { reserveAnthropicTokens, reserveChatCall, reconcileAnthropicTokens, anthropicBilledTokens } from './lib/aiUsage.js'
 import { alertIfConfigured } from './lib/scanShared.js'
 import { getEntitlements, resolveResourceCaps } from './lib/entitlements.js'
 import { createTimeoutFetch, fetchWithTimeout } from './lib/scanShared.js'
@@ -37,17 +37,33 @@ const DEFAULT_CHAT_PER_MINUTE_CAP = 20
 // ever needs are "here's some more text" and "you're done, here are the
 // citations" — no reason to make it re-implement SSE framing plus
 // Anthropic's full event-type vocabulary for that.
-function streamAnthropicReplyAsNdjson(anthropicBody) {
+// onUsage, when given, is called once with Anthropic's own token counts as
+// soon as the stream reports them. Before 2026-09-04 the streaming path threw
+// this away entirely, so every streamed reply — which is every Ask Annie
+// message — left its worst-case reservation permanently on the books.
+function streamAnthropicReplyAsNdjson(anthropicBody, onUsage = null) {
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
   const reader = anthropicBody.getReader()
   let buffer = ''
   const citations = []
+  // Anthropic splits usage across two events: message_start carries
+  // input_tokens (plus any cache reads), message_delta carries the final
+  // output_tokens. Neither alone is the bill.
+  const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  let sawUsage = false
+  let reported = false
+  const reportUsage = () => {
+    if (reported || !sawUsage || typeof onUsage !== 'function') return
+    reported = true
+    try { onUsage(usage) } catch { /* accounting must never break a reply */ }
+  }
 
   return new ReadableStream({
     async pull(controller) {
       const { done, value } = await reader.read()
       if (done) {
+        reportUsage()
         controller.enqueue(encoder.encode(JSON.stringify({ type: 'done', citations }) + '\n'))
         controller.close()
         return
@@ -69,7 +85,18 @@ function streamAnthropicReplyAsNdjson(anthropicBody) {
           continue // a malformed/partial event isn't worth failing the whole reply over
         }
 
-        if (event.type === 'content_block_delta') {
+        if (event.type === 'message_start' && event.message?.usage) {
+          const u = event.message.usage
+          usage.input_tokens = Number(u.input_tokens) || 0
+          usage.cache_read_input_tokens = Number(u.cache_read_input_tokens) || 0
+          usage.cache_creation_input_tokens = Number(u.cache_creation_input_tokens) || 0
+          if (u.output_tokens) usage.output_tokens = Number(u.output_tokens) || 0
+          sawUsage = true
+        } else if (event.type === 'message_delta' && event.usage) {
+          // The authoritative final output count.
+          usage.output_tokens = Number(event.usage.output_tokens) || usage.output_tokens
+          sawUsage = true
+        } else if (event.type === 'content_block_delta') {
           if (event.delta?.type === 'text_delta' && event.delta.text) {
             controller.enqueue(encoder.encode(JSON.stringify({ type: 'delta', text: event.delta.text }) + '\n'))
           } else if (event.delta?.type === 'citations_delta' && event.delta.citation?.url) {
@@ -85,6 +112,11 @@ function streamAnthropicReplyAsNdjson(anthropicBody) {
       }
     },
     cancel(reason) {
+      // The customer navigated away, or Netlify cut the 10s streaming
+      // window. Anthropic has still generated and billed whatever it
+      // produced, so reconcile with what we saw rather than silently
+      // leaving the full reservation standing.
+      reportUsage()
       reader.cancel(reason).catch(() => {})
     },
   })
@@ -319,6 +351,10 @@ export default async (req, context) => {
       // diagnosable instead of invisible, and so error-rate-monitor.js's
       // hourly spike check actually sees it too.
       await reportServerError('chat', new Error(`Anthropic ${resp.status}: ${(errText || 'no body').slice(0, 500)}`), { status: resp.status })
+      // Anthropic refused the request outright, so it billed nothing — hand
+      // the whole reservation back rather than charging the customer's daily
+      // cap for a reply they never received.
+      await reconcileAnthropicTokens(usageClient, user.id, maxTokens, 0)
       // Normalized to the same { error } JSON shape as every other response
       // in this file — this used to forward Anthropic's raw error text
       // verbatim with no Content-Type, a different shape from every other
@@ -330,7 +366,14 @@ export default async (req, context) => {
       // Anthropic's own SSE body streams straight through to the caller as
       // NDJSON — see streamAnthropicReplyAsNdjson above. Nothing here waits
       // for the reply to finish before responding.
-      return new Response(streamAnthropicReplyAsNdjson(resp.body), {
+      return new Response(streamAnthropicReplyAsNdjson(resp.body, (usage) => {
+        const billed = anthropicBilledTokens(usage)
+        if (billed !== null) {
+          // Deliberately not awaited: the reply is already streaming to the
+          // customer and accounting must never hold it up or fail it.
+          reconcileAnthropicTokens(usageClient, user.id, maxTokens, billed)
+        }
+      }), {
         status: 200,
         headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8', ...chatUsageHeaders(messagesUsed, entitlements) },
       })
@@ -339,6 +382,14 @@ export default async (req, context) => {
     // Non-streaming path — unchanged shape every existing caller besides
     // Chat.jsx still expects.
     const data = await resp.json()
+
+    // 2026-09-04: Anthropic reports exactly what it billed and nothing here
+    // ever read it. See reconcileAnthropicTokens in aiUsage.js for what that
+    // cost in accounting accuracy.
+    const billedTokens = anthropicBilledTokens(data.usage)
+    if (billedTokens !== null) {
+      await reconcileAnthropicTokens(usageClient, user.id, maxTokens, billedTokens)
+    }
 
     // Collect every text block (web search runs interleave tool_use / tool_result / text blocks)
     const textBlocks = (data.content || []).filter(b => b.type === 'text').map(b => b.text)

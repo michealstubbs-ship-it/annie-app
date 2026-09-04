@@ -19,9 +19,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const { mockGetAuthedUser } = vi.hoisted(() => ({ mockGetAuthedUser: vi.fn() }))
-const { mockReserveAnthropicTokens, mockReserveChatCall } = vi.hoisted(() => ({
+const { mockReserveAnthropicTokens, mockReserveChatCall, mockReconcileAnthropicTokens } = vi.hoisted(() => ({
   mockReserveAnthropicTokens: vi.fn().mockResolvedValue(true),
   mockReserveChatCall: vi.fn().mockResolvedValue(true),
+  // 2026-09-04: chat.js now corrects its worst-case reservation against what
+  // Anthropic actually billed. See reconcileAnthropicTokens in aiUsage.js.
+  mockReconcileAnthropicTokens: vi.fn().mockResolvedValue(undefined),
 }))
 const { mockReportServerError } = vi.hoisted(() => ({ mockReportServerError: vi.fn().mockResolvedValue(undefined) }))
 // A generic chainable query-builder stub for the client chat.js constructs
@@ -52,6 +55,15 @@ vi.mock('../lib/auth.js', () => ({ getAuthedUser: mockGetAuthedUser }))
 vi.mock('../lib/aiUsage.js', () => ({
   reserveAnthropicTokens: mockReserveAnthropicTokens,
   reserveChatCall: mockReserveChatCall,
+  reconcileAnthropicTokens: mockReconcileAnthropicTokens,
+  // Not mocked away — this is pure arithmetic over Anthropic's own usage
+  // block and the tests want the real behaviour.
+  anthropicBilledTokens: (usage) => {
+    if (!usage) return null
+    const total = (Number(usage.input_tokens) || 0) + (Number(usage.output_tokens) || 0)
+      + (Number(usage.cache_read_input_tokens) || 0) + (Number(usage.cache_creation_input_tokens) || 0)
+    return total > 0 ? total : null
+  },
 }))
 vi.mock('../lib/reportError.js', () => ({ reportServerError: mockReportServerError }))
 vi.mock('@supabase/supabase-js', () => ({ createClient: mockCreateClient }))
@@ -75,11 +87,11 @@ function makeRequest(body, { method = 'POST', invalidJson = false } = {}) {
 // streaming/parsing code path instead of a shape chat.js no longer produces.
 function anthropicOkResponse(text = 'hello there') {
   const events = [
-    { type: 'message_start', message: { id: 'msg_1' } },
+    { type: 'message_start', message: { id: 'msg_1', usage: { input_tokens: 812, output_tokens: 1 } } },
     { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
     { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
     { type: 'content_block_stop', index: 0 },
-    { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 190 } },
     { type: 'message_stop' },
   ]
   const body = events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('') + 'data: [DONE]\n\n'
@@ -92,8 +104,8 @@ function anthropicErrorResponse(status, body = 'upstream error') {
 
 // The plain (non-streaming) shape Anthropic returns when stream isn't set —
 // what chat.js's non-streaming branch (every caller besides Chat.jsx) parses.
-function anthropicNonStreamResponse(text = 'hello there') {
-  return new Response(JSON.stringify({ content: [{ type: 'text', text }] }), { status: 200 })
+function anthropicNonStreamResponse(text = 'hello there', usage = { input_tokens: 812, output_tokens: 190 }) {
+  return new Response(JSON.stringify({ content: [{ type: 'text', text }], usage }), { status: 200 })
 }
 
 // Reads chat.js's NDJSON response body to completion and returns the
@@ -300,5 +312,63 @@ describe('web search gating is enforced server-side, not just trusted from the c
     await handler(makeRequest({ messages: [{ role: 'user', content: "what's happening in the UK legal market right now?" }] }))
     const sentPayload = JSON.parse(global.fetch.mock.calls[0][1].body)
     expect(sentPayload.tools).toBeUndefined()
+  })
+})
+
+// 2026-09-04. anthropic_usage recorded the worst-case max_tokens reservation
+// and nothing ever corrected it, so the per-customer daily token cap was
+// enforced against a number only loosely related to the bill: output
+// over-counted (Chat.jsx reserves 1500 against a measured ~485), and input —
+// the system prompt, CRM snapshot, capped history and every web-search result
+// block — counted as ZERO. Anthropic reports exactly what it billed in
+// `usage`; nothing in the repo read it.
+describe('Anthropic token reconciliation', () => {
+  it('reconciles the non-streaming path against real input + output tokens, not the reservation', async () => {
+    mockGetAuthedUser.mockResolvedValue({ user: { id: 'u1' } })
+    global.fetch = vi.fn().mockResolvedValue(anthropicNonStreamResponse('hello there', { input_tokens: 812, output_tokens: 190 }))
+    const resp = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 1500 }))
+    expect(resp.status).toBe(200)
+    // Reserved 1500, actually billed 1002. The old behaviour left 1500 on the
+    // books; worse, it never counted the 812 input tokens at all.
+    expect(mockReconcileAnthropicTokens).toHaveBeenCalledWith(expect.anything(), 'u1', 1500, 1002)
+  })
+
+  it('counts cache reads and cache writes as billed input', async () => {
+    mockGetAuthedUser.mockResolvedValue({ user: { id: 'u1' } })
+    global.fetch = vi.fn().mockResolvedValue(anthropicNonStreamResponse('hi', {
+      input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 2000, cache_creation_input_tokens: 300,
+    }))
+    await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 1500 }))
+    expect(mockReconcileAnthropicTokens).toHaveBeenCalledWith(expect.anything(), 'u1', 1500, 2450)
+  })
+
+  it('hands the whole reservation back when Anthropic refuses the request outright', async () => {
+    mockGetAuthedUser.mockResolvedValue({ user: { id: 'u1' } })
+    global.fetch = vi.fn().mockResolvedValue(anthropicErrorResponse(400, 'bad request'))
+    const resp = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 1500 }))
+    expect(resp.status).toBe(400)
+    // Anthropic billed nothing, so the customer's daily cap must not be
+    // charged 1500 tokens for a reply they never received.
+    expect(mockReconcileAnthropicTokens).toHaveBeenCalledWith(expect.anything(), 'u1', 1500, 0)
+  })
+
+  it('reconciles the streaming path from message_start and message_delta usage', async () => {
+    mockGetAuthedUser.mockResolvedValue({ user: { id: 'u1' } })
+    global.fetch = vi.fn().mockResolvedValue(anthropicOkResponse('hello there'))
+    const resp = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }], stream: true, maxTokens: 1500 }))
+    // Usage only lands once the stream has actually been read to completion —
+    // this is the path every Ask Annie message takes, and the one that
+    // previously discarded Anthropic's counts entirely.
+    await readNdjson(resp)
+    expect(mockReconcileAnthropicTokens).toHaveBeenCalledWith(expect.anything(), 'u1', 1500, 1002)
+  })
+
+  it('does not reconcile when Anthropic reported no usable usage at all', async () => {
+    mockGetAuthedUser.mockResolvedValue({ user: { id: 'u1' } })
+    global.fetch = vi.fn().mockResolvedValue(anthropicNonStreamResponse('hi', null))
+    await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 1500 }))
+    // Better to leave the reservation standing than to reconcile against a
+    // guess and under-charge the cap.
+    expect(mockReconcileAnthropicTokens).not.toHaveBeenCalled()
   })
 })
