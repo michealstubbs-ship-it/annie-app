@@ -715,23 +715,39 @@ export function buildSearchKeywords(sectors, functions, max = 6) {
 // default moved from 4 to 6 in the same edit, below, so the extra titles
 // here are actually used every scan rather than sitting unused past the old
 // cap — Michael's own question when this was proposed.
+// 2026-09-04, Michael, real report: his own LinkedIn Jobs feed showed several
+// genuinely senior UAE postings (Rakbank, Moove, Aldar, Mashreq — VP/Director/
+// Head level) that Annie never surfaced. Investigation (real production data,
+// this account's own last 15 live_job signals) confirmed a second, compounding
+// gap on top of the crowding-out fix above (buildScanPrompt's new
+// per-function representation instruction): 11 of these 20 functions had zero
+// "VP" title in their list at all, even though "VP" is one of the most
+// commonly used senior-but-not-C-suite titles in the UAE/GCC market
+// specifically (this account's own selected market) — so a real VP-level
+// opening was never even searched for in those functions, regardless of how
+// good the underlying job-search API's own coverage is. Added one VP-level
+// title to every function where that rung is a genuine, common way a senior
+// opening in that discipline gets advertised (skipped Healthcare & Clinical,
+// General Management, Administration, and Education & Training, where the
+// existing titles already cover the real senior spectrum better than
+// force-fitting a "VP" spelling that discipline doesn't actually use).
 export const FUNCTION_JOB_TITLES = {
-  'Strategy & Corporate Development': ['Chief Strategy Officer', 'Head of Strategy', 'Strategy Director', 'Corporate Development Director', 'Head of M&A', 'Director of Business Transformation'],
-  'Policy & Government Affairs': ['Head of Public Affairs', 'Director of Government Relations', 'Head of Policy', 'Regulatory Affairs Director', 'Government Relations Director', 'Director of Public Policy'],
-  'HSE, Sustainability & Quality': ['Head of HSE', 'HSE Director', 'Head of Sustainability', 'Director of Sustainability', 'Director of ESG', 'Head of Quality'],
-  'Construction & Built Environment': ['Project Director', 'Construction Director', 'Development Director', 'Head of Projects', 'Head of Construction', 'Design Director'],
+  'Strategy & Corporate Development': ['Chief Strategy Officer', 'Head of Strategy', 'Strategy Director', 'Corporate Development Director', 'Head of M&A', 'Director of Business Transformation', 'VP Strategy'],
+  'Policy & Government Affairs': ['Head of Public Affairs', 'Director of Government Relations', 'Head of Policy', 'Regulatory Affairs Director', 'Government Relations Director', 'Director of Public Policy', 'VP Government Affairs'],
+  'HSE, Sustainability & Quality': ['Head of HSE', 'HSE Director', 'Head of Sustainability', 'Director of Sustainability', 'Director of ESG', 'Head of Quality', 'VP Sustainability'],
+  'Construction & Built Environment': ['Project Director', 'Construction Director', 'Development Director', 'Head of Projects', 'Head of Construction', 'Design Director', 'VP Development'],
   'Healthcare & Clinical': ['Chief Medical Officer', 'Medical Director', 'Director of Nursing', 'Head of Clinical Services', 'Chief Nursing Officer', 'Head of Clinical Operations'],
-  'Finance & Accounting': ['Chief Financial Officer', 'Finance Director', 'Head of Finance', 'Financial Controller', 'Head of Treasury', 'Tax Director'],
+  'Finance & Accounting': ['Chief Financial Officer', 'Finance Director', 'Head of Finance', 'Financial Controller', 'Head of Treasury', 'Tax Director', 'VP Finance'],
   'HR & People': ['Chief People Officer', 'HR Director', 'Head of Talent', 'Director of Human Resources', 'Head of Talent Acquisition', 'VP of Human Resources'],
-  'Legal & Compliance': ['General Counsel', 'Head of Legal', 'Head of Compliance', 'Legal Director', 'Chief Compliance Officer', 'Head of Regulatory Affairs'],
+  'Legal & Compliance': ['General Counsel', 'Head of Legal', 'Head of Compliance', 'Legal Director', 'Chief Compliance Officer', 'Head of Regulatory Affairs', 'VP Legal'],
   'Sales & Business Development': ['Chief Commercial Officer', 'Sales Director', 'Commercial Director', 'Head of Business Development', 'VP of Sales', 'Head of Partnerships'],
   'Marketing, Communications & Creative': ['Chief Marketing Officer', 'Marketing Director', 'Head of Communications', 'Brand Director', 'VP of Marketing', 'Director of Digital Marketing'],
   'Operations & Supply Chain': ['Chief Operating Officer', 'Operations Director', 'Head of Supply Chain', 'Head of Operations', 'VP of Operations', 'Director of Logistics'],
   'Technology, Data & Engineering': ['Chief Technology Officer', 'Chief Information Officer', 'Head of Engineering', 'Head of Data', 'VP Engineering', 'Cybersecurity Director'],
-  'Investment & Asset Management': ['Chief Investment Officer', 'Head of Investments', 'Investment Director', 'Portfolio Director', 'Head of Research', 'Head of Wealth Management'],
-  'Risk & Audit': ['Chief Risk Officer', 'Head of Risk', 'Head of Internal Audit', 'Audit Director', 'Head of Credit Risk', 'Head of Financial Crime'],
+  'Investment & Asset Management': ['Chief Investment Officer', 'Head of Investments', 'Investment Director', 'Portfolio Director', 'Head of Research', 'Head of Wealth Management', 'VP Investments'],
+  'Risk & Audit': ['Chief Risk Officer', 'Head of Risk', 'Head of Internal Audit', 'Audit Director', 'Head of Credit Risk', 'Head of Financial Crime', 'VP Risk'],
   'Manufacturing & Production': ['Manufacturing Director', 'Plant Director', 'Production Director', 'Head of Manufacturing', 'VP of Manufacturing', 'Director of Continuous Improvement'],
-  'Real Estate, Facilities & Hospitality': ['Head of Real Estate', 'Facilities Director', 'Asset Management Director', 'General Manager', 'Director of Asset Management', 'Regional Director of Operations'],
+  'Real Estate, Facilities & Hospitality': ['Head of Real Estate', 'Facilities Director', 'Asset Management Director', 'General Manager', 'Director of Asset Management', 'Regional Director of Operations', 'VP Real Estate'],
   'General Management / Executive Leadership': ['Chief Executive Officer', 'Managing Director', 'Chief Operating Officer', 'General Manager', 'President', 'Country Manager'],
   'Administration & Office Support': ['Head of Administration', 'Head of Business Support', 'Office Director', 'Director of Administrative Services'],
   'Customer Service & Success': ['Chief Customer Officer', 'Head of Customer Success', 'Customer Experience Director', 'VP of Customer Success', 'Director of Customer Support'],

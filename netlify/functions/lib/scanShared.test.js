@@ -266,6 +266,37 @@ describe('buildJobTitleQueries (the 2026-08-31 live-jobs fix)', () => {
     }
   })
 
+  // 2026-09-04, Michael, real report: his own LinkedIn Jobs feed showed
+  // several genuinely senior UAE VP-level postings (Rakbank, Moove) that
+  // Annie never surfaced, because 11 of the 20 mapped functions had no "VP"
+  // title in their list at all — so that rung was never searched for,
+  // regardless of the underlying job API's own coverage. This locks in the
+  // fix: every function where "VP" is a genuine, common way that discipline's
+  // senior-but-not-C-suite roles are advertised now has one, and the four
+  // functions where the existing titles already cover that spectrum better
+  // (Healthcare & Clinical, General Management, Administration, Education &
+  // Training) are confirmed still deliberately excluded, not an oversight.
+  it('has a VP-level title for every function where that rung is a genuine market title, deliberately skips the rest', () => {
+    const expectedToHaveVp = [
+      'Strategy & Corporate Development', 'Policy & Government Affairs', 'HSE, Sustainability & Quality',
+      'Construction & Built Environment', 'Finance & Accounting', 'HR & People', 'Legal & Compliance',
+      'Sales & Business Development', 'Marketing, Communications & Creative', 'Operations & Supply Chain',
+      'Technology, Data & Engineering', 'Investment & Asset Management', 'Risk & Audit',
+      'Manufacturing & Production', 'Real Estate, Facilities & Hospitality', 'Customer Service & Success',
+    ]
+    const deliberatelySkipped = [
+      'Healthcare & Clinical', 'General Management / Executive Leadership',
+      'Administration & Office Support', 'Education & Training',
+    ]
+    expect([...expectedToHaveVp, ...deliberatelySkipped].sort()).toEqual(Object.keys(FUNCTION_JOB_TITLES).sort())
+    for (const label of expectedToHaveVp) {
+      expect(FUNCTION_JOB_TITLES[label].some(t => /\bvp\b/i.test(t))).toBe(true)
+    }
+    for (const label of deliberatelySkipped) {
+      expect(FUNCTION_JOB_TITLES[label].some(t => /\bvp\b/i.test(t))).toBe(false)
+    }
+  })
+
   // A live_job signal exists to surface a real BD mandate — the same
   // manager-level floor as functionTaxonomy.js's own corporate-function
   // keywords (2026-09-01, Michael: "make sure they [are] no less than
