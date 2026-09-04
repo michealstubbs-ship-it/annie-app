@@ -38,7 +38,7 @@ function calcFee(salary, pct) {
 export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCompanyName, onClose, onSaved }) {
   const { user } = useAuth()
   // 2026-08-30: salary label and calculated fee both hardcoded 'AED'.
-  const { currencyPrefix, currencyLabel } = useMarketCurrency()
+  const { currencyPrefix, currencyLabel, isGccMarket: isGcc } = useMarketCurrency()
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -164,10 +164,14 @@ export default function JobFormModal({ open, editJob, lockedCompanyId, lockedCom
             <div><label className="label" htmlFor="job-deadline">Deadline / start date</label><input id="job-deadline" type="date" className="input" value={form.deadline} onChange={e => setForm(p => ({ ...p, deadline: e.target.value }))} /></div>
           </div>
           <div><label className="label" htmlFor="job-notes">Brief / job description</label><textarea id="job-notes" className="input resize-none" rows={3} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Key requirements, must-haves, skills needed, context about the role..." /></div>
-          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-            <input type="checkbox" checked={form.counts_toward_quota} onChange={e => setForm(p => ({ ...p, counts_toward_quota: e.target.checked }))} />
-            🏛️ Counts toward the client's Emiratization/Saudization quota
-          </label>
+          {/* GCC-only: 2026-09-06, Michael: "make sure it is only
+              specifically shown for recruiters in UAE and not UK." */}
+          {isGcc && (
+            <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+              <input type="checkbox" checked={form.counts_toward_quota} onChange={e => setForm(p => ({ ...p, counts_toward_quota: e.target.checked }))} />
+              🏛️ Counts toward the client's Emiratization/Saudization quota
+            </label>
+          )}
         </div>
         <div className="flex gap-3 justify-end mt-5">
           <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>

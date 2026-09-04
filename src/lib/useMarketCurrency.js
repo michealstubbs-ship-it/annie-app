@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from './supabase'
-import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from './marketCurrency'
+import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE, isGccMarket } from './marketCurrency'
 import { currencySymbol } from './invoiceCalc'
 import { getInvoicingDetails } from './data/invoicingDetails'
 
@@ -46,6 +46,13 @@ import { getInvoicingDetails } from './data/invoicingDetails'
 export function useMarketCurrency() {
   const { user } = useAuth()
   const [currencyCode, setCurrencyCode] = useState(DEFAULT_CURRENCY_CODE)
+  // 2026-09-06, Michael: "make sure it is only specifically shown for
+  // recruiters in UAE and not UK" — reuses the same onboarding.locations
+  // fetch this hook already does for currency, so gating GCC-only fields
+  // (visa tracking, quota tracking, WPS invoicing) never costs a second
+  // round trip. Starts false so nothing GCC-specific flashes on for a UK
+  // account before this resolves.
+  const [isGcc, setIsGcc] = useState(false)
 
   useEffect(() => {
     if (!user) return
@@ -57,6 +64,7 @@ export function useMarketCurrency() {
       getInvoicingDetails().catch(() => null),
     ]).then(([onboardingRow, invoicingDetails]) => {
       setCurrencyCode(invoicingDetails?.default_currency || resolveMarketCurrencyCode(onboardingRow?.locations))
+      setIsGcc(isGccMarket(onboardingRow?.locations))
     })
   }, [user])
 
@@ -67,5 +75,5 @@ export function useMarketCurrency() {
 
   const currencyLabel = useMemo(() => currencySymbol(currencyCode).trim(), [currencyCode])
 
-  return { currencyCode, currencyPrefix, currencyLabel }
+  return { currencyCode, currencyPrefix, currencyLabel, isGccMarket: isGcc }
 }

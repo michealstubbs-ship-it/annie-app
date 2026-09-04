@@ -19,6 +19,7 @@ import ErrorBanner from './ErrorBanner'
 import Spinner from './Spinner'
 import OwnerFilter from './OwnerFilter'
 import OwnershipPanel from './OwnershipPanel'
+import { useMarketCurrency } from '../lib/useMarketCurrency'
 
 // 2026-09-06, gap-analysis batch 1 ("Emiratization/Saudization quota
 // tracking"): a client's own regulatory band, recruiter-maintained (not
@@ -37,6 +38,10 @@ function color(name) {
 
 export default function Companies() {
   const { user } = useAuth()
+  // 2026-09-06, Michael: "make sure it is only specifically shown for
+  // recruiters in UAE and not UK" — Emiratization/Saudization quota
+  // tracking is GCC-regulatory, meaningless for a UK-only account.
+  const { isGccMarket: isGcc } = useMarketCurrency()
   const location = useLocation()
   const [companies, setCompanies] = useState([])
   const [contacts, setContacts] = useState([])
@@ -370,7 +375,7 @@ export default function Companies() {
                   <span><span className="font-bold text-navy">{cCount}</span> contact{cCount === 1 ? '' : 's'}</span>
                   <span><span className="font-bold text-navy">{jOpen}</span> open job{jOpen === 1 ? '' : 's'}</span>
                 </div>
-                {co.quota_band && co.quota_band !== 'not_applicable' && (
+                {isGcc && co.quota_band && co.quota_band !== 'not_applicable' && (
                   <div className="mt-2">
                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${QUOTA_BAND_COLOR[co.quota_band]}`}>
                       🏛️ {QUOTA_BAND_LABEL[co.quota_band]} quota{quotaDeadlineBadge(co.quota_deadline) ? ` · ${quotaDeadlineBadge(co.quota_deadline).days}d` : ''}
@@ -399,39 +404,43 @@ export default function Companies() {
           <div><label className="label" htmlFor="co-edit-notes">Notes</label><textarea id="co-edit-notes" className="input resize-none" rows={3} value={coForm.notes} onChange={e => setCoForm(p => ({ ...p, notes: e.target.value }))} /></div>
           {/* 2026-09-06, gap-analysis batch 1: client-entered, recruiter-
               maintained regulatory standing (UAE Emiratization / Saudi
-              Nitaqat-style band) — not scraped, not assumed. */}
-          <div className="pt-2 border-t border-gray-100">
-            <p className="label mb-2">🏛️ Emiratization / Saudization quota</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="label" htmlFor="co-edit-quota-band">Band</label>
-                <select id="co-edit-quota-band" className="input" value={coForm.quota_band} onChange={e => setCoForm(p => ({ ...p, quota_band: e.target.value }))}>
-                  <option value="">Not set</option>
-                  <option value="red">Red</option>
-                  <option value="yellow">Yellow</option>
-                  <option value="green">Green</option>
-                  <option value="platinum">Platinum</option>
-                  <option value="not_applicable">Not applicable</option>
-                </select>
-              </div>
-              <div>
-                <label className="label" htmlFor="co-edit-quota-deadline">Deadline</label>
-                <input id="co-edit-quota-deadline" className="input" type="date" value={coForm.quota_deadline} onChange={e => setCoForm(p => ({ ...p, quota_deadline: e.target.value }))} />
-              </div>
-              <div>
-                <label className="label" htmlFor="co-edit-quota-current">Current %</label>
-                <input id="co-edit-quota-current" className="input" type="number" step="0.1" placeholder="e.g. 6.5" value={coForm.quota_current_pct} onChange={e => setCoForm(p => ({ ...p, quota_current_pct: e.target.value }))} />
-              </div>
-              <div>
-                <label className="label" htmlFor="co-edit-quota-target">Target %</label>
-                <input id="co-edit-quota-target" className="input" type="number" step="0.1" placeholder="e.g. 10" value={coForm.quota_target_pct} onChange={e => setCoForm(p => ({ ...p, quota_target_pct: e.target.value }))} />
-              </div>
-              <div className="col-span-2">
-                <label className="label" htmlFor="co-edit-quota-notes">Quota notes (optional)</label>
-                <input id="co-edit-quota-notes" className="input" placeholder="e.g. needs 3 more national hires by December" value={coForm.quota_notes} onChange={e => setCoForm(p => ({ ...p, quota_notes: e.target.value }))} />
+              Nitaqat-style band) — not scraped, not assumed. GCC-only:
+              2026-09-06, Michael: "make sure it is only specifically shown
+              for recruiters in UAE and not UK." */}
+          {isGcc && (
+            <div className="pt-2 border-t border-gray-100">
+              <p className="label mb-2">🏛️ Emiratization / Saudization quota</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label" htmlFor="co-edit-quota-band">Band</label>
+                  <select id="co-edit-quota-band" className="input" value={coForm.quota_band} onChange={e => setCoForm(p => ({ ...p, quota_band: e.target.value }))}>
+                    <option value="">Not set</option>
+                    <option value="red">Red</option>
+                    <option value="yellow">Yellow</option>
+                    <option value="green">Green</option>
+                    <option value="platinum">Platinum</option>
+                    <option value="not_applicable">Not applicable</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="label" htmlFor="co-edit-quota-deadline">Deadline</label>
+                  <input id="co-edit-quota-deadline" className="input" type="date" value={coForm.quota_deadline} onChange={e => setCoForm(p => ({ ...p, quota_deadline: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="label" htmlFor="co-edit-quota-current">Current %</label>
+                  <input id="co-edit-quota-current" className="input" type="number" step="0.1" placeholder="e.g. 6.5" value={coForm.quota_current_pct} onChange={e => setCoForm(p => ({ ...p, quota_current_pct: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="label" htmlFor="co-edit-quota-target">Target %</label>
+                  <input id="co-edit-quota-target" className="input" type="number" step="0.1" placeholder="e.g. 10" value={coForm.quota_target_pct} onChange={e => setCoForm(p => ({ ...p, quota_target_pct: e.target.value }))} />
+                </div>
+                <div className="col-span-2">
+                  <label className="label" htmlFor="co-edit-quota-notes">Quota notes (optional)</label>
+                  <input id="co-edit-quota-notes" className="input" placeholder="e.g. needs 3 more national hires by December" value={coForm.quota_notes} onChange={e => setCoForm(p => ({ ...p, quota_notes: e.target.value }))} />
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
         <div className="flex gap-3 justify-end mt-5">
           <button onClick={() => setShowCoModal(false)} className="btn-ghost">Cancel</button>
@@ -451,7 +460,7 @@ export default function Companies() {
                   <p className="text-sm text-gray-500">{[selected.industry, selected.location].filter(Boolean).join(' · ') || 'No details yet'}</p>
                   {selected.website && <a href={selected.website.startsWith('http') ? selected.website : `https://${selected.website}`} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">{selected.website}</a>}
                   {selected.notes && <p className="text-sm text-gray-600 mt-2">{selected.notes}</p>}
-                  {selected.quota_band && selected.quota_band !== 'not_applicable' && (
+                  {isGcc && selected.quota_band && selected.quota_band !== 'not_applicable' && (
                     <div className="mt-2 flex items-center gap-2 flex-wrap">
                       <span className={`text-xs font-semibold px-2 py-1 rounded-full ${QUOTA_BAND_COLOR[selected.quota_band]}`}>
                         🏛️ {QUOTA_BAND_LABEL[selected.quota_band]}{selected.quota_current_pct != null ? ` · ${selected.quota_current_pct}%` : ''}{selected.quota_target_pct != null ? ` / ${selected.quota_target_pct}% target` : ''}

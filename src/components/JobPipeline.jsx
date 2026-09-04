@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { getJob, updateJob } from '../lib/data/jobs'
-import { effectiveDaysInStage, isInHiringSurge, activeSlowWindow } from '../lib/regionalCalendar'
 import {
   listPipelineForJob,
   listOtherPipelinesForCandidate,
@@ -56,12 +55,16 @@ function salaryPrefix(code, fallbackPrefix) {
   return symbol.length > 1 ? `${symbol} ` : symbol
 }
 
-// 2026-09-06, gap-analysis batch 3 ("Ramadan-aware pipeline SLAs"):
-// delegates to regionalCalendar.js's effectiveDaysInStage instead of a
-// flat calendar diff — a candidate sitting quiet over Ramadan/Eid reads
-// as less "gone cold" than the same raw day count in an ordinary week.
+// 2026-09-06: a Ramadan/Eid-aware version of this (regionalCalendar.js)
+// was built and then pulled — Michael: "too smart... overkill". Plain
+// calendar-day diff, same as before that build.
 function daysInStage(stageChangedAt) {
-  return effectiveDaysInStage(stageChangedAt)
+  if (!stageChangedAt) return 0
+  const start = new Date(stageChangedAt)
+  const now = new Date()
+  const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate())
+  const nowDay = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  return Math.max(0, Math.round((nowDay - startDay) / 86400000))
 }
 function ageClass(days) {
   if (days <= 2) return 'bg-green-100 text-green-700'
@@ -399,12 +402,6 @@ export default function JobPipeline() {
           <button onClick={getOrEnableClientLink} className="text-xs font-semibold text-gold-ink hover:underline mt-2">
             {shareState === 'copied' ? '✓ Link copied' : shareState === 'error' ? 'Could not copy — try again' : job.share_enabled ? '🔗 Copy client link' : '🔗 Get client link'}
           </button>
-          {activeSlowWindow() && (
-            <p className="text-xs text-purple-600 font-medium mt-1">🌙 {activeSlowWindow().name} — aging clock is running slower; a quiet candidate isn't necessarily going cold.</p>
-          )}
-          {isInHiringSurge() && (
-            <p className="text-xs text-emerald-600 font-medium mt-1">📈 Post-Eid hiring surge — the busiest UAE hiring stretch of the year. Worth pushing harder, not easing off.</p>
-          )}
         </div>
         <div className="flex gap-2 flex-wrap">
           {[

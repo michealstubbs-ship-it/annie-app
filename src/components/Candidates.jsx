@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase'
 import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, findCandidateDuplicateByEmail, findDuplicateSubmission, findCandidateIdByExactName } from '../lib/data/candidates'
 import { listActiveJobsForPicker } from '../lib/data/jobs'
 import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
-import { STAGES, STAGE_LABEL, STAGE_COLOR, searchCandidates, filterCandidatesByStage, sortCandidates, groupCandidatesByStage, VISA_STATUS_LABEL, VISA_TYPE_LABEL, visaExpiryBadge } from '../lib/candidatesView'
+import { STAGES, STAGE_LABEL, STAGE_COLOR, searchCandidates, filterCandidatesByStage, sortCandidates, groupCandidatesByStage, VISA_TYPE_LABEL, visaExpiryBadge } from '../lib/candidatesView'
 import { searchCandidatesBoolean } from '../lib/booleanSearch'
 import InfoTip from './InfoTip'
 import ConfirmDialog from './ConfirmDialog'
@@ -90,7 +90,7 @@ export default function Candidates() {
   // candidate can now say a different one, stored per-row (see
   // curr_sal_currency/want_sal_currency below) rather than always reading
   // the firm's own single market/invoicing default.
-  const { currencyPrefix, currencyLabel, currencyCode } = useMarketCurrency()
+  const { currencyPrefix, currencyLabel, currencyCode, isGccMarket: isGcc } = useMarketCurrency()
   const { user } = useAuth()
   const navigate = useNavigate()
   const [candidates, setCandidates] = useState([])
@@ -615,15 +615,17 @@ export default function Candidates() {
                       ⚠️ {c.counter_offer_risk} counter-offer risk
                     </span>
                   )}
-                  {(() => {
+                  {/* 2026-09-06, Michael: "we can get rid of the visa
+                      sponsorship badge... too smart, overkill" — the visa
+                      expiry badge (GCC-only, below) and the underlying
+                      visa fields on the form stay; this specific status
+                      pill is removed. */}
+                  {isGcc && (() => {
                     const badge = visaExpiryBadge(c.visa_expiry)
                     if (!badge) return null
                     const cls = badge.level === 'critical' ? 'bg-red-100 text-red-600' : badge.level === 'watch' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'
                     return <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${cls}`} title={c.visa_type ? `${VISA_TYPE_LABEL[c.visa_type] || c.visa_type} visa` : ''}>🛂 {badge.label}</span>
                   })()}
-                  {c.visa_status === 'needs_sponsorship' && (
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-orange-100 text-orange-700" title="Rules out any role that can't sponsor">🛂 {VISA_STATUS_LABEL.needs_sponsorship}</span>
-                  )}
                   {c.referrer_name && (
                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600" title={c.referrer_candidate_id ? 'Linked to an existing candidate record' : 'Referrer not yet in the CRM'}>🤝 Referred by {c.referrer_name}</span>
                   )}
@@ -1068,37 +1070,44 @@ export default function Candidates() {
               )}
               {/* 2026-09-06, gap-analysis batch 1: the single field every GCC
                   recruiter needs first — whether this candidate can even be
-                  submitted for a role that can't sponsor. */}
-              <div>
-                <label className="label" htmlFor="candidate-visa-status">🛂 Visa status</label>
-                <select id="candidate-visa-status" className="input" value={form.visa_status} onChange={e => setForm(p => ({ ...p, visa_status: e.target.value }))}>
-                  <option value="">Not set</option>
-                  <option value="own_visa">Own visa (transferable)</option>
-                  <option value="needs_sponsorship">Needs sponsorship</option>
-                  <option value="sponsored_by_agency">Sponsored by this agency</option>
-                  <option value="not_required">Not required (citizen/resident)</option>
-                </select>
-              </div>
-              <div>
-                <label className="label" htmlFor="candidate-visa-type">Visa type</label>
-                <select id="candidate-visa-type" className="input" value={form.visa_type} onChange={e => setForm(p => ({ ...p, visa_type: e.target.value }))}>
-                  <option value="">Not set</option>
-                  <option value="employment">Employment</option>
-                  <option value="golden">Golden</option>
-                  <option value="dependent">Dependent</option>
-                  <option value="freelance">Freelance</option>
-                  <option value="visit">Visit</option>
-                  <option value="other">Other</option>
-                </select>
-              </div>
-              <div>
-                <label className="label" htmlFor="candidate-visa-sponsor">Current sponsor</label>
-                <input id="candidate-visa-sponsor" className="input" placeholder="Employer name, if sponsored" value={form.visa_sponsor} onChange={e => setForm(p => ({ ...p, visa_sponsor: e.target.value }))} />
-              </div>
-              <div>
-                <label className="label" htmlFor="candidate-visa-expiry">Visa expiry</label>
-                <input id="candidate-visa-expiry" className="input" type="date" value={form.visa_expiry} onChange={e => setForm(p => ({ ...p, visa_expiry: e.target.value }))} />
-              </div>
+                  submitted for a role that can't sponsor. GCC-only: a UK
+                  account has no use for this (2026-09-06, Michael: "make
+                  sure it is only specifically shown for recruiters in UAE
+                  and not UK"). */}
+              {isGcc && (
+                <>
+                  <div>
+                    <label className="label" htmlFor="candidate-visa-status">🛂 Visa status</label>
+                    <select id="candidate-visa-status" className="input" value={form.visa_status} onChange={e => setForm(p => ({ ...p, visa_status: e.target.value }))}>
+                      <option value="">Not set</option>
+                      <option value="own_visa">Own visa (transferable)</option>
+                      <option value="needs_sponsorship">Needs sponsorship</option>
+                      <option value="sponsored_by_agency">Sponsored by this agency</option>
+                      <option value="not_required">Not required (citizen/resident)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="candidate-visa-type">Visa type</label>
+                    <select id="candidate-visa-type" className="input" value={form.visa_type} onChange={e => setForm(p => ({ ...p, visa_type: e.target.value }))}>
+                      <option value="">Not set</option>
+                      <option value="employment">Employment</option>
+                      <option value="golden">Golden</option>
+                      <option value="dependent">Dependent</option>
+                      <option value="freelance">Freelance</option>
+                      <option value="visit">Visit</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="candidate-visa-sponsor">Current sponsor</label>
+                    <input id="candidate-visa-sponsor" className="input" placeholder="Employer name, if sponsored" value={form.visa_sponsor} onChange={e => setForm(p => ({ ...p, visa_sponsor: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="candidate-visa-expiry">Visa expiry</label>
+                    <input id="candidate-visa-expiry" className="input" type="date" value={form.visa_expiry} onChange={e => setForm(p => ({ ...p, visa_expiry: e.target.value }))} />
+                  </div>
+                </>
+              )}
               {/* 2026-09-04, Michael: "when you are adding a candidate, let
                   us as an extra function add it to a company as a contact"
                   — a candidate is sometimes also a useful business contact

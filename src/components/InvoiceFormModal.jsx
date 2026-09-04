@@ -10,6 +10,7 @@ import { listSplitsForInvoice, replaceSplits, validateSplits } from '../lib/data
 import { listTeamMembers } from '../lib/data/teamMembers'
 import { lineItemAmount, computeInvoiceTotals, formatMoney, currencySymbol, CURRENCY_OPTIONS } from '../lib/invoiceCalc'
 import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
+import { useMarketCurrency } from '../lib/useMarketCurrency'
 import { reportClientError } from '../lib/errorReporting'
 import CompanySelect from './CompanySelect'
 import Modal from './Modal'
@@ -92,6 +93,10 @@ const REFERRAL_PAYOUT_OPTIONS = [
 // of asking them to re-pick everything they just did in the candidate form.
 export default function InvoiceFormModal({ open, invoice, onClose, onSaved, prefill }) {
   const { user } = useAuth()
+  // 2026-09-06, Michael: "make sure it is only specifically shown for
+  // recruiters in UAE and not UK" — WPS (Wage Protection System) cycles are
+  // a UAE-specific labour-law mechanic, meaningless for a UK-only account.
+  const { isGccMarket: isGcc } = useMarketCurrency()
   const [form, setForm] = useState(EMPTY)
   const [lineItems, setLineItems] = useState([newRow()])
   const [jobs, setJobs] = useState([])
@@ -538,12 +543,14 @@ export default function InvoiceFormModal({ open, invoice, onClose, onSaved, pref
           {/* 2026-09-06, gap-analysis batch 3 ("WPS-aware contract
               invoicing"): structured fields for a recurring contract/temp
               salary cycle — off by default, since most placements here
-              are still one-off permanent fees. */}
-          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-            <input type="checkbox" checked={form.is_wps_cycle} onChange={e => setForm(p => ({ ...p, is_wps_cycle: e.target.checked }))} />
-            📋 This is a recurring contract/temp WPS salary cycle
-          </label>
-          {form.is_wps_cycle && (
+              are still one-off permanent fees. GCC-only. */}
+          {isGcc && (
+            <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+              <input type="checkbox" checked={form.is_wps_cycle} onChange={e => setForm(p => ({ ...p, is_wps_cycle: e.target.checked }))} />
+              📋 This is a recurring contract/temp WPS salary cycle
+            </label>
+          )}
+          {isGcc && form.is_wps_cycle && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-gray-50 rounded-lg p-4">
               <div><label className="label" htmlFor="inv-wps-labour-card">Labour card no.</label><input id="inv-wps-labour-card" className="input" value={form.wps_labour_card_no} onChange={e => setForm(p => ({ ...p, wps_labour_card_no: e.target.value }))} /></div>
               <div><label className="label" htmlFor="inv-wps-wage-account">Wage account</label><input id="inv-wps-wage-account" className="input" value={form.wps_wage_account} onChange={e => setForm(p => ({ ...p, wps_wage_account: e.target.value }))} /></div>
