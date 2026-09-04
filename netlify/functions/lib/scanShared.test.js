@@ -2390,6 +2390,59 @@ describe('looksLikeJobPostingUrl (live_job genuineness gate)', () => {
     expect(looksLikeJobPostingUrl(null)).toBe(false)
     expect(looksLikeJobPostingUrl('not a url')).toBe(false)
   })
+
+  // 2026-09-04, Michael, real report: this exact real NaukriGulf posting
+  // (a genuine, specific IH opening, its own real job-id suffix) came
+  // through as "Hiring activity" instead of "Live roles" — the old regex
+  // only matched "job"/"jobs"/"career" as the FIRST path segment
+  // (/jobs/12345), so NaukriGulf's own real single-posting convention
+  // (title first, "jobs" folded into the middle of one long SEO slug)
+  // could never pass, no matter how real and specific the posting was.
+  it('accepts a genuine NaukriGulf posting URL — "jobs" mid-slug, not path-leading (real production miss)', () => {
+    expect(looksLikeJobPostingUrl('https://www.naukrigulf.com/investment-director-chief-investment-officer-jobs-in-doha-qatar-in-ih-13-to-20-years-n-cd-368133-jid-310826001109')).toBe(true)
+  })
+
+  it('still rejects a word that merely contains "job" as a substring, not as its own word', () => {
+    expect(looksLikeJobPostingUrl('https://example.com/about/jobsite-widget')).toBe(false)
+  })
+
+  // Same real-account audit: Indeed's own single-posting URL glues "job"
+  // straight onto "view" ("/viewjob") with no separator, so no word-boundary
+  // keyword check could ever match it — trusted by host+exact-path instead,
+  // same precedent as the Adzuna host-trust above.
+  it('trusts Indeed\'s own "/viewjob" single-posting path shape', () => {
+    expect(looksLikeJobPostingUrl('https://ae.indeed.com/viewjob?jk=ae83116321325e2f')).toBe(true)
+  })
+
+  it('does not extend Indeed\'s host trust past the exact "/viewjob" path', () => {
+    expect(looksLikeJobPostingUrl('https://ae.indeed.com/companies/Sanofi')).toBe(false)
+  })
+
+  // 2026-09-04, Michael, follow-up to the fixes above: "Yes fix that" (the
+  // ATS-hosted gap flagged alongside them) — jobs.lever.co, jobs.workable.com
+  // and apply.workable.com carry no "job" keyword in their path at all (the
+  // "job-ness" is in the hostname), so no keyword-based check could ever
+  // catch them. Confirmed against this account's own real rows, one per
+  // platform.
+  it('trusts a genuine Lever posting URL (real UUID path)', () => {
+    expect(looksLikeJobPostingUrl('https://jobs.lever.co/aldar/774dabcc-e3f8-4b7d-95d0-72f5e1a801da')).toBe(true)
+  })
+
+  it('does not extend Lever trust to the host\'s own postings-list page (no UUID path)', () => {
+    expect(looksLikeJobPostingUrl('https://jobs.lever.co/aldar')).toBe(false)
+  })
+
+  it('trusts a genuine Workable "view" posting URL', () => {
+    expect(looksLikeJobPostingUrl('https://jobs.workable.com/view/nh1HxiYaby1L5dT16Zfx1w/director---development-in-riyadh-at-qiddiya-investment-company')).toBe(true)
+  })
+
+  it('trusts a genuine Workable short "apply" posting URL', () => {
+    expect(looksLikeJobPostingUrl('https://apply.workable.com/j/EDAF15DFA2')).toBe(true)
+  })
+
+  it('does not extend Workable trust to the host\'s own company landing page', () => {
+    expect(looksLikeJobPostingUrl('https://apply.workable.com/janus-digital')).toBe(false)
+  })
 })
 
 // 2026-09-06, Michael, real report: a "Chief Financial Officer" live_job

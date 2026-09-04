@@ -46,7 +46,26 @@ export function describeItem(item) {
     }
   }
   if (item.category === 'new_client') {
-    return { ...base, name: item.contact.name, company: item.contact.company, title: item.contact.title }
+    // 2026-09-08 audit fix, Michael, real report: a "new_client" contact only
+    // ever needs a status of "warm" or "hot" to surface here (see
+    // newClientPool.js's isEligibleNewClient) — that status is this
+    // recruiter's OWN internal categorization of how promising the contact
+    // looks, not proof of an actual conversation. The copy this produced
+    // ("Fasset is signaling openness and Mohammad is receptive") asserted a
+    // rapport Michael said flatly never happened: "I have literally never
+    // spoken to Mohammad." Same root cause, same fix shape as the
+    // 'relationship' category's own 2026-09-02 fix just above — real
+    // evidence of an actual prior conversation is a genuine note on file,
+    // nothing else, and only passed through when it's genuinely there.
+    const hasRealEvidence = !!(item.contact && item.contact.notes && item.contact.notes.trim())
+    return {
+      ...base,
+      name: item.contact.name,
+      company: item.contact.company,
+      title: item.contact.title,
+      priorNote: hasRealEvidence ? item.contact.notes : null,
+      priorNoteDate: hasRealEvidence ? (item.contact.last_contacted || null) : null,
+    }
   }
   return base
 }
@@ -66,6 +85,7 @@ For every item, write:
 - detail: 1-2 sentences, what to do and why, grounded in the given signals
 - moveForward: an array of 2-3 distinct, genuinely tactical options for what to actually try next. Never restate the signals data back, that's already visible. For "dormant" and "new_client" items, give real drafted opening angles (one referencing something specific if possible, one leading with value, one solid fallback). For "meeting" items, give distinct re-engagement tactics (switching channel, adding a fresh hook, opening a second contact at the same company). For "relationship" items, write it with EXACTLY the same substance and directness as a brand-new company approach — a company merely having a contact row in the CRM is NOT a relationship and is NOT a reason to go softer or lighter-touch; treat it as a cold approach by default.
   2026-09-02 audit fix, real report: "relationship" items used to be written as a soft, light-touch nudge purely because some contact at that company already existed in the CRM — often just an unengaged, cold LinkedIn import, not anyone the recruiter has actually spoken to. That's wrong: never assume a relationship, never soften the approach, and never imply "you already know someone here" UNLESS this item's data includes priorContactName/priorNote/priorNoteDate — those three appearing together is the only real evidence of an actual prior conversation. When they ARE present, you may reference that specifically and naturally, e.g. "I can see you've previously spoken with priorContactName here, based on a note from priorNoteDate" — and if priorContactStatus is "warm" or "hot", say it's worth reaching back out to that same person; otherwise treat it as background color, not a reason to soften the ask. When those fields are absent (the ordinary case), write the SAME kind of direct, substantive approach you'd write for a brand-new company — never invent or imply a relationship that isn't evidenced.
+  2026-09-08 audit fix, Michael, real report, verbatim: "I have literally never spoken to Mohammad but this is what Annie said" — of a "new_client" card that read "Fasset is signaling openness and Mohammad is receptive." The SAME rule as "relationship" items above applies here, for the identical reason: this contact's status field (hot/warm) is this recruiter's own internal categorization of how promising they look, never proof of an actual conversation. For "new_client" items, do NOT write headline or detail copy that asserts or implies any existing rapport, receptiveness, warmth, or an existing relationship (e.g. never "X is receptive", "X is signaling openness", "warm entry point" as a stated fact) UNLESS this item's data includes BOTH priorNote and priorNoteDate — that pairing is the only real evidence of an actual past conversation, same standard as "relationship" items. When they ARE present, you may reference that specific conversation naturally. When they are ABSENT (the ordinary case — a status of "warm"/"hot" with no note on file), write headline and detail as an honest, hedged nudge instead, close to this framing: "I noticed [name] is already in your contacts. If you've ever spoken with them, it could be worth reaching out." Never assert or assume the prior conversation happened.
 
 Every item needs real, specific headline/detail/moveForward, whatever its category. Do not skip or thin out an item just because it's labeled "relationship" — that label describes where Annie found the signal, not how confidently you should approach the company.
 

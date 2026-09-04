@@ -207,7 +207,52 @@ export function looksLikeJobPostingUrl(url) {
     // failing the generic path check below.
     if (host.includes('adzuna.')) return true
     if (host.includes('linkedin.com') && /\/jobs\/view\//.test(path)) return true
-    return /\/(job|jobs|career|careers|vacanc(y|ies))(\/|-|$)/.test(path)
+    // Same reasoning while auditing the real rows this fix touches: Indeed's
+    // own single-posting convention is "/viewjob?jk=<id>" — "job" glued
+    // directly onto "view" with no separator, so it can never pass a
+    // word-boundary keyword check no matter how that check is written. A
+    // real, well-known, stable URL shape (confirmed against this account's
+    // own actual Indeed-sourced rows), trusted by host+path shape the same
+    // way Adzuna is trusted by host alone above.
+    if (host.includes('indeed.com') && path === '/viewjob') return true
+    // 2026-09-04, Michael, follow-up: flagged rather than silently folded in
+    // with the fixes above, because this is a different kind of trust
+    // decision — the "job-ness" here is in the HOSTNAME (a dedicated ATS
+    // candidate-facing domain), not anything in the path at all, so no
+    // keyword check of any kind could ever catch these. Michael: "Yes fix
+    // that". Confirmed against this account's own real rows, one per
+    // platform: Lever (jobs.lever.co/{company}/{postingId}, postingId a
+    // real UUID — the Aldar Properties posting), Workable's "view" form
+    // (jobs.workable.com/view/{id}/{slug} — the Qiddiya Investment and
+    // Janus Digital postings), and Workable's short "apply" form
+    // (apply.workable.com/j/{code} — the Driven Properties and Qiddiya
+    // Investment postings). Each is checked by host AND a real path shape
+    // (a UUID, or the platform's own fixed prefix), not host alone — unlike
+    // Adzuna above, these hostnames aren't exclusively job-posting domains
+    // in the same load-bearing way, so the path shape is what actually
+    // confirms "this is one specific posting" rather than the platform's
+    // own company/careers landing page.
+    if (host === 'jobs.lever.co' && /^\/[^/]+\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path)) return true
+    if (host === 'jobs.workable.com' && /^\/view\//.test(path)) return true
+    if (host === 'apply.workable.com' && /^\/j\/[0-9a-z]+$/i.test(path)) return true
+    // 2026-09-04, Michael, real report: a genuine NaukriGulf posting (real
+    // job ID suffix, specific title, specific company) came through as
+    // "Hiring activity" instead of "Live roles" — traced to this check
+    // requiring "job"/"jobs"/"career"/etc. to sit immediately after a "/",
+    // which only matches a path that STARTS with that segment
+    // (/jobs/12345, /careers/xyz). NaukriGulf's own real single-posting
+    // convention instead puts the job title first and folds "jobs" into
+    // the middle of one long SEO slug, e.g.
+    // "/investment-director-chief-investment-officer-jobs-in-doha-qatar-in-
+    // ih-13-to-20-years-n-cd-368133-jid-310826001109" — a real, specific,
+    // single posting (note the trailing "-jid-<id>", a genuine posting's
+    // own job-id suffix) that the old anchored regex could never match, no
+    // matter how real it was. Switched to a whole-word match anywhere in
+    // the path — hyphens and slashes both count as word boundaries in
+    // regex, so this still won't match "job" or "jobs" as a substring of
+    // an unrelated word (e.g. "jobsite"), it just no longer requires that
+    // word to be the very first path segment.
+    return /\b(jobs?|careers?|vacanc(?:y|ies))\b/.test(path)
   } catch {
     return false
   }

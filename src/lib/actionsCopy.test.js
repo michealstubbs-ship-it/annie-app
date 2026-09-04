@@ -34,6 +34,41 @@ describe('buildEnrichmentPrompt', () => {
     expect(prompt).toMatch(/priorContactName\/priorNote\/priorNoteDate/)
     expect(prompt).toMatch(/never invent or imply a relationship that isn't evidenced/i)
   })
+
+  // 2026-09-08 audit fix, Michael, real report, verbatim: "I have literally
+  // never spoken to Mohammad but this is what Annie said" — of a
+  // "new_client" card asserting "Fasset is signaling openness and Mohammad
+  // is receptive" from nothing but the contact's own hot/warm status label.
+  it('tells the model never to assert rapport on a new_client item unless priorNote/priorNoteDate evidence is present', () => {
+    const prompt = buildEnrichmentPrompt([{ category: 'new_client', signals: {}, contact: { name: 'Mohammad Hossain', company: 'Fasset' } }], null, null)
+    expect(prompt).toMatch(/do NOT write headline or detail copy that asserts or implies any existing rapport/i)
+    expect(prompt).toMatch(/If you've ever spoken with them, it could be worth reaching out/)
+  })
+})
+
+describe('describeItem — new_client evidence', () => {
+  it('passes no prior-conversation evidence through when the contact has no notes on file', () => {
+    const item = { category: 'new_client', signals: {}, contact: { name: 'Mohammad Hossain', company: 'Fasset', title: 'CEO', notes: '' } }
+    const d = describeItem(item)
+    expect(d.priorNote).toBeNull()
+    expect(d.priorNoteDate).toBeNull()
+  })
+
+  it('passes real prior-conversation evidence through when the contact has a genuine note on file', () => {
+    const item = {
+      category: 'new_client',
+      signals: {},
+      contact: { name: 'Mohammad Hossain', company: 'Fasset', title: 'CEO', notes: 'Met at GITEX, discussed a CTO search', last_contacted: '2026-08-01' },
+    }
+    const d = describeItem(item)
+    expect(d.priorNote).toBe('Met at GITEX, discussed a CTO search')
+    expect(d.priorNoteDate).toBe('2026-08-01')
+  })
+
+  it('treats a whitespace-only note as no real evidence', () => {
+    const item = { category: 'new_client', signals: {}, contact: { name: 'A', company: 'B', notes: '   ' } }
+    expect(describeItem(item).priorNote).toBeNull()
+  })
 })
 
 describe('describeItem — relationship evidence', () => {
