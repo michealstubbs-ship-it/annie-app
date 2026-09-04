@@ -263,7 +263,7 @@ For each signal, determine:
 
 For each genuine, directly-posted open role you found via the Adzuna list above or your own web search for this recruiter's markets, write a SEPARATE entry with these fields instead (do not mix these into a signal entry):
 - entryType: "live_job"
-- company: the company name, exactly as Adzuna gave it
+- company: the name of the actual hiring employer named in the posting's own text, exactly as Adzuna gave it for an Adzuna-sourced role. For a role you found yourself, never the name of the LinkedIn Page, Group, meetup, or community account that posted or shared it, if those differ from the real employer, since a user group or meetup sharing news of an opening elsewhere is not itself the hiring company.
 - headline: the exact, specific role title (e.g. "Senior Finance Manager", not "Hiring across Finance") — this is what makes it a live job entry rather than a company-level narrative
 - whyItMatters: 1 sentence, plain natural prose, on why this specific open role is a genuine BD opportunity right now (e.g. posted directly with no recruiter attached, matches this recruiter's placement functions). No citation markup or bracketed references.
 - sourceUrl: the real posting URL — the Adzuna posting URL from the list above, or, for a role you found via your own web search, the actual job posting page itself (a company careers page, a job board listing, or a LinkedIn Jobs post) — never a news article that merely mentions the company is hiring

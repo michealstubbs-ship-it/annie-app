@@ -47,3 +47,29 @@ export function isStaffingAgencyIndustry(industry) {
 export function looksLikeStaffingAgency(companyName, industry) {
   return looksLikeStaffingAgencyName(companyName) || isStaffingAgencyIndustry(industry)
 }
+
+// 2026-09-06, Michael, real report: two live_job leads surfaced with
+// "COPADO User Group Hyderabad" and "AWS User Group SE" as the company, a
+// Salesforce/AWS meetup community, not a hiring employer. Same failure
+// shape as the Quik Hire Staffing incident above (a non-employer entity's
+// name ends up in the company field), just a different vocabulary: the AI
+// found a real hiring mention inside a LinkedIn post, but the post was
+// shared by or through a user group / meetup / community page, and that
+// page's own name got written down as "company" instead of the actual
+// employer named in the post's text. There is no real BD opportunity at a
+// meetup group's own page, so this is a hard drop, same as an agency name.
+const NON_EMPLOYER_ORG_NAME_PATTERN = /\b(user group|users? group|meetup|meet-?up group|community( group)?|chapter|association|alumni( network)?|forum)\b/i
+
+export function looksLikeCommunityOrGroupName(companyName) {
+  if (!companyName) return false
+  return NON_EMPLOYER_ORG_NAME_PATTERN.test(companyName)
+}
+
+// Combined "not a genuine hiring employer" check, for anywhere that used to
+// call looksLikeStaffingAgency alone. An agency and a community/meetup
+// page are different vocabularies but the same underlying problem, so
+// every caller of the agency check gets this one too rather than needing
+// its own separate second call.
+export function looksLikeNonEmployerOrg(companyName, industry) {
+  return looksLikeStaffingAgency(companyName, industry) || looksLikeCommunityOrGroupName(companyName)
+}

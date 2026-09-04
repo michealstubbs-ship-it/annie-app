@@ -782,6 +782,22 @@ describe('pickLiveJobEntryFromLeads', () => {
     )
     expect(entry).toMatchObject({ company: 'POWERCHINA', sourceUrl: 'https://x.com/3' })
   })
+
+  // 2026-09-06, Michael, real report: this exact picker is what surfaced
+  // "COPADO User Group Hyderabad" live. The mega-employer/agency check
+  // above didn't catch it because "user group" isn't staffing vocabulary.
+  // Now skipped the same way, moving on to the next real lead.
+  it('skips a meetup/community/user-group lead instead of returning it, moving on to the next real one', () => {
+    const entry = pickLiveJobEntryFromLeads(
+      [
+        { title: 'Chief Financial Officer', company: 'COPADO User Group Hyderabad', url: 'https://x.com/1', employeeCount: null, isRecruitingAgency: false },
+        { title: 'Chief Risk Officer', company: 'Al-Futtaim Finance Company', url: 'https://x.com/2', employeeCount: 300, isRecruitingAgency: false },
+      ],
+      [],
+      new Set(),
+    )
+    expect(entry).toMatchObject({ company: 'Al-Futtaim Finance Company', sourceUrl: 'https://x.com/2' })
+  })
 })
 
 // 2026-09-03, Michael, real report: "surely there's a lot more roles than
@@ -807,7 +823,14 @@ describe('pickLiveJobEntriesFromLeads', () => {
     expect(entries[1]).toMatchObject({ company: 'ALAS Emirates Ready Mix' })
   })
 
-  it('skips mega-employer and agency-posted leads when filling multiple slots, not just the first', () => {
+  it('skips mega-employer, agency-posted, and community/group leads when filling multiple slots, not just the first', () => {
+    // 2026-09-06 update: "COPADO User Group Hyderabad" here used to be a
+    // real report of exactly this test's own gap. It slipped through
+    // uncaught (no staffing-agency name match, employeeCount 1 isn't a
+    // mega-employer) and surfaced live as a "hiring" lead. Now caught by
+    // looksLikeCommunityOrGroupName (see isDisqualifiedLiveJobLead's own
+    // header in scanShared.js), so this test's own expectation is fixed to
+    // match the corrected behavior instead of documenting the bug.
     const entries = pickLiveJobEntriesFromLeads(
       [
         { title: 'Chief Risk Officer', company: 'Al-Futtaim', url: 'https://x.com/1', employeeCount: 26657, isRecruitingAgency: false },
@@ -820,14 +843,10 @@ describe('pickLiveJobEntriesFromLeads', () => {
       new Set(),
       LIVE_JOB_PRIORITY_LIMIT,
     )
-    // Al-Futtaim (mega-employer) and STAR SERVICES (agency) are skipped;
-    // COPADO isn't disqualified by these two checks alone (no staffing-
-    // agency name match, employeeCount 1 isn't a mega-employer) so it's
-    // still a legitimate pick here — the point of this test is that the
-    // picker keeps going past a bad lead rather than stopping, not that
-    // every weak-looking name gets caught (that's a separate, follow-up
-    // concern flagged to Michael, not this fix's scope).
-    expect(entries.map(e => e.company)).toEqual(['COPADO User Group Hyderabad', 'POWERCHINA', 'ALAS Emirates Ready Mix'])
+    // Al-Futtaim (mega-employer), COPADO (community/user group), and STAR
+    // SERVICES (agency) are all skipped. The picker keeps going past each
+    // bad lead rather than stopping, landing on the two genuine ones.
+    expect(entries.map(e => e.company)).toEqual(['POWERCHINA', 'ALAS Emirates Ready Mix'])
   })
 
   it('never returns more than `limit` even when more real leads exist', () => {
@@ -1403,6 +1422,63 @@ describe('buildEnrichedSignalRow', () => {
       }))
       const row = await buildEnrichedSignalRow(
         { entryType: 'live_job', signalType: 'hiring_activity', company: 'Acme Ltd', headline: 'Finance Manager', sourceUrl: 'https://linkedin.com/jobs/view/123' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase: makeTableAwareSupabase(), logPrefix: '[test]' },
+      )
+      expect(row).not.toBeNull()
+      expect(row.signal_type).toBe('live_job')
+    })
+  })
+
+  // 2026-09-06, Michael, real report: two live_job leads surfaced with
+  // "COPADO User Group Hyderabad" and "AWS User Group SE" as the company,
+  // both meetup/community pages, not genuine hiring employers. Same shape
+  // as the staffing-agency check just above (a hard drop, before Apollo is
+  // ever called), different vocabulary.
+  describe('drops a live_job entry posted by a meetup/community/user group', () => {
+    it('drops it on a company-name keyword match, before ever calling Apollo', async () => {
+      const fetchSpy = vi.fn()
+      vi.stubGlobal('fetch', fetchSpy)
+      const row = await buildEnrichedSignalRow(
+        { entryType: 'live_job', signalType: 'hiring_activity', company: 'COPADO User Group Hyderabad', headline: 'Chief Financial Officer — live opening at COPADO User Group Hyderabad', sourceUrl: 'https://linkedin.com/jobs/view/456' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase: makeCacheSupabase({}), logPrefix: '[test]' },
+      )
+      expect(row).toBeNull()
+      expect(fetchSpy).not.toHaveBeenCalled()
+      vi.unstubAllGlobals()
+    })
+
+    it('drops another real report the same way: "AWS User Group SE"', async () => {
+      const fetchSpy = vi.fn()
+      vi.stubGlobal('fetch', fetchSpy)
+      const row = await buildEnrichedSignalRow(
+        { entryType: 'live_job', signalType: 'hiring_activity', company: 'AWS User Group SE', headline: 'Global Finance Director — live opening at AWS User Group SE', sourceUrl: 'https://linkedin.com/jobs/view/789' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase: makeCacheSupabase({}), logPrefix: '[test]' },
+      )
+      expect(row).toBeNull()
+      expect(fetchSpy).not.toHaveBeenCalled()
+      vi.unstubAllGlobals()
+    })
+
+    it('only applies to live_job entries, an ordinary signal about a user group is not dropped', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => '' }))
+      const supabase = makeCacheSupabase({ matched: false, contact_verified: false, checked_at: new Date().toISOString() })
+      const row = await buildEnrichedSignalRow(
+        { entryType: 'signal', signalType: 'funding', company: 'AWS User Group SE', headline: 'Some unrelated news' },
+        { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase, logPrefix: '[test]' },
+      )
+      expect(row).not.toBeNull()
+      vi.unstubAllGlobals()
+    })
+
+    it('does not drop a genuine hiring company, including the real report\'s own third lead ("Al-Futtaim Finance Company")', async () => {
+      vi.stubGlobal('fetch', vi.fn(async (url) => {
+        if (url.includes('mixed_companies/search')) {
+          return { ok: true, json: async () => ({ organizations: [{ id: 'org_1', name: 'Al-Futtaim Finance Company', industry: 'financial services', primary_domain: 'alfuttaim.com' }] }) }
+        }
+        return { ok: true, text: async () => '' }
+      }))
+      const row = await buildEnrichedSignalRow(
+        { entryType: 'live_job', signalType: 'hiring_activity', company: 'Al-Futtaim Finance Company', headline: 'Chief Risk Officer', sourceUrl: 'https://linkedin.com/jobs/view/123' },
         { userId: 'u1', apolloKey: 'k', companiesHouseKey: 'ch', supabase: makeTableAwareSupabase(), logPrefix: '[test]' },
       )
       expect(row).not.toBeNull()

@@ -129,4 +129,21 @@ describe('buildRelationshipPool', () => {
       expect(buildRelationshipPool(signals, agencyContacts)).toHaveLength(1)
     })
   })
+
+  // 2026-09-06, Michael, real report: see the identical fix and full
+  // reasoning in sourcedPool.test.js. "AWS User Group SE" is a meetup/
+  // community page, not a hiring employer.
+  describe('drops a live_job lead posted by a meetup/community/user group', () => {
+    const groupContacts = [{ id: 1, company: 'AWS User Group SE', status: 'warm' }]
+
+    it('drops a live_job signal whose company name reads as a community/user group', () => {
+      const signals = [{ id: 's1', company_name: 'AWS User Group SE', status: 'new', signal_type: 'live_job', found_at: daysAgoIso(1) }]
+      expect(buildRelationshipPool(signals, groupContacts)).toEqual([])
+    })
+
+    it('does not drop a non-live_job signal from the same group-named company', () => {
+      const signals = [{ id: 's1', company_name: 'AWS User Group SE', status: 'new', signal_type: 'funding', found_at: daysAgoIso(1) }]
+      expect(buildRelationshipPool(signals, groupContacts)).toHaveLength(1)
+    })
+  })
 })

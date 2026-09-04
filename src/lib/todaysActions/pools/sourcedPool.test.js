@@ -169,3 +169,19 @@ describe('buildSourcedPool — drops a live_job lead posted by a staffing/recrui
     expect(buildSourcedPool(signals, [])).toHaveLength(1)
   })
 })
+
+// 2026-09-06, Michael, real report: "COPADO User Group Hyderabad" and "AWS
+// User Group SE" both surfaced as the company on a live_job card, meetup/
+// community pages, not hiring employers. Same stale-row reasoning as the
+// staffing-agency fix above, just a different vocabulary.
+describe('buildSourcedPool, drops a live_job lead posted by a meetup/community/user group', () => {
+  it('drops a live_job signal whose company name reads as a community/user group', () => {
+    expect(buildSourcedPool([baseSignal({ company_name: 'AWS User Group SE' })], [])).toEqual([])
+    expect(buildSourcedPool([baseSignal({ company_name: 'COPADO User Group Hyderabad' })], [])).toEqual([])
+  })
+
+  it('does not drop a non-live_job signal from the same group-named company', () => {
+    const signals = [baseSignal({ signal_type: 'funding', company_name: 'AWS User Group SE' })]
+    expect(buildSourcedPool(signals, [])).toHaveLength(1)
+  })
+})

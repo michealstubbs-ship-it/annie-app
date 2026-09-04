@@ -1,6 +1,6 @@
 import { daysSince, decayFall, norm } from '../shared.js'
 import { BD_ACTION_SIGNAL_TYPES } from '../eligibility.js'
-import { looksLikeStaffingAgency } from '../../agencyMatch.js'
+import { looksLikeNonEmployerOrg } from '../../agencyMatch.js'
 
 const RELATIONSHIP_FRESH_DAYS = 14
 
@@ -10,8 +10,9 @@ export function isEligibleRelationship(s, linkedContact) {
   // 2026-09-02 audit fix — see the identical check and full reasoning in
   // sourcedPool.js's isEligibleSourced: a stale live_job row from before
   // the write-time agency check shipped never gets retired on its own, so
-  // it's checked again here too.
-  if (s.signal_type === 'live_job' && looksLikeStaffingAgency(s.company_name, s.company_industry)) return false
+  // it's checked again here too. 2026-09-06: widened to
+  // looksLikeNonEmployerOrg, same reasoning, see sourcedPool.js.
+  if (s.signal_type === 'live_job' && looksLikeNonEmployerOrg(s.company_name, s.company_industry)) return false
   const manuallyAdded = !!s.manually_added_at
   // Today's BD Actions only ever surfaces the whitelisted signal types on
   // an ordinary scan-sourced signal. 2026-08-25 change, per Michael (see

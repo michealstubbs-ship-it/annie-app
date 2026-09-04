@@ -1,7 +1,7 @@
 import { RACY_SIGNAL_TYPES } from '../../signalTypes.js'
 import { daysSince, decayFall, norm } from '../shared.js'
 import { BD_ACTION_SIGNAL_TYPES } from '../eligibility.js'
-import { looksLikeStaffingAgency } from '../../agencyMatch.js'
+import { looksLikeNonEmployerOrg } from '../../agencyMatch.js'
 
 const SOURCED_MAX_AGE_DAYS = 21
 
@@ -26,7 +26,10 @@ export function isEligibleSourced(s, knownCompanies) {
   // check, applied here too, so no live_job signal can surface regardless
   // of when it was written. Only live_job, not every signal type — an
   // agency itself getting funded or expanding is still real BD news.
-  if (s.signal_type === 'live_job' && looksLikeStaffingAgency(s.company_name, s.company_industry)) return false
+  // 2026-09-06: widened to looksLikeNonEmployerOrg (agency name/industry OR
+  // a community/meetup/user-group name, e.g. "AWS User Group SE"). Same
+  // stale-row reasoning, just also covering the newer failure vocabulary.
+  if (s.signal_type === 'live_job' && looksLikeNonEmployerOrg(s.company_name, s.company_industry)) return false
   const manuallyAdded = !!s.manually_added_at
   // Today's BD Actions only ever surfaces the whitelisted signal types on
   // an ordinary scan-sourced signal. 2026-08-25 change, per Michael: a

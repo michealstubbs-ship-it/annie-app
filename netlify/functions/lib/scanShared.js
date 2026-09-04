@@ -17,7 +17,7 @@ import { normalizeCompanyName } from '../../../src/lib/companyMatch.js'
 import { extractJson } from '../../../src/lib/jsonExtract.js'
 import { SIGNAL_TYPES } from '../../../src/lib/signalTypes.js'
 import { stripAiArtifacts, sanitizeStringList } from '../../../src/lib/textSanitize.js'
-import { looksLikeStaffingAgencyName, isStaffingAgencyIndustry } from '../../../src/lib/agencyMatch.js'
+import { looksLikeStaffingAgencyName, isStaffingAgencyIndustry, looksLikeCommunityOrGroupName } from '../../../src/lib/agencyMatch.js'
 import { reportServerError } from './reportError.js'
 import { parseIntEnv } from './env.js'
 
@@ -26,7 +26,7 @@ import { parseIntEnv } from './env.js'
 // now live in src/lib because they're genuinely shared with the frontend
 // too, not backend-only. See jsonExtract.js, signalTypes.js and
 // textSanitize.js for why.
-export { extractJson, SIGNAL_TYPES, stripAiArtifacts, looksLikeStaffingAgencyName, isStaffingAgencyIndustry }
+export { extractJson, SIGNAL_TYPES, stripAiArtifacts, looksLikeStaffingAgencyName, isStaffingAgencyIndustry, looksLikeCommunityOrGroupName }
 
 // 2026-08-26, Michael: built while investigating whether raising
 // anthropicMaxTokens (see SCAN_TIER_CONFIG in entitlements.js) would
@@ -1270,15 +1270,23 @@ export async function discoverTheirStackJobs(apiKey, { sectors, functions, locat
 // agency-posted role would only get caught much later, by
 // buildEnrichedSignalRow's Apollo-backed check, by which point the one
 // guaranteed slot was already spent on it and nothing replaced it. This
-// gate runs the same two checks that check would eventually make anyway
-// (isMegaEmployer, looksLikeStaffingAgencyName — the latter also doubles
-// as a coarse "does this even read like a real employer" filter for a
-// name like "COPADO User Group Hyderabad"), but at picking time, using the
+// gate runs the same checks that check would eventually make anyway
+// (isMegaEmployer, looksLikeStaffingAgencyName), at picking time, using the
 // employeeCount/isRecruitingAgency TheirStack already hands back for free
 // (see discoverTheirStackJobs's own mapping) — so a bad lead costs nothing
 // and the picker moves on to the next one instead of spending its shot.
+//
+// 2026-09-06 follow-up, Michael, real report: "COPADO User Group Hyderabad"
+// and "AWS User Group SE" both surfaced live, as the assumption above that
+// looksLikeStaffingAgencyName would double as a catch-all for a name like
+// that turned out wrong. "User group" isn't staffing/recruitment
+// vocabulary, so it sailed straight through this gate every time. Fixed
+// properly now with looksLikeCommunityOrGroupName, a dedicated check for
+// exactly this vocabulary (see its own header in agencyMatch.js) instead
+// of relying on the staffing check to coincidentally also catch it.
 function isDisqualifiedLiveJobLead(lead) {
   if (looksLikeStaffingAgencyName(lead.company)) return true
+  if (looksLikeCommunityOrGroupName(lead.company)) return true
   if (lead.isRecruitingAgency) return true
   if (isMegaEmployer(lead.employeeCount)) return true
   return false
@@ -2235,6 +2243,18 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
   // there's no lesser signal type worth keeping it as.
   if (isLiveJob && looksLikeStaffingAgencyName(s.company)) {
     console.log(`${logPrefix} live_job entry for "${s.company}" dropped — company name reads as a staffing/recruitment agency, not the hiring employer`)
+    return null
+  }
+
+  // 2026-09-06, Michael, real report: "COPADO User Group Hyderabad" and
+  // "AWS User Group SE" surfaced as the company on a live_job entry, both
+  // meetup/community pages, not hiring employers. Same reasoning and same
+  // hard-drop treatment as the staffing-agency check just above (see
+  // looksLikeCommunityOrGroupName's own header in agencyMatch.js). A
+  // community group's own page is never the real hiring employer regardless
+  // of how genuine the underlying job mention was.
+  if (isLiveJob && looksLikeCommunityOrGroupName(s.company)) {
+    console.log(`${logPrefix} live_job entry for "${s.company}" dropped, company name reads as a meetup/community/user group, not the hiring employer`)
     return null
   }
 
@@ -3695,7 +3715,7 @@ Return up to ${LIVE_JOB_PRIORITY_LIMIT} genuinely good live_job entries — each
 
 For each live job you found, use this exact shape:
 - entryType: "live_job"
-- company: the company name
+- company: the name of the actual hiring employer named in the posting's own text, never the name of the LinkedIn Page, Group, meetup, or community account that posted or shared it, if those differ from the real employer
 - headline: the exact, specific role title (e.g. "Senior Finance Manager", not "Hiring across Finance")
 - whyItMatters: 1 sentence, plain natural prose, on why this specific open role is a genuine BD opportunity right now. No citation markup or bracketed references.
 - sourceUrl: the real posting URL — never a news article that merely mentions the company is hiring
