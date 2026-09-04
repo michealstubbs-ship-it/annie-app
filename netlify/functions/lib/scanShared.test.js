@@ -4118,3 +4118,50 @@ describe('verifySourceUrl — not calling a good link bad', () => {
     vi.unstubAllGlobals()
   })
 })
+
+// 2026-09-04, Michael: "Annie still barely learns by region." Measured on
+// production the same day: 1,960 of 1,976 learned rows were filed as 'Global',
+// only 16 with a real market — so the Dubai recruiter and the London recruiter
+// were drawing on one undifferentiated pot and neither got a specialist.
+describe('normalizeLearnedLocation — a discovery belongs to the market it was found in', () => {
+  it('keeps a market the model named correctly', () => {
+    expect(normalizeLearnedLocation('UAE / GCC', ['United Kingdom'])).toBe('UAE / GCC')
+  })
+
+  it('is not fooled by casing or stray whitespace from the model', () => {
+    expect(normalizeLearnedLocation('  uae / gcc  ', [])).toBe('UAE / GCC')
+  })
+
+  it('falls back to the customer own market when the model gave nothing', () => {
+    // The old behaviour. This single case is most of the 1,960 rows.
+    expect(normalizeLearnedLocation(null, ['UAE / GCC'])).toBe('UAE / GCC')
+    expect(normalizeLearnedLocation('', ['United Kingdom'])).toBe('United Kingdom')
+  })
+
+  it('falls back to the customer market when the model answered with something unrecognised', () => {
+    // "Dubai" is a real answer and a useless one — it is not a key in
+    // REGIONAL_SOURCE_DIRECTORY, so it used to collapse straight to Global.
+    expect(normalizeLearnedLocation('Dubai', ['UAE / GCC'])).toBe('UAE / GCC')
+  })
+
+  it('stays Global when the customer genuinely spans several markets and the model gave nothing', () => {
+    // Here Global is the honest answer rather than a silent default: there is
+    // no single market this could be attributed to.
+    expect(normalizeLearnedLocation(null, ['United Kingdom', 'UAE / GCC'])).toBe('Global')
+  })
+
+  it('respects an explicit Global from the model even for a single-market customer', () => {
+    // A worldwide-only ranking really is global, and the model saying so is
+    // information, not an absence of it.
+    expect(normalizeLearnedLocation('Global', ['UAE / GCC'])).toBe('Global')
+  })
+
+  it('ignores customer markets it does not recognise rather than guessing', () => {
+    expect(normalizeLearnedLocation(null, ['Narnia'])).toBe('Global')
+  })
+
+  it('still works with no customer markets at all', () => {
+    expect(normalizeLearnedLocation(null)).toBe('Global')
+    expect(normalizeLearnedLocation(null, [])).toBe('Global')
+  })
+})

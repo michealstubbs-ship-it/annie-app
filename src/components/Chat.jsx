@@ -127,6 +127,12 @@ export default function Chat() {
       // happening" hedge — that hedge is for when a request failed and we
       // can only guess why, not for when we already know.
       const [, stale] = await Promise.all([
+        // The TRANSCRIPT, not the counter. Since 2026-09-04 the monthly Ask
+        // Annie allowance is counted server-side in chat_monthly_usage by
+        // /api/chat itself — this insert is only what the recruiter sees in
+        // their own history. Deleting a message from here no longer gives
+        // anyone their allowance back, and a caller who never touches this
+        // page is now counted anyway.
         supabase.from('chat_messages').insert({ user_id: user.id, role: 'user', content: userMsg.content }),
         isTabStale(),
       ])

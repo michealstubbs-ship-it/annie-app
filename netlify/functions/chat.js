@@ -186,45 +186,67 @@ export default async (req, context) => {
     return new Response(JSON.stringify({ error: 'Too many requests — please slow down and try again in a minute.' }), { status: 429, headers: { 'Content-Type': 'application/json' } })
   }
 
-  // Plan-tier soft gate (2026-08-24): Starter caps Ask Annie at 100
-  // messages/month, Growth and Team are unlimited. Counting real,
-  // already-stored user messages in chat_messages rather than adding a new
-  // usage-counter table — this endpoint doesn't write chat_messages itself
-  // (the frontend does, right after a successful reply — see Chat.jsx), so
-  // this counts what's actually been sent, not a separate guess at it.
-  // Soft gate means this only ever narrows a perk, never blocks the rest of
-  // the product — see entitlements.js's header comment.
-  // 2026-09-01: the count now runs for EVERY tier, not only capped ones.
-  // Two reasons. (1) The response carries the used/limit pair back to the
-  // client so Chat.jsx can warn a Starter recruiter as they approach the
-  // ceiling instead of letting them walk into it — a cap you can see coming
-  // is a prompt to upgrade, a cap you hit without warning is a bad surprise
-  // in the middle of prepping for a call. (2) Growth and Team are
-  // deliberately uncapped, which means nothing would otherwise notice a
-  // scripted or runaway caller on those plans; the alert below is
-  // monitoring, not billing, and never blocks the customer.
+  // Plan-tier soft gate. Starter caps Ask Annie at 500 messages/month, Growth
+  // and Team are unlimited. Soft gate means this only ever narrows a perk,
+  // never blocks the rest of the product — see entitlements.js's header.
+  //
+  // 2026-09-04, Michael, and this one was costing real money. The count used
+  // to be `select count(*) from chat_messages where role = 'user'` — and
+  // chat_messages is written by the BROWSER (Chat.jsx), never by this
+  // endpoint. So the counter only moved when someone used the website. Any
+  // other caller — a script, curl, anything holding a valid session token —
+  // had unlimited Ask Annie on a Starter plan, billed to Anthropic, while the
+  // dashboard showed them at zero.
+  //
+  // It also made the cap untestable, which is why four days of snag-week
+  // conversation recorded nothing at all: none of it went through a browser.
+  //
+  // Now counted server-side in chat_monthly_usage, read here before the call
+  // and incremented after a successful reply (see below). The transcript and
+  // the counter are deliberately separate: a transcript is a product feature
+  // the customer can delete from, a usage counter is a billing artefact that
+  // must not move when they do.
+  //
+  // The count runs for EVERY tier, not only capped ones. (1) The response
+  // carries the used/limit pair back so Chat.jsx can warn a Starter recruiter
+  // approaching the ceiling instead of letting them walk into it. (2) Growth
+  // and Team are deliberately uncapped, so nothing would otherwise notice a
+  // scripted or runaway caller on those plans; the alert below is monitoring,
+  // never billing, and never blocks the customer.
   let messagesUsed = null
   if (usageClient) {
-    const startOfMonth = new Date()
-    startOfMonth.setUTCDate(1)
-    startOfMonth.setUTCHours(0, 0, 0, 0)
-    const { count } = await usageClient
-      .from('chat_messages')
-      .select('id', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-      .eq('role', 'user')
-      .gte('created_at', startOfMonth.toISOString())
-    messagesUsed = count || 0
+    const { data: usedData, error: usedError } = await usageClient.rpc('chat_usage_this_month', { p_user_id: user.id })
+    if (usedError) {
+      // Fail open: a counter that cannot be read must never take Ask Annie
+      // down with it. The abuse alert below is the backstop.
+      console.error('[chat] chat_usage_this_month RPC failed, allowing the call through:', usedError.message)
+    } else {
+      messagesUsed = Number(usedData) || 0
 
-    if (Number.isFinite(entitlements.limits.chatMessagesPerMonth)) {
-      if (messagesUsed >= entitlements.limits.chatMessagesPerMonth) {
-        return new Response(
-          JSON.stringify({ error: `You've used all ${entitlements.limits.chatMessagesPerMonth} Ask Annie messages included this month. Upgrade to Growth for unlimited messages.` }),
-          { status: 402, headers: { 'Content-Type': 'application/json', ...chatUsageHeaders(messagesUsed, entitlements) } },
-        )
+      if (Number.isFinite(entitlements.limits.chatMessagesPerMonth)) {
+        if (messagesUsed >= entitlements.limits.chatMessagesPerMonth) {
+          return new Response(
+            JSON.stringify({ error: `You've used all ${entitlements.limits.chatMessagesPerMonth} Ask Annie messages included this month. Upgrade to Growth for unlimited messages.` }),
+            { status: 402, headers: { 'Content-Type': 'application/json', ...chatUsageHeaders(messagesUsed, entitlements) } },
+          )
+        }
+      } else if (messagesUsed >= CHAT_ABUSE_ALERT_THRESHOLD) {
+        alertUnlimitedChatVolumeOnce(user.id, entitlements.tier, messagesUsed)
       }
-    } else if (messagesUsed >= CHAT_ABUSE_ALERT_THRESHOLD) {
-      alertUnlimitedChatVolumeOnce(user.id, entitlements.tier, messagesUsed)
+    }
+  }
+
+  // Counts one message against the allowance. Called only once Anthropic has
+  // actually accepted the request, so a customer is never charged an allowance
+  // slot for a reply they did not receive. Never awaited on the streaming path
+  // and never allowed to throw — accounting must not be able to fail a reply.
+  const countThisMessage = async () => {
+    if (!usageClient) return
+    try {
+      const { error } = await usageClient.rpc('chat_usage_increment', { p_user_id: user.id })
+      if (error) console.error('[chat] chat_usage_increment RPC failed:', error.message)
+    } catch (err) {
+      console.error('[chat] chat_usage_increment threw:', err.message)
     }
   }
 
@@ -361,6 +383,9 @@ export default async (req, context) => {
       // branch here.
       return new Response(JSON.stringify({ error: errText || 'Anthropic request failed' }), { status: resp.status, headers: { 'Content-Type': 'application/json' } })
     }
+
+    // Anthropic accepted it. Count it now, on the server, for every caller.
+    await countThisMessage()
 
     if (wantsStream) {
       // Anthropic's own SSE body streams straight through to the caller as

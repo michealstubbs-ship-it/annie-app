@@ -35,7 +35,7 @@ const { mockReportServerError } = vi.hoisted(() => ({ mockReportServerError: vi.
 // than throwing "not a function". Defaults to "no team membership found" /
 // "0 messages this month", which resolves to Starter-level defaults and
 // never trips the cap in tests that don't care about it.
-const { mockCreateClient } = vi.hoisted(() => {
+const { mockCreateClient, mockChatUsage, mockRpc } = vi.hoisted(() => {
   function makeChainableResult(result = { data: null, count: 0, error: null }) {
     const builder = {
       select: () => builder,
@@ -48,7 +48,24 @@ const { mockCreateClient } = vi.hoisted(() => {
     }
     return builder
   }
-  return { mockCreateClient: vi.fn(() => ({ from: () => makeChainableResult() })) }
+  // 2026-09-04: the monthly Ask Annie count moved off chat_messages and onto a
+  // server-side RPC, because the old count only ever moved when someone used
+  // the website — see chat.js's own note. The mock answers both RPCs so the
+  // cap can be driven from a test rather than from a row count.
+  const mockChatUsage = { used: 0 }
+  const mockRpc = vi.fn(async (name) => {
+    if (name === 'chat_usage_this_month') return { data: mockChatUsage.used, error: null }
+    if (name === 'chat_usage_increment') {
+      mockChatUsage.used += 1
+      return { data: mockChatUsage.used, error: null }
+    }
+    return { data: null, error: null }
+  })
+  return {
+    mockCreateClient: vi.fn(() => ({ from: () => makeChainableResult(), rpc: mockRpc })),
+    mockChatUsage,
+    mockRpc,
+  }
 })
 
 vi.mock('../lib/auth.js', () => ({ getAuthedUser: mockGetAuthedUser }))
@@ -122,6 +139,7 @@ let handler
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  mockChatUsage.used = 0
   vi.useRealTimers()
   process.env.ANTHROPIC_API_KEY = 'sk-ant-test'
   process.env.VITE_SUPABASE_URL = 'https://example.supabase.co'
@@ -370,5 +388,56 @@ describe('Anthropic token reconciliation', () => {
     // Better to leave the reservation standing than to reconcile against a
     // guess and under-charge the cap.
     expect(mockReconcileAnthropicTokens).not.toHaveBeenCalled()
+  })
+})
+
+// 2026-09-04, and this one was costing real money. The monthly Ask Annie cap
+// used to be enforced by counting rows in chat_messages — a table written by
+// the BROWSER and never by this endpoint. So the counter only moved when
+// someone used the website: a script, curl, or anything else holding a valid
+// session token had unlimited Ask Annie on a Starter plan, on Anthropic's bill,
+// while the dashboard showed them at zero. It is also why four days of
+// snag-week conversation recorded nothing — none of it went through a browser.
+describe('the Ask Annie allowance is counted on the server, for every caller', () => {
+  it('counts a message that never touches the browser', async () => {
+    global.fetch = vi.fn().mockResolvedValue(anthropicNonStreamResponse())
+    await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
+    expect(mockRpc).toHaveBeenCalledWith('chat_usage_increment', { p_user_id: 'user_123' })
+  })
+
+  it('counts the streaming path too — that is every real Ask Annie message', async () => {
+    global.fetch = vi.fn().mockResolvedValue(anthropicOkResponse('hello'))
+    await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }], stream: true }))
+    expect(mockRpc).toHaveBeenCalledWith('chat_usage_increment', { p_user_id: 'user_123' })
+  })
+
+  it('does NOT count a message Anthropic refused — no allowance slot for a reply they never got', async () => {
+    global.fetch = vi.fn().mockResolvedValue(anthropicErrorResponse(400, 'bad request'))
+    await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
+    expect(mockRpc).not.toHaveBeenCalledWith('chat_usage_increment', expect.anything())
+  })
+
+  it('refuses at the ceiling, before anything is spent at Anthropic', async () => {
+    mockChatUsage.used = 500
+    const fetchSpy = vi.fn()
+    global.fetch = fetchSpy
+    const resp = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
+    expect(resp.status).toBe(402)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('reports the real server-side count in the usage headers', async () => {
+    mockChatUsage.used = 480
+    global.fetch = vi.fn().mockResolvedValue(anthropicNonStreamResponse())
+    const resp = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
+    expect(resp.headers.get('X-Annie-Chat-Used')).toBe('480')
+    expect(resp.headers.get('X-Annie-Chat-Limit')).toBe('500')
+  })
+
+  it('fails OPEN when the counter cannot be read — a broken meter must not take Ask Annie down', async () => {
+    mockRpc.mockImplementationOnce(async () => ({ data: null, error: { message: 'db down' } }))
+    global.fetch = vi.fn().mockResolvedValue(anthropicNonStreamResponse())
+    const resp = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
+    expect(resp.status).toBe(200)
   })
 })

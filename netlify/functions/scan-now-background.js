@@ -378,7 +378,7 @@ async function runPriorityDiscovery(ob, recentCompanies, { adzunaLeads, theirSta
     const { learned: priorityLearned, rest } = splitLearnedEntries(extractJson(priorityText))
     // Fire-and-forget, same as this round's own learned-discoveries write —
     // Annie's research memory, no bearing on this customer's own signals.
-    if (priorityLearned.length) recordLearnedDiscoveries(supabase, priorityLearned).catch(() => {})
+    if (priorityLearned.length) recordLearnedDiscoveries(supabase, priorityLearned, ob?.locations).catch(() => {})
     priorityFound = rest
   } catch (err) {
     console.log('[scan-now] priority discovery call failed for', userId, '- continuing with the rest of this scan:', err.message)
@@ -723,7 +723,7 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   // this run down or fail it. recordLearnedDiscoveries already fails soft
   // internally (logs, never throws).
   if (learnedEntries.length) {
-    recordLearnedDiscoveries(supabase, learnedEntries).catch(() => {})
+    recordLearnedDiscoveries(supabase, learnedEntries, ob?.locations).catch(() => {})
   }
 
   return { groups, capped: finalCapped, broadened, broadenPreview, noAdzunaCoverage, poolContribution: poolPersonalized.length }
@@ -1137,7 +1137,7 @@ export default async (req) => {
       const learned = await getLearnedSources(supabase, ob.sectors, ob.locations)
       const watchlist = await getCustomerWatchlistCompanies(supabase, ob)
       const { found, learnedFound, rawText } = await runAdditionalRound(ob, tierConfig, recentNames, round, learned, userId, supabase, resourceCaps, watchlist)
-      if (learnedFound.length) recordLearnedDiscoveries(supabase, learnedFound).catch(() => {})
+      if (learnedFound.length) recordLearnedDiscoveries(supabase, learnedFound, ob?.locations).catch(() => {})
       groups = [ob.sectors || []]
       capped = dropGenericHiringWhereLiveJobsExist(found).slice(0, MAX_TOTAL_SIGNALS)
       broadened = true

@@ -3452,14 +3452,50 @@ export function isJunkLearnedSourceValue(normalizedKey) {
 const KNOWN_LEARNED_LOCATIONS = new Map(
   Object.keys(REGIONAL_SOURCE_DIRECTORY).map(loc => [loc.trim().toLowerCase(), loc])
 )
-export function normalizeLearnedLocation(location) {
-  if (!location) return 'Global'
-  const trimmed = String(location).trim()
-  if (trimmed.toLowerCase() === 'global') return 'Global'
-  return KNOWN_LEARNED_LOCATIONS.get(trimmed.toLowerCase()) || 'Global'
+//
+// 2026-09-04, Michael: "Annie still barely learns by region." Measured on
+// production the same day: 1,960 of 1,976 learned rows were filed as 'Global'.
+// Only 16 carried a real market. So the Dubai recruiter and the London
+// recruiter were drawing on one undifferentiated pot of market knowledge and
+// neither was getting a specialist.
+//
+// The scan prompt does ask the model for a location, and getLearnedSources has
+// always READ correctly (it filters on the customer's own markets plus
+// 'Global'). The break was here, on the write: anything the model omitted,
+// misspelled, or expressed differently from REGIONAL_SOURCE_DIRECTORY's exact
+// keys silently collapsed to 'Global' — which is not a neutral default, it is
+// an assertion that the discovery belongs to everyone.
+//
+// The fix is to stop treating the model as the only source of truth for
+// something the SCAN ITSELF already knows. A discovery made while scanning for
+// a recruiter who covers exactly one market belongs to that market; there is
+// no ambiguity to resolve. Only when the customer genuinely spans several
+// markets, and the model gave nothing usable, is 'Global' the honest answer.
+export function normalizeLearnedLocation(location, customerLocations = []) {
+  const trimmed = location ? String(location).trim() : ''
+  if (trimmed) {
+    if (trimmed.toLowerCase() === 'global') return 'Global'
+    const known = KNOWN_LEARNED_LOCATIONS.get(trimmed.toLowerCase())
+    if (known) return known
+  }
+
+  // The model gave nothing usable. Fall back to the customer's own market when
+  // there is exactly one it could possibly mean.
+  const usable = (customerLocations || [])
+    .map(l => KNOWN_LEARNED_LOCATIONS.get(String(l || '').trim().toLowerCase()))
+    .filter(Boolean)
+  const unique = [...new Set(usable)]
+  if (unique.length === 1) return unique[0]
+
+  return 'Global'
 }
 
-export async function recordLearnedDiscoveries(supabase, entries) {
+// customerLocations: the markets of the recruiter this scan was running for.
+// Passed so a discovery can be attributed to the market it was actually found
+// in rather than dumped into 'Global' whenever the model's own answer is
+// missing or does not match REGIONAL_SOURCE_DIRECTORY's exact spelling — see
+// normalizeLearnedLocation for why that mattered so much.
+export async function recordLearnedDiscoveries(supabase, entries, customerLocations = []) {
   if (!supabase || !entries?.length) return
   const nowIso = new Date().toISOString()
   const rows = entries
@@ -3467,7 +3503,7 @@ export async function recordLearnedDiscoveries(supabase, entries) {
     .map(e => ({
       kind: e.kind,
       sector: e.sector,
-      location: normalizeLearnedLocation(e.location),
+      location: normalizeLearnedLocation(e.location, customerLocations),
       value: e.value,
       value_key: normalizeCompanyKey(e.value),
       found_via: e.foundVia || 'discovered',

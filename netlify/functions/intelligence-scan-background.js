@@ -335,7 +335,7 @@ async function runPriorityDiscovery(ob, recentCompanies, { adzunaLeads, theirSta
     // Fire-and-forget, same as the main pass's own learned-discoveries write
     // just below in scanOneCustomer — Annie's research memory, no bearing on
     // this customer's signals.
-    if (priorityLearned.length) recordLearnedDiscoveries(supabase, priorityLearned).catch(() => {})
+    if (priorityLearned.length) recordLearnedDiscoveries(supabase, priorityLearned, ob?.locations).catch(() => {})
     priorityFound = rest
   } catch (err) {
     console.log('[intelligence-scan] priority discovery call failed for', ob.user_id, '- continuing with the rest of this scan:', err.message)
@@ -566,7 +566,7 @@ async function scanOneCustomer(ob, ctx) {
     // own headers), it has zero bearing on this customer's signals and
     // should never slow this run down or fail it. recordLearnedDiscoveries
     // already fails soft internally.
-    if (learnedFound.length) recordLearnedDiscoveries(supabase, learnedFound).catch(() => {})
+    if (learnedFound.length) recordLearnedDiscoveries(supabase, learnedFound, ob?.locations).catch(() => {})
     // Enforce "replace, not supplement" here in code — see the function's own
     // comment in scanShared.js for why this can't just be a prompt instruction
     // alone. Pool hits go first (they're free, already-verified). The sector-
