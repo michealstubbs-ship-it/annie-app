@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { normalizeCompanyName } from '../lib/companyMatch'
@@ -7,11 +7,14 @@ import { listCompanies, createCompany, updateCompany, deleteCompany } from '../l
 import { listContactsWithCompany } from '../lib/data/contacts'
 import { listJobsMinimal } from '../lib/data/jobs'
 import { listCompanyDocuments, createCompanyDocument, deleteCompanyDocument } from '../lib/data/companyDocuments'
+import { listInvoicesForCompany } from '../lib/data/invoices'
 import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
 import { listIndustries, searchCompanies, filterCompaniesByIndustry, sortCompanies, QUOTA_BAND_LABEL, QUOTA_BAND_COLOR, quotaDeadlineBadge } from '../lib/companiesView'
+import { formatMoney } from '../lib/invoiceCalc'
 import ContactFormModal from './ContactFormModal'
 import ContactDetailModal from './ContactDetailModal'
 import JobFormModal from './JobFormModal'
+import InvoiceFormModal from './InvoiceFormModal'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import ErrorBanner from './ErrorBanner'
@@ -26,6 +29,17 @@ import { useMarketCurrency } from '../lib/useMarketCurrency'
 const EMPTY_CO = { name: '', industry: '', location: '', website: '', notes: '', quota_current_pct: '', quota_target_pct: '', quota_deadline: '', quota_band: '', quota_notes: '' }
 const STATUS_COLOR = { hot: 'bg-red-100 text-red-700', warm: 'bg-amber-100 text-amber-700', cold: 'bg-blue-100 text-blue-700', client: 'bg-green-100 text-green-700', inactive: 'bg-gray-100 text-gray-500' }
 const JOB_STATUS_COLOR = { active: 'bg-green-100 text-green-700', onhold: 'bg-amber-100 text-amber-700', filled: 'bg-yellow-100 text-gold', lost: 'bg-gray-100 text-gray-500' }
+// 2026-09-08, gap-analysis batch 9 ("invoices don't show up on the job or
+// company they're for"): mirrors Invoices.jsx's own STATUS_LABEL/
+// STATUS_COLOR maps — named distinctly here since Companies.jsx already
+// has its own STATUS_COLOR above, for contact status, not invoice status.
+const INVOICE_STATUS_LABEL = { draft: 'Draft', sent: 'Sent', paid: 'Paid', void: 'Void' }
+const INVOICE_STATUS_COLOR = {
+  draft: 'bg-gray-100 text-gray-500',
+  sent: 'bg-amber-100 text-amber-700',
+  paid: 'bg-green-100 text-green-700',
+  void: 'bg-red-100 text-red-400',
+}
 
 function initials(name) { return (name || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() }
 function color(name) {
@@ -42,6 +56,7 @@ export default function Companies() {
   // tracking is GCC-regulatory, meaningless for a UK-only account.
   const { isGccMarket: isGcc } = useMarketCurrency()
   const location = useLocation()
+  const navigate = useNavigate()
   const [companies, setCompanies] = useState([])
   const [contacts, setContacts] = useState([])
   const [jobs, setJobs] = useState([])
@@ -88,9 +103,20 @@ export default function Companies() {
   const [docError, setDocError] = useState('')
   const [confirmDeleteDocId, setConfirmDeleteDocId] = useState(null)
 
+  // 2026-09-08, gap-analysis batch 9 ("invoices don't show up on the job or
+  // company they're for"): a fourth tab alongside Contacts/Jobs/Documents,
+  // same per-company detail-panel pattern and same lazy-per-selected-
+  // company loading as documents above — every invoice already stores its
+  // own company_id (set via InvoiceFormModal's CompanySelect), this just
+  // never read it back scoped to one company.
+  const [invoices, setInvoices] = useState([])
+  const [invoicesLoading, setInvoicesLoading] = useState(false)
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false)
+
   useEffect(() => { load() }, [user])
   useEffect(() => { if (location.state?.autoOpenAdd) openAddCo() }, [location.state])
   useEffect(() => { if (selected) loadDocuments(selected.id) }, [selected?.id])
+  useEffect(() => { if (selected) loadInvoices(selected.id) }, [selected?.id])
   // 2026-09-06, Michael: "just add a drop down of who added them". Defaults
   // to whoever's uploading (the common case, an assistant uploading on
   // someone else's behalf is the exception), editable before Upload.
@@ -105,6 +131,20 @@ export default function Companies() {
       setDocError(err.message || 'Could not load documents for this company.')
     } finally {
       setDocsLoading(false)
+    }
+  }
+
+  async function loadInvoices(companyId) {
+    setInvoicesLoading(true)
+    try {
+      setInvoices(await listInvoicesForCompany(companyId))
+    } catch (err) {
+      // Best-effort — a failed invoice fetch shouldn't block the rest of
+      // the company detail panel from working, same as a failed document
+      // fetch doesn't (docError above stays local to its own tab).
+      setInvoices([])
+    } finally {
+      setInvoicesLoading(false)
     }
   }
 
@@ -502,6 +542,7 @@ export default function Companies() {
                 <button onClick={() => setTab('contacts')} className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${tab === 'contacts' ? 'bg-navy text-white' : 'text-gray-500 hover:bg-gray-100'}`}>Contacts ({contactsFor(selected.id).length})</button>
                 <button onClick={() => setTab('jobs')} className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${tab === 'jobs' ? 'bg-navy text-white' : 'text-gray-500 hover:bg-gray-100'}`}>Jobs ({jobsFor(selected.id).length})</button>
                 <button onClick={() => setTab('documents')} className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${tab === 'documents' ? 'bg-navy text-white' : 'text-gray-500 hover:bg-gray-100'}`}>Documents ({documents.length})</button>
+                <button onClick={() => setTab('invoices')} className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${tab === 'invoices' ? 'bg-navy text-white' : 'text-gray-500 hover:bg-gray-100'}`}>Invoices ({invoices.length})</button>
               </div>
             </div>
 
@@ -600,6 +641,37 @@ export default function Companies() {
                   )}
                 </div>
               )}
+
+              {tab === 'invoices' && (
+                <div>
+                  <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+                    <button onClick={() => setShowInvoiceModal(true)} className="btn-primary">+ Create invoice</button>
+                    <button onClick={() => navigate('/dashboard/invoices')} className="text-xs text-gray-400 hover:text-navy font-semibold">Open Invoices page ›</button>
+                  </div>
+                  {invoicesLoading ? (
+                    <p className="text-sm text-gray-400">Loading invoices...</p>
+                  ) : invoices.length === 0 ? (
+                    <p className="text-sm text-gray-400">No invoices raised against {selected.name} yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {invoices.map(inv => (
+                        <div key={inv.id} className="flex items-center justify-between p-3 rounded-lg border border-gray-100 gap-3 flex-wrap">
+                          <div className="min-w-0">
+                            <div className="font-semibold text-navy text-sm truncate">
+                              {inv.invoice_number || (inv.issue_date ? `Draft · ${new Date(inv.issue_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : 'Draft')}
+                            </div>
+                            <div className="text-xs text-gray-500 truncate">{[inv.jobs?.title, inv.candidates?.name].filter(Boolean).join(' · ') || 'No job/candidate linked'}</div>
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <span className="text-xs font-semibold text-navy tabular-nums">{formatMoney(inv.total, inv.currency)}</span>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${INVOICE_STATUS_COLOR[inv.status]}`}>{INVOICE_STATUS_LABEL[inv.status]}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -626,6 +698,13 @@ export default function Companies() {
         lockedCompanyName={selected?.name}
         onClose={() => setShowJobModal(false)}
         onSaved={() => load()}
+      />
+      <InvoiceFormModal
+        open={showInvoiceModal}
+        invoice={null}
+        prefill={selected ? { company_id: selected.id, company_name: selected.name, bill_to_name: selected.name } : null}
+        onClose={() => setShowInvoiceModal(false)}
+        onSaved={() => { setShowInvoiceModal(false); if (selected) loadInvoices(selected.id) }}
       />
       <ConfirmDialog
         open={showDeleteConfirm}

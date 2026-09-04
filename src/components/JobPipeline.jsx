@@ -12,10 +12,11 @@ import {
   listCandidatesForPipelinePicker,
 } from '../lib/data/pipelineLinks'
 import { createCandidate } from '../lib/data/candidates'
+import { listInvoicesForJob } from '../lib/data/invoices'
 import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
 import { reassignOwner } from '../lib/data/ownership'
 import { STAGES, STAGE_LABEL, STAGE_COLOR } from '../lib/candidatesView'
-import { currencySymbol } from '../lib/invoiceCalc'
+import { currencySymbol, formatMoney } from '../lib/invoiceCalc'
 import { useMarketCurrency } from '../lib/useMarketCurrency'
 import OwnerFilter from './OwnerFilter'
 import ErrorBanner from './ErrorBanner'
@@ -43,6 +44,17 @@ function nextStage(stage) {
 
 function initials(name) {
   return (name || '?').split(' ').map(p => p[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()
+}
+
+// 2026-09-08, gap-analysis batch 9 ("invoices don't show up on the job or
+// company they're for"): mirrors Invoices.jsx's own STATUS_LABEL/
+// STATUS_COLOR maps for the small invoices-for-this-job summary below.
+const INVOICE_STATUS_LABEL = { draft: 'Draft', sent: 'Sent', paid: 'Paid', void: 'Void' }
+const INVOICE_STATUS_COLOR = {
+  draft: 'bg-gray-100 text-gray-500',
+  sent: 'bg-amber-100 text-amber-700',
+  paid: 'bg-green-100 text-green-700',
+  void: 'bg-red-100 text-red-400',
 }
 
 // Mirrors Candidates.jsx's own salaryPrefix (also kept local there, not
@@ -163,20 +175,29 @@ export default function JobPipeline() {
   const [candViewData, setCandViewData] = useState({}) // candidate_id -> other links (loaded lazily)
   const [candViewLoading, setCandViewLoading] = useState(false)
 
+  // 2026-09-08, gap-analysis batch 9 ("invoices don't show up on the job or
+  // company they're for"): every invoice already stores its own job_id (set
+  // via InvoiceFormModal's job picker), nothing on this page ever read it
+  // back — billing for this exact mandate lived only on the separate
+  // Invoices page with no way back to it from here.
+  const [invoices, setInvoices] = useState([])
+
   useEffect(() => { load() }, [jobId])
 
   async function load() {
     setLoading(true)
     setListError('')
     try {
-      const [jobRow, linkRows, members] = await Promise.all([
+      const [jobRow, linkRows, members, invoiceRows] = await Promise.all([
         getJob(jobId),
         listPipelineForJob(jobId),
         listTeamMembers(),
+        listInvoicesForJob(jobId),
       ])
       setJob(jobRow)
       setLinks(linkRows)
       setTeamMembers(members)
+      setInvoices(invoiceRows)
       const candidateIds = [...new Set(linkRows.map(l => l.candidate_id).filter(Boolean))]
       setOtherCounts(await countPipelinesPerCandidate(candidateIds))
     } catch (err) {
@@ -536,6 +557,31 @@ export default function JobPipeline() {
           ))}
         </div>
       </div>
+
+      {/* 2026-09-08, gap-analysis batch 9: see invoices/load() above — this
+          job's own billing, finally visible from the job it's actually for. */}
+      {invoices.length > 0 && (
+        <div className="card p-4 mb-6">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold">Invoices for this job</h3>
+            <button onClick={() => navigate('/dashboard/invoices')} className="text-xs text-gold-ink font-semibold hover:underline">View all ›</button>
+          </div>
+          <div className="space-y-1.5">
+            {invoices.map(inv => (
+              <div key={inv.id} className="flex items-center justify-between border border-gray-100 rounded-lg px-2.5 py-1.5 text-xs gap-2 flex-wrap">
+                <span className="font-semibold text-navy truncate">
+                  {inv.invoice_number || (inv.issue_date ? `Draft · ${new Date(inv.issue_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : 'Draft')}
+                  {inv.candidates?.name ? ` · ${inv.candidates.name}` : ''}
+                </span>
+                <span className="flex items-center gap-2 flex-shrink-0">
+                  <span className="tabular-nums text-gray-600">{formatMoney(inv.total, inv.currency)}</span>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${INVOICE_STATUS_COLOR[inv.status]}`}>{INVOICE_STATUS_LABEL[inv.status]}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex bg-gray-100 p-1 rounded-lg w-fit mb-4">
         <button onClick={() => setView('board')} className={`text-xs font-semibold px-3 py-1.5 rounded-md ${view === 'board' ? 'bg-navy text-white' : 'text-gray-500'}`}>Job pipeline</button>

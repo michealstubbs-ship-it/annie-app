@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { listMeetingsWithContacts, createMeeting, updateMeeting, deleteMeeting } from '../lib/data/meetings'
 import { listContactsMinimal } from '../lib/data/contacts'
+import { listCandidatesMinimal, appendCandidateNote } from '../lib/data/candidates'
 import { createContactNote } from '../lib/data/contactNotes'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
@@ -17,7 +18,13 @@ import ContactSearchSelect from './ContactSearchSelect'
 const TYPE_LABEL = { call: 'Call', video: 'Video', in_person: 'In person', interview: 'Interview' }
 const TYPE_ICON = { call: '📞', video: '💻', in_person: '🤝', interview: '🎯' }
 
-const EMPTY = { title: '', meeting_type: 'call', meeting_date: '', contact_id: '', outcome: '', next_steps: '', follow_up_date: '', notes: '' }
+// 2026-09-08, gap-analysis batch 9 ("interview notes typed on the Meetings
+// page don't show up anywhere for that candidate"): candidate_id joins
+// contact_id as a second, independent link a meeting can carry — the
+// underlying `meetings` table already had this column (interviews created
+// via updatePipelineLinkInterview in pipelineLinks.js set it), this form
+// just never surfaced it.
+const EMPTY = { title: '', meeting_type: 'call', meeting_date: '', contact_id: '', candidate_id: '', outcome: '', next_steps: '', follow_up_date: '', notes: '' }
 
 function toLocalInput(dateStr) {
   if (!dateStr) return ''
@@ -31,6 +38,7 @@ export default function Meetings() {
   const location = useLocation()
   const [meetings, setMeetings] = useState([])
   const [contacts, setContacts] = useState([])
+  const [candidates, setCandidates] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [form, setForm] = useState(EMPTY)
@@ -57,12 +65,14 @@ export default function Meetings() {
     // error instead of quietly returning [] — previously that looked
     // identical to "you have no meetings/contacts yet".
     try {
-      const [m, c] = await Promise.all([
+      const [m, c, cd] = await Promise.all([
         listMeetingsWithContacts(user.id),
         listContactsMinimal(user.id),
+        listCandidatesMinimal(user.id),
       ])
       setMeetings(m)
       setContacts(c)
+      setCandidates(cd)
     } catch (err) {
       setListError(err.message || 'Could not load your meetings. Please try again.')
     } finally {
@@ -81,7 +91,7 @@ export default function Meetings() {
   function openEdit(m) {
     setForm({
       title: m.title || '', meeting_type: m.meeting_type || 'call', meeting_date: toLocalInput(m.meeting_date),
-      contact_id: m.contact_id || '', outcome: m.outcome || '', next_steps: m.next_steps || '',
+      contact_id: m.contact_id || '', candidate_id: m.candidate_id || '', outcome: m.outcome || '', next_steps: m.next_steps || '',
       follow_up_date: m.follow_up_date || '', notes: m.notes || '',
     })
     setEditId(m.id)
@@ -96,8 +106,18 @@ export default function Meetings() {
   // outcome/next_steps actually changed from what was there before this
   // save — editing an unrelated field (the date, say) and re-saving
   // shouldn't append a duplicate note every time.
-  async function logMeetingNoteIfChanged(contactId, outcome, nextSteps) {
-    if (!contactId) return
+  //
+  // 2026-09-08, gap-analysis batch 9 ("interview notes typed on the
+  // Meetings page don't show up anywhere for that candidate"): a
+  // candidate-linked meeting (every interview scheduled from the pipeline
+  // board is one) used to fall straight through the `if (!contactId) return`
+  // above and log nothing at all, anywhere — the recruiter's own typed
+  // outcome/next steps just vanished the moment they clicked away. This adds
+  // the same auto-log for candidateId, via appendCandidateNote (candidates
+  // have no separate notes table, so it appends to their single notes
+  // field instead — see that function's own header comment). A meeting can
+  // in principle carry both a contact and a candidate; both get logged.
+  async function logMeetingNoteIfChanged(contactId, candidateId, outcome, nextSteps) {
     const outcomeChanged = outcome.trim() !== editingOriginal.outcome.trim()
     const nextStepsChanged = nextSteps.trim() !== editingOriginal.next_steps.trim()
     if (!outcomeChanged && !nextStepsChanged) return
@@ -105,13 +125,23 @@ export default function Meetings() {
     if (outcome.trim()) parts.push(`Meeting outcome: ${outcome.trim()}`)
     if (nextSteps.trim()) parts.push(`Next steps: ${nextSteps.trim()}`)
     if (!parts.length) return
-    try {
-      await createContactNote(contactId, user.id, parts.join('\n'))
-    } catch (err) {
-      // Non-fatal — the meeting itself already saved successfully; losing
-      // the auto-logged note shouldn't be reported as the save having
-      // failed.
-      console.error('[Meetings] could not log meeting note to contact:', err.message)
+    const body = parts.join('\n')
+    if (contactId) {
+      try {
+        await createContactNote(contactId, user.id, body)
+      } catch (err) {
+        // Non-fatal — the meeting itself already saved successfully; losing
+        // the auto-logged note shouldn't be reported as the save having
+        // failed.
+        console.error('[Meetings] could not log meeting note to contact:', err.message)
+      }
+    }
+    if (candidateId) {
+      try {
+        await appendCandidateNote(candidateId, body)
+      } catch (err) {
+        console.error('[Meetings] could not log meeting note to candidate:', err.message)
+      }
     }
   }
 
@@ -126,6 +156,7 @@ export default function Meetings() {
         meeting_type: form.meeting_type,
         meeting_date: new Date(form.meeting_date).toISOString(),
         contact_id: form.contact_id || null,
+        candidate_id: form.candidate_id || null,
         outcome: form.outcome.trim() || null,
         next_steps: form.next_steps.trim() || null,
         follow_up_date: form.follow_up_date || null,
@@ -139,7 +170,7 @@ export default function Meetings() {
         const { error: err } = await createMeeting(row, user.id)
         if (err) throw err
       }
-      await logMeetingNoteIfChanged(form.contact_id, form.outcome, form.next_steps)
+      await logMeetingNoteIfChanged(form.contact_id, form.candidate_id, form.outcome, form.next_steps)
       await load()
       setShowModal(false)
     } catch (err) {
@@ -167,6 +198,11 @@ export default function Meetings() {
               <p className="text-xs text-gray-500 mt-0.5">
                 {new Date(m.meeting_date).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
                 {m.contacts?.name && ` · ${m.contacts.name}${m.contacts.company ? ' (' + m.contacts.company + ')' : ''}`}
+                {/* 2026-09-08, gap-analysis batch 9: every interview scheduled
+                    from the pipeline board is a candidate_id-linked meeting
+                    with no contact_id at all — this used to render with a
+                    blank "who this was with" line. */}
+                {m.candidates?.name && ` · ${m.candidates.name}`}
               </p>
               {m.outcome && <p className="text-xs text-gray-600 mt-1.5"><span className="font-semibold text-gray-500">Outcome: </span>{m.outcome}</p>}
               {m.next_steps && <p className="text-xs text-gray-600 mt-1"><span className="font-semibold text-gray-500">Next steps: </span>{m.next_steps}</p>}
@@ -250,6 +286,21 @@ export default function Meetings() {
                 <div>
                   <label className="label" htmlFor="meeting-contact">Contact</label>
                   <ContactSearchSelect id="meeting-contact" contacts={contacts} value={form.contact_id} onChange={id => setForm(p => ({ ...p, contact_id: id }))} />
+                </div>
+                {/* 2026-09-08, gap-analysis batch 9 ("interview notes typed
+                    on the Meetings page don't show up anywhere for that
+                    candidate"): meetings could already carry a candidate_id
+                    (every auto-scheduled interview does), this form just
+                    never let a recruiter set or even see it. A plain select
+                    rather than a second search component — this list is
+                    usually far shorter than the contact list it sits next
+                    to, and doesn't need its own dedicated component yet. */}
+                <div>
+                  <label className="label" htmlFor="meeting-candidate">Candidate</label>
+                  <select id="meeting-candidate" className="input" value={form.candidate_id} onChange={e => setForm(p => ({ ...p, candidate_id: e.target.value }))}>
+                    <option value="">No candidate linked</option>
+                    {candidates.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
                 </div>
                 <div>
                   <label className="label" htmlFor="meeting-outcome">Outcome</label>

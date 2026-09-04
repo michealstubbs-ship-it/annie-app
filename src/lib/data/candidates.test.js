@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock } }))
 
-import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, listCandidatesForMatching, listCandidatesMinimal, listCandidatesForInvoicePicker, findCandidateDuplicateByEmail, findDuplicateSubmission, findCandidateIdByExactName } from './candidates.js'
+import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, appendCandidateNote, listCandidatesForMatching, listCandidatesMinimal, listCandidatesForInvoicePicker, findCandidateDuplicateByEmail, findDuplicateSubmission, findCandidateIdByExactName } from './candidates.js'
 
 function makeBuilder(result) {
   const builder = {}
@@ -88,6 +88,49 @@ describe('deleteCandidate', () => {
     await deleteCandidate('cand1')
     expect(builder.delete).toHaveBeenCalled()
     expect(builder.eq).toHaveBeenCalledWith('id', 'cand1')
+  })
+})
+
+// 2026-09-08, gap-analysis batch 9 ("interview notes typed on the Meetings
+// page don't show up anywhere for that candidate")
+describe('appendCandidateNote', () => {
+  it('does nothing, makes no Supabase call at all, when candidateId is falsy', async () => {
+    await appendCandidateNote(null, 'Meeting outcome: keen')
+    expect(fromMock).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when the text is blank', async () => {
+    await appendCandidateNote('cand1', '   ')
+    expect(fromMock).not.toHaveBeenCalled()
+  })
+
+  it('appends to existing notes rather than overwriting them', async () => {
+    builder = makeBuilder({ data: { notes: 'Existing note' }, error: null })
+    fromMock.mockReturnValue(builder)
+    await appendCandidateNote('cand1', 'Meeting outcome: keen to hire')
+    expect(builder.select).toHaveBeenCalledWith('notes')
+    expect(builder.eq).toHaveBeenCalledWith('id', 'cand1')
+    expect(builder.update).toHaveBeenCalledWith({ notes: 'Existing note\n\nMeeting outcome: keen to hire' })
+  })
+
+  it('sets notes directly when there was nothing there before', async () => {
+    builder = makeBuilder({ data: { notes: null }, error: null })
+    fromMock.mockReturnValue(builder)
+    await appendCandidateNote('cand1', 'Meeting outcome: keen to hire')
+    expect(builder.update).toHaveBeenCalledWith({ notes: 'Meeting outcome: keen to hire' })
+  })
+
+  it('is a no-op, no update call, when the candidate cannot be found', async () => {
+    builder = makeBuilder({ data: null, error: null })
+    fromMock.mockReturnValue(builder)
+    await appendCandidateNote('cand1', 'Meeting outcome: keen')
+    expect(builder.update).not.toHaveBeenCalled()
+  })
+
+  it('throws when the fetch itself errors', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(appendCandidateNote('cand1', 'note')).rejects.toEqual({ message: 'db down' })
   })
 })
 

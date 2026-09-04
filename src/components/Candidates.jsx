@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { listCandidatesWithJobs, createCandidate, updateCandidate, deleteCandidate, findCandidateDuplicateByEmail, findDuplicateSubmission, findCandidateIdByExactName } from '../lib/data/candidates'
 import { listActiveJobsForPicker, markJobFilledIfOpen } from '../lib/data/jobs'
+import { listOtherPipelinesForCandidate } from '../lib/data/pipelineLinks'
 import { listTeamMembers, nameForMember } from '../lib/data/teamMembers'
 import { STAGES, STAGE_LABEL, STAGE_COLOR, searchCandidates, filterCandidatesByStage, sortCandidates, groupCandidatesByStage, VISA_TYPE_LABEL, visaExpiryBadge } from '../lib/candidatesView'
 import { searchCandidatesBoolean } from '../lib/booleanSearch'
@@ -169,6 +170,17 @@ export default function Candidates() {
   // as hotlistOnly above — a watched candidate is very often 'rejected'.
   const [reactivationOnly, setReactivationOnly] = useState(false)
 
+  // 2026-09-08, gap-analysis batch 9 (Michael: "a candidate's own page
+  // doesn't show every job pipeline they're in"): JobPipeline.jsx's own
+  // detail panel already shows this for a candidate viewed FROM a job's
+  // board (via listOtherPipelinesForCandidate, unchanged here — reused as
+  // is, not reinvented); a candidate opened from THIS page, their own
+  // primary record, showed none of it. Loaded lazily in openEdit below,
+  // same "fetched only once the edit modal is actually opened" precedent
+  // as JobPipeline.jsx's own detail panel.
+  const [otherPipelines, setOtherPipelines] = useState([])
+  const [otherPipelinesLoading, setOtherPipelinesLoading] = useState(false)
+
   useEffect(() => { load() }, [user])
 
   async function load() {
@@ -244,9 +256,16 @@ export default function Candidates() {
     setCvParseError('')
     setError('')
     setDupWarning(null)
+    setOtherPipelines([])
     setShowModal(true)
   }
   function openEdit(c) {
+    setOtherPipelines([])
+    setOtherPipelinesLoading(true)
+    listOtherPipelinesForCandidate(c.id, c.job_id || null)
+      .then(setOtherPipelines)
+      .catch(() => {}) // best-effort — never blocks opening the edit form
+      .finally(() => setOtherPipelinesLoading(false))
     setForm({
       name: c.name || '', role: c.role || '', company: c.company || '', location: c.location || '', industry: c.industry || '', nationality: c.nationality || '',
       email: c.email || '', phone: c.phone || '', curr_sal: c.curr_sal || '', curr_sal_currency: c.curr_sal_currency || currencyCode,
@@ -854,6 +873,31 @@ export default function Candidates() {
                   teamMembers={teamMembers}
                   onReassigned={updated => setCandidates(prev => prev.map(c => (c.id === updated.id ? { ...c, owner_id: updated.owner_id } : c)))}
                 />
+              </div>
+            )}
+
+            {/* 2026-09-08, gap-analysis batch 9: same "other pipelines"
+                section JobPipeline.jsx's own detail panel already shows,
+                reused here (listOtherPipelinesForCandidate, unchanged) so
+                this candidate's own record shows it too, not just the view
+                from inside one specific job's board. */}
+            {editId && (
+              <div className="mb-4">
+                <h3 className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold mb-2">Other pipelines this candidate is in</h3>
+                {otherPipelinesLoading ? (
+                  <p className="text-xs text-gray-400">Loading…</p>
+                ) : otherPipelines.length === 0 ? (
+                  <p className="text-xs text-gray-400">Not currently in any other pipeline.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {otherPipelines.map(o => (
+                      <div key={o.id} className="flex items-center justify-between border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs">
+                        <span className="font-semibold text-navy truncate">{o.jobs?.title}{o.jobs?.companies?.name ? ` — ${o.jobs.companies.name}` : ''}</span>
+                        <span className="text-[10.5px] bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full flex-shrink-0">{STAGE_LABEL[o.stage]}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 

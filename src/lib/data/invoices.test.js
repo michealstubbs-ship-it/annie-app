@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fromMock, rpcMock } = vi.hoisted(() => ({ fromMock: vi.fn(), rpcMock: vi.fn() }))
 vi.mock('../supabase', () => ({ supabase: { from: fromMock, rpc: rpcMock } }))
 
-import { listInvoices, getInvoice, createInvoice, updateInvoice, replaceLineItems, deleteInvoice, markInvoicePaid, voidInvoice, markInvoiceSent, triggerRebate, clearRebateTrigger } from './invoices.js'
+import { listInvoices, listInvoicesForCompany, listInvoicesForJob, getInvoice, createInvoice, updateInvoice, replaceLineItems, deleteInvoice, markInvoicePaid, voidInvoice, markInvoiceSent, triggerRebate, clearRebateTrigger } from './invoices.js'
 
 function makeBuilder(result) {
   const builder = {}
@@ -50,6 +50,54 @@ describe('listInvoices', () => {
     builder = makeBuilder({ data: null, error: { message: 'db down' } })
     fromMock.mockReturnValue(builder)
     await expect(listInvoices()).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+// 2026-09-08, gap-analysis batch 9 ("invoices don't show up on the job or
+// company they're for")
+describe('listInvoicesForCompany', () => {
+  it('filters to the given company, joins job title and candidate name, newest first', async () => {
+    builder = makeBuilder({ data: [{ id: 'inv1' }], error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await listInvoicesForCompany('co1')
+    expect(fromMock).toHaveBeenCalledWith('invoices')
+    expect(builder.select).toHaveBeenCalledWith('*, jobs(title), candidates(name)')
+    expect(builder.eq).toHaveBeenCalledWith('company_id', 'co1')
+    expect(builder.order).toHaveBeenCalledWith('created_at', { ascending: false })
+    expect(result).toEqual([{ id: 'inv1' }])
+  })
+
+  it('returns an empty array rather than null when there are no rows', async () => {
+    expect(await listInvoicesForCompany('co1')).toEqual([])
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listInvoicesForCompany('co1')).rejects.toEqual({ message: 'db down' })
+  })
+})
+
+describe('listInvoicesForJob', () => {
+  it('filters to the given job, joins candidate name, newest first', async () => {
+    builder = makeBuilder({ data: [{ id: 'inv1' }], error: null })
+    fromMock.mockReturnValue(builder)
+    const result = await listInvoicesForJob('job1')
+    expect(fromMock).toHaveBeenCalledWith('invoices')
+    expect(builder.select).toHaveBeenCalledWith('*, candidates(name)')
+    expect(builder.eq).toHaveBeenCalledWith('job_id', 'job1')
+    expect(builder.order).toHaveBeenCalledWith('created_at', { ascending: false })
+    expect(result).toEqual([{ id: 'inv1' }])
+  })
+
+  it('returns an empty array rather than null when there are no rows', async () => {
+    expect(await listInvoicesForJob('job1')).toEqual([])
+  })
+
+  it('throws instead of silently returning [] when Supabase reports an error', async () => {
+    builder = makeBuilder({ data: null, error: { message: 'db down' } })
+    fromMock.mockReturnValue(builder)
+    await expect(listInvoicesForJob('job1')).rejects.toEqual({ message: 'db down' })
   })
 })
 

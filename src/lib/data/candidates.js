@@ -101,6 +101,27 @@ export function updateCandidate(id, row) {
   return supabase.from('candidates').update(row).eq('id', id)
 }
 
+// 2026-09-08, gap-analysis batch 9 ("interview notes typed on the Meetings
+// page don't show up anywhere for that candidate"): unlike contacts (which
+// have a real contact_notes timeline table), candidates only ever had the
+// single candidates.notes text field — so this appends a timestamped block
+// onto whatever's already there instead of silently overwriting it, same
+// non-destructive intent as contactNotes.js's createContactNote, just
+// modeled on this table's own existing single-field shape rather than
+// standing up a new table for one feature. Called from Meetings.jsx's own
+// logMeetingNoteIfChanged, the candidate-linked twin of its existing
+// contact_notes path.
+export async function appendCandidateNote(candidateId, text) {
+  if (!candidateId || !text?.trim()) return
+  const { data, error } = await supabase.from('candidates').select('notes').eq('id', candidateId).maybeSingle()
+  if (error) throw error
+  if (!data) return
+  const existing = (data.notes || '').trim()
+  const next = existing ? `${existing}\n\n${text.trim()}` : text.trim()
+  const { error: updErr } = await updateCandidate(candidateId, { notes: next })
+  if (updErr) throw updErr
+}
+
 export function deleteCandidate(id) {
   return supabase.from('candidates').delete().eq('id', id)
 }

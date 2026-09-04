@@ -16,6 +16,37 @@ export async function listInvoices() {
   return data || []
 }
 
+// 2026-09-08, gap-analysis batch 9 ("invoices don't show up on the job or
+// company they're for"): every invoice already stores its own company_id/
+// job_id (set on creation via InvoiceFormModal's CompanySelect/job picker),
+// but nothing ever read either back scoped to ONE company or job —
+// Companies.jsx and JobPipeline.jsx only ever showed contacts/jobs/
+// documents or pipeline candidates, with billing living in a completely
+// separate bucket from the client/mandate it's actually for. These mirror
+// listInvoices' own join shape, just scoped, and without the extra
+// companies(name)/candidates(name) joins the caller already has on hand
+// (a company already knows its own name; a job page doesn't need it
+// re-joined either).
+export async function listInvoicesForCompany(companyId) {
+  const { data, error } = await supabase
+    .from('invoices')
+    .select('*, jobs(title), candidates(name)')
+    .eq('company_id', companyId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
+export async function listInvoicesForJob(jobId) {
+  const { data, error } = await supabase
+    .from('invoices')
+    .select('*, candidates(name)')
+    .eq('job_id', jobId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
 export async function getInvoice(id) {
   const { data, error } = await supabase
     .from('invoices')
