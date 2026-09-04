@@ -16,7 +16,13 @@ export async function fetchContactCredits() {
     const body = await res.json()
     if (body?.configured === false) return null
     if (!Number.isFinite(body?.limit)) return null
-    return { used: Number(body.used) || 0, limit: Number(body.limit), remaining: Number(body.remaining) || 0 }
+    return {
+      used: Number(body.used) || 0,
+      limit: Number(body.limit),
+      topupBalance: Number(body.topupBalance) || 0,
+      remaining: Number(body.remaining) || 0,
+      tier: body.tier || null,
+    }
   } catch {
     // A meter is a nicety. Never let it break the page it sits on.
     return null

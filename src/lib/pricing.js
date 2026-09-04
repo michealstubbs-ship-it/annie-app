@@ -28,7 +28,7 @@ export const TIERS = [
     // invisible cost centre. 50 means 50 CONTACTS RECEIVED — a lookup that
     // finds nobody costs the customer nothing, because it costs Annie
     // nothing (verified against the live Apollo API the same day).
-    features: ['Full CRM, pipeline & contacts', 'Recurring BD signal scan', 'Intelligence Feed', 'Ask Annie (up to 500 messages/mo)', '50 contact lookups/mo', 'LinkedIn import'],
+    features: ['Full CRM, pipeline & contacts', 'Recurring BD signal scan', 'Intelligence Feed', 'Ask Annie (up to 500 messages/mo)', '50 contact lookups/mo, top-ups available', 'LinkedIn import'],
   },
   {
     key: 'growth',

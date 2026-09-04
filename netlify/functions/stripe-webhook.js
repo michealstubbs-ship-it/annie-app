@@ -14,6 +14,7 @@ import { createClient } from '@supabase/supabase-js'
 import Stripe from 'stripe'
 import { reportServerError } from './lib/reportError.js'
 import { resolveTierFromPriceId } from './lib/stripeShared.js'
+import { packFromPriceId } from './lib/topups.js'
 import { sendPaymentFailedEmail, sendAddCardToContinueEmail } from './lib/email.js'
 import { createTimeoutFetch } from './lib/scanShared.js'
 
@@ -122,6 +123,45 @@ export default async (req) => {
       // as a normal in-app signup.
       case 'checkout.session.completed': {
         const session = event.data.object
+
+        // A one-off contact-credit top-up, not a plan. mode:'payment' rather
+        // than 'subscription' — see topup-checkout.js. Handled before the
+        // subscription branch because these sessions have no subscription at
+        // all and would otherwise fall straight through the `break` below.
+        if (session.mode === 'payment') {
+          const teamId = session.metadata?.team_id
+          const buyerId = session.metadata?.supabase_user_id || session.client_reference_id || null
+          if (!teamId) throw new Error(`top-up session ${session.id} completed with no team_id in metadata`)
+
+          // Grant off the PRICE ID Stripe reports, not off the credit count in
+          // metadata. Metadata is written by our own checkout call and would
+          // happily grant whatever it said; the price is what the customer
+          // actually paid for, and it is the one thing Stripe guarantees stays
+          // accurate. If a price is not one of ours, grant nothing and say so.
+          const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 1 })
+          const priceId = lineItems?.data?.[0]?.price?.id
+          const pack = packFromPriceId(priceId)
+          if (!pack) throw new Error(`top-up session ${session.id} paid for an unrecognised price ${priceId} — granting nothing`)
+
+          // contact_credits_grant is idempotent on the Stripe session id, which
+          // matters because Stripe retries this webhook on any non-2xx and on
+          // its own schedule. A retry inserts nothing and returns the balance
+          // unchanged, so a customer can never be granted the same purchase
+          // twice.
+          const { error: grantError } = await supabase.rpc('contact_credits_grant', {
+            p_team_id: teamId,
+            p_user_id: buyerId,
+            p_credits: pack.credits,
+            p_stripe_session_id: session.id,
+            p_amount_cents: session.amount_total ?? null,
+            p_currency: session.currency || null,
+            p_pack_key: pack.key,
+          })
+          if (grantError) throw new Error(`contact credit grant failed for session ${session.id}: ${grantError.message}`)
+          console.log(`[stripe-webhook] granted ${pack.credits} contact credits to team ${teamId} (session ${session.id})`)
+          break
+        }
+
         if (!session.subscription) break
         let userId = session.client_reference_id
         if (!userId) {

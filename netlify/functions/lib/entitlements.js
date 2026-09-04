@@ -308,34 +308,70 @@ export async function getEntitlements(supabase, userId) {
 // contact, so a failure here degrades to "no meter shown" rather than an error.
 export async function getContactCredits(supabase, teamId, tier) {
   const limit = TIER_LIMITS[tier]?.contactCreditsPerMonth ?? TIER_LIMITS[DEFAULT_TIER].contactCreditsPerMonth
-  if (!supabase || !teamId) return { used: 0, limit, remaining: limit }
+  const empty = { used: 0, limit, topupBalance: 0, remaining: limit }
+  if (!supabase || !teamId) return empty
   try {
-    const { data, error } = await supabase.rpc('contact_credits_used', { p_team_id: teamId })
-    if (error) {
-      console.error('[entitlements] contact_credits_used RPC failed:', error.message)
-      return { used: 0, limit, remaining: limit }
+    const [usedRes, balanceRes] = await Promise.all([
+      supabase.rpc('contact_credits_used', { p_team_id: teamId }),
+      supabase.rpc('contact_credits_topup_balance', { p_team_id: teamId }),
+    ])
+    if (usedRes.error) {
+      console.error('[entitlements] contact_credits_used RPC failed:', usedRes.error.message)
+      return empty
     }
-    const used = Number(data) || 0
-    return { used, limit, remaining: Math.max(0, limit - used) }
+    // A missing top-up balance is not a failure worth blocking on — it just
+    // means no purchases, or an older deploy. Degrade to zero, never to an
+    // error: a meter that cannot be read must not stop someone finding a
+    // contact.
+    if (balanceRes.error) console.error('[entitlements] contact_credits_topup_balance RPC failed:', balanceRes.error.message)
+
+    const used = Number(usedRes.data) || 0
+    const topupBalance = balanceRes.error ? 0 : (Number(balanceRes.data) || 0)
+    // Purchased credits sit ON TOP of the monthly allowance and do not expire,
+    // so "remaining" is what is left of this month plus everything bought.
+    const remaining = Math.max(0, limit - used) + topupBalance
+    return { used, limit, topupBalance, remaining }
   } catch (err) {
-    console.error('[entitlements] contact_credits_used threw:', err.message)
-    return { used: 0, limit, remaining: limit }
+    console.error('[entitlements] contact credit lookup threw:', err.message)
+    return empty
   }
 }
 
 // Consumes one credit. Called ONLY after Apollo has actually returned a
 // person — see the note on contactCreditsPerMonth above.
-export async function consumeContactCredit(supabase, teamId) {
+//
+// The monthly allowance is spent FIRST, purchased credits only once it is
+// exhausted. That ordering is what makes a top-up genuinely additive: someone
+// who buys 75 credits in March and uses 30 of their monthly 50 still has all 75
+// in April. The reverse would quietly burn the thing they paid for while the
+// free allowance went unused, which is the kind of quiet unfairness customers
+// notice eventually and never forgive.
+//
+// Returns the state after consuming, or null if nothing could be consumed.
+export async function consumeContactCredit(supabase, teamId, tier) {
   if (!supabase || !teamId) return null
+  const limit = TIER_LIMITS[tier]?.contactCreditsPerMonth ?? TIER_LIMITS[DEFAULT_TIER].contactCreditsPerMonth
   try {
-    const { data, error } = await supabase.rpc('contact_credits_consume', { p_team_id: teamId, p_credits: 1 })
+    const { data, error } = await supabase.rpc('contact_credits_consume_v2', {
+      p_team_id: teamId, p_monthly_cap: limit,
+    })
     if (error) {
-      console.error('[entitlements] contact_credits_consume RPC failed:', error.message)
+      console.error('[entitlements] contact_credits_consume_v2 RPC failed:', error.message)
       return null
     }
-    return Number(data) || 0
+    const row = Array.isArray(data) ? data[0] : data
+    if (!row || !row.source) return null
+    const used = Number(row.monthly_used) || 0
+    const topupBalance = Number(row.topup_balance) || 0
+    return {
+      source: row.source,
+      used,
+      limit,
+      topupBalance,
+      remaining: Math.max(0, limit - used) + topupBalance,
+    }
   } catch (err) {
-    console.error('[entitlements] contact_credits_consume threw:', err.message)
+    console.error('[entitlements] contact_credits_consume_v2 threw:', err.message)
     return null
   }
 }

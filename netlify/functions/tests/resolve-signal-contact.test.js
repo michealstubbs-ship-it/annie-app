@@ -127,7 +127,9 @@ describe('already resolved', () => {
     const body = await res.json()
     expect(body.found).toBe(true)
     expect(body.alreadyResolved).toBe(true)
-    expect(body.credits).toEqual({ used: 0, limit: 50, remaining: 50 })
+    // topupBalance is part of the shape now — purchased credits sit on top of
+    // the monthly allowance and do not expire (see topups.js).
+    expect(body.credits).toEqual({ used: 0, limit: 50, topupBalance: 0, remaining: 50 })
     expect(global.fetch).not.toHaveBeenCalled()
   })
 
@@ -182,7 +184,7 @@ describe('live re-resolution', () => {
 // nobody costs zero credits. So a failed lookup is free to Annie and must be
 // free to the customer.
 describe('the monthly contact allowance', () => {
-  function withTeam({ used = 0, tier = 'starter' } = {}) {
+  function withTeam({ used = 0, tier = 'starter', topupBalance = 0 } = {}) {
     mockCreateClient.mockImplementation(() => ({
       from: vi.fn((table) => {
         if (table === 'team_members') {
@@ -202,7 +204,15 @@ describe('the monthly contact allowance', () => {
       }),
       rpc: vi.fn(async (name, args) => {
         if (name === 'contact_credits_used') return { data: used, error: null }
-        if (name === 'contact_credits_consume') return { data: used + (args?.p_credits || 1), error: null }
+        if (name === 'contact_credits_topup_balance') return { data: topupBalance, error: null }
+        if (name === 'contact_credits_consume_v2') {
+          // Mirrors the real function: monthly allowance first, purchased
+          // balance only once it is exhausted.
+          const cap = args?.p_monthly_cap ?? 0
+          if (used < cap) return { data: [{ source: 'monthly', monthly_used: used + 1, topup_balance: topupBalance }], error: null }
+          if (topupBalance > 0) return { data: [{ source: 'topup', monthly_used: used, topup_balance: topupBalance - 1 }], error: null }
+          return { data: [{ source: null, monthly_used: used, topup_balance: 0 }], error: null }
+        }
         return mockRpc(name, args)
       }),
     }))

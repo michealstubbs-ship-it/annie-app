@@ -25,6 +25,7 @@ import ErrorBanner from '../ErrorBanner'
 import { SIGNAL_TYPE_META } from '../../lib/signalTypes'
 import { STATE_WORKING, STATE_PARKED } from '../../lib/stream/buildStream'
 import { RUNG_COLD } from '../../lib/stream/wayIn'
+import TopUpPanel from './TopUpPanel'
 
 const VIEWS = [
   { key: 'all', label: 'Everything' },
@@ -38,6 +39,11 @@ export default function IntelligenceFeed() {
   const { items, counts, credits, loading, error, onboarding, setState, markDone, dismiss, markSeen, applyResolvedContact, applyContactLogged, applyContactSaved } = useStream({ user })
   const [view, setView] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
+  const [topUpDismissed, setTopUpDismissed] = useState(false)
+
+  // Only surfaced when the allowance is genuinely nearly gone. Showing a buy
+  // prompt to someone with 40 of 50 left is a shop, not a product.
+  const lowOnCredits = !!credits && credits.limit > 0 && credits.remaining <= Math.max(3, Math.round(credits.limit * 0.1))
 
   const presentTypes = useMemo(
     () => [...new Set(items.map(i => i.signal.signal_type))],
@@ -80,13 +86,15 @@ export default function IntelligenceFeed() {
               <div className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">Contact lookups</div>
               <div className="text-navy font-bold tabular-nums">
                 {credits.remaining}
-                <span className="text-gray-400 font-medium text-[12px]"> of {credits.limit} left</span>
+                <span className="text-gray-400 font-medium text-[12px]">
+                  {' '}left{credits.topupBalance > 0 && ` (${credits.topupBalance} purchased)`}
+                </span>
               </div>
             </div>
             <div className="w-16 h-1.5 rounded-full bg-gray-100 overflow-hidden">
               <div
                 className="h-full bg-gold rounded-full transition-all"
-                style={{ width: `${Math.max(0, Math.min(100, (credits.remaining / credits.limit) * 100))}%` }}
+                style={{ width: `${Math.max(0, Math.min(100, (credits.remaining / Math.max(1, credits.limit + (credits.topupBalance || 0))) * 100))}%` }}
               />
             </div>
           </div>
@@ -94,6 +102,12 @@ export default function IntelligenceFeed() {
       </div>
 
       {error && <ErrorBanner>{error}</ErrorBanner>}
+
+      {lowOnCredits && !topUpDismissed && (
+        <div className="mt-4">
+          <TopUpPanel credits={credits} tier={credits.tier} onClose={() => setTopUpDismissed(true)} />
+        </div>
+      )}
 
       <div className="flex items-center gap-1 border-b border-gray-200 mt-4 mb-3 overflow-x-auto">
         {VIEWS.map(v => (

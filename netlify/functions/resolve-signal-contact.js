@@ -107,6 +107,8 @@ export default async (req, context) => {
         found: false,
         capReached: true,
         credits,
+        // Says what actually ran out, and never implies a top-up balance they
+        // do hold has also gone — remaining already includes it.
         error: `You've used all ${credits.limit} contact lookups on your plan this month.`,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
@@ -177,10 +179,10 @@ export default async (req, context) => {
     // Only now, with a real person in hand, does this cost the customer
     // anything. consumeContactCredit returns the new running total so the
     // meter in the UI updates from the same number the server just wrote.
-    const newTotal = await consumeContactCredit(supabase, teamId)
-    const updatedCredits = newTotal === null
+    const consumed = await consumeContactCredit(supabase, teamId, tier)
+    const updatedCredits = consumed === null
       ? credits
-      : { used: newTotal, limit: credits.limit, remaining: Math.max(0, credits.limit - newTotal) }
+      : { used: consumed.used, limit: consumed.limit, topupBalance: consumed.topupBalance, remaining: consumed.remaining }
 
     return new Response(JSON.stringify({
       found: true,
