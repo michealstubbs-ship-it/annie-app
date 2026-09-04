@@ -270,7 +270,7 @@ For each genuine, directly-posted open role you found via the Adzuna list above 
 - sourceLabel: short label, e.g. adzuna.com, bayt.com, or the company's own domain
 - eventDate: the posting date if you can tell, else your best estimate, as YYYY-MM-DD
 - whoToApproach: the specific person or role to approach about this exact opening
-- titleKeywords: 2-4 likely job title strings for the right decision-maker, used afterwards to look up a real verified contact
+- titleKeywords: 2-4 likely job title strings for the right decision-maker, used afterwards to look up a real verified contact. These titles must describe the same person or level of seniority as whoToApproach above, and must be senior to (or the genuine hiring authority over) the role being filled: for a C-suite or VP-level opening, this is the CEO, Managing Director, Board, or an equivalent senior leader, never a peer or subordinate title in the same function (a Deputy CFO or Chief Accountant cannot hire a CFO, for example).
 - introMessage: same structure and rules as the signal field above (${introMessageField}), tailored to this exact open role instead of a general company-level signal
 - candidateAngle: same as above, tailored to this exact role. Leave blank if it doesn't call for one.
 - benchStrengthAngle: same as above, tailored to this exact role's niche. Leave blank if you cannot confidently name genuine peer companies.

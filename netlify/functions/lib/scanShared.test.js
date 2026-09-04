@@ -14,6 +14,7 @@ import {
   buildExistingByCompanyType, findSemanticDedupTargets, filterSemanticDuplicates,
   buildEnrichedSignalRow, buildEnrichedSignalRows, mapWithConcurrency, titleBucketKey,
   enrichCompany, looksLikeJobPostingUrl, looksLikeStaffingAgencyName, isStaffingAgencyIndustry, verifyContactsAcrossFunctions, resolveContactForSignal, createTimeoutFetch,
+  looksLikeSeniorRoleTitle, looksLikeSubordinateContactTitle, isImplausibleHiringContact,
   mapLocationsToTheirStackCountries, reserveTheirStackCredits, discoverTheirStackJobs, discoverGuaranteedLiveJobEntry, discoverHotCompanies,
   pickLiveJobEntryFromLeads, pickLiveJobEntriesFromLeads, LIVE_JOB_PRIORITY_LIMIT, isMegaEmployer, MEGA_EMPLOYER_HEADCOUNT_THRESHOLD, buildPriorityDiscoveryPrompt,
   looksTruncatedByTokenLimit, getLearnedSources, recordLearnedDiscoveries, isJunkLearnedSourceValue,
@@ -2360,6 +2361,82 @@ describe('looksLikeJobPostingUrl (live_job genuineness gate)', () => {
   })
 })
 
+// 2026-09-06, Michael, real report: a "Chief Financial Officer" live_job
+// opening resolved "Askar U, Chief Accountant/Deputy CFO" as the contact
+// to approach, someone who could never plausibly hire for a role senior
+// to their own. See isImplausibleHiringContact's own header in
+// scanShared.js for the full reasoning.
+describe('looksLikeSeniorRoleTitle', () => {
+  it('recognises common C-suite and VP-level role titles', () => {
+    expect(looksLikeSeniorRoleTitle('Chief Financial Officer')).toBe(true)
+    expect(looksLikeSeniorRoleTitle('CFO')).toBe(true)
+    expect(looksLikeSeniorRoleTitle('Chief Risk Officer')).toBe(true)
+    expect(looksLikeSeniorRoleTitle('VP Engineering')).toBe(true)
+    expect(looksLikeSeniorRoleTitle('Vice President, Sales')).toBe(true)
+    expect(looksLikeSeniorRoleTitle('Managing Director')).toBe(true)
+    expect(looksLikeSeniorRoleTitle('President')).toBe(true)
+  })
+
+  it('does not flag an ordinary, non-senior role title', () => {
+    expect(looksLikeSeniorRoleTitle('Senior Finance Manager')).toBe(false)
+    expect(looksLikeSeniorRoleTitle('Finance Director')).toBe(false)
+    expect(looksLikeSeniorRoleTitle('Head of Product')).toBe(false)
+  })
+
+  it('is false for an empty or missing title', () => {
+    expect(looksLikeSeniorRoleTitle('')).toBe(false)
+    expect(looksLikeSeniorRoleTitle(null)).toBe(false)
+    expect(looksLikeSeniorRoleTitle(undefined)).toBe(false)
+  })
+})
+
+describe('looksLikeSubordinateContactTitle', () => {
+  it('catches the real report\'s own contact title', () => {
+    expect(looksLikeSubordinateContactTitle('Chief Accountant/Deputy CFO')).toBe(true)
+  })
+
+  it('recognises deputy/assistant/associate/acting/interim vocabulary', () => {
+    expect(looksLikeSubordinateContactTitle('Deputy Managing Director')).toBe(true)
+    expect(looksLikeSubordinateContactTitle('Assistant Vice President')).toBe(true)
+    expect(looksLikeSubordinateContactTitle('Associate Director')).toBe(true)
+    expect(looksLikeSubordinateContactTitle('Acting CFO')).toBe(true)
+    expect(looksLikeSubordinateContactTitle('Interim Chief Financial Officer')).toBe(true)
+  })
+
+  it('does not flag an ordinary senior title', () => {
+    expect(looksLikeSubordinateContactTitle('Chief Financial Officer')).toBe(false)
+    expect(looksLikeSubordinateContactTitle('Chief Executive Officer')).toBe(false)
+    expect(looksLikeSubordinateContactTitle('Managing Director')).toBe(false)
+  })
+
+  it('is false for an empty or missing title', () => {
+    expect(looksLikeSubordinateContactTitle('')).toBe(false)
+    expect(looksLikeSubordinateContactTitle(null)).toBe(false)
+  })
+})
+
+describe('isImplausibleHiringContact', () => {
+  it('is true for the exact real report: a Deputy CFO matched for a CFO opening', () => {
+    expect(isImplausibleHiringContact('Chief Financial Officer', 'Chief Accountant/Deputy CFO')).toBe(true)
+  })
+
+  it('is false when the role itself is not senior, even with a deputy-flavored contact title', () => {
+    // A Deputy CFO plausibly COULD be the one hiring for an ordinary
+    // Finance Manager role. The check only applies to senior openings.
+    expect(isImplausibleHiringContact('Finance Manager', 'Deputy CFO')).toBe(false)
+  })
+
+  it('is false when the contact title is senior, even for a senior role', () => {
+    expect(isImplausibleHiringContact('Chief Financial Officer', 'Chief Executive Officer')).toBe(false)
+  })
+
+  it('is false when either title is missing', () => {
+    expect(isImplausibleHiringContact('', 'Deputy CFO')).toBe(false)
+    expect(isImplausibleHiringContact('Chief Financial Officer', '')).toBe(false)
+    expect(isImplausibleHiringContact(null, null)).toBe(false)
+  })
+})
+
 describe('looksLikeStaffingAgencyName (live_job agency-posting gate)', () => {
   it('catches the real report: a "Staffing" suffix', () => {
     expect(looksLikeStaffingAgencyName('Quik Hire Staffing')).toBe(true)
@@ -2604,6 +2681,75 @@ describe('resolveContactForSignal — EXTENDED_FUNCTION_TITLE_BUCKETS retry (202
       supabase, apolloOrgId: 'org_1', userId: 'u1', apolloContactRetry: true,
     })
     expect(contactCandidates.some(c => c.name === 'Sara Ahmed')).toBe(true)
+    vi.unstubAllGlobals()
+  })
+})
+
+// 2026-09-06, Michael, real report: this is the actual end-to-end shape of
+// the bug: the primary verifyContact call DOES find someone (unlike the
+// describe block above, where the standard buckets find nobody), but that
+// someone is implausible for the role, and used to be accepted anyway.
+describe('resolveContactForSignal, discards an implausible (subordinate) contact for a senior role, real report', () => {
+  function stubDeputyThenLeadershipBucketHit() {
+    return vi.fn(async (url, opts) => {
+      if (url.includes('mixed_people/api_search')) {
+        const body = JSON.parse(opts.body)
+        if (body.person_titles?.includes('Deputy CFO')) {
+          return { ok: true, json: async () => ({ people: [{ first_name: 'Askar', id: 'p1' }] }) }
+        }
+        if (body.person_titles?.includes('CEO')) {
+          return { ok: true, json: async () => ({ people: [{ first_name: 'Fahad', id: 'p2' }] }) }
+        }
+        return { ok: true, json: async () => ({ people: [] }) }
+      }
+      if (url.includes('people/match')) {
+        const body = JSON.parse(opts.body)
+        if (body.id === 'p1') return { ok: true, json: async () => ({ person: { first_name: 'Askar', last_name: 'U', title: 'Chief Accountant/Deputy CFO', email: 'askar@powerchina.example' } }) }
+        if (body.id === 'p2') return { ok: true, json: async () => ({ person: { first_name: 'Fahad', last_name: 'Al Marri', title: 'Chief Executive Officer', email: 'fahad@powerchina.example' } }) }
+        return { ok: true, json: async () => ({ person: null }) }
+      }
+      return { ok: true, text: async () => '' }
+    })
+  }
+
+  it('discards "Chief Accountant/Deputy CFO" as the contact for a "Chief Financial Officer" opening, falling through to the CEO in the leadership bucket', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', stubDeputyThenLeadershipBucketHit())
+    const { contact, contactCandidates } = await resolveContactForSignal({
+      apolloKey: 'k', company: 'POWERCHINA', signalType: 'live_job', titleKeywords: ['Deputy CFO'],
+      roleTitle: 'Chief Financial Officer',
+      supabase, apolloOrgId: 'org_1', userId: 'u1', logPrefix: '[test]',
+    })
+    // The Deputy CFO match is discarded, not returned as `contact`.
+    expect(contact).toBeNull()
+    // Falls through into the existing leadership-bucket search and finds
+    // the real hiring authority instead.
+    expect(contactCandidates.some(c => c.name === 'Fahad Al Marri' && c.function === 'leadership')).toBe(true)
+    expect(contactCandidates.some(c => c.name === 'Askar U')).toBe(false)
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps the match when the role itself is not senior, even with a deputy-flavored contact title', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', stubDeputyThenLeadershipBucketHit())
+    const { contact } = await resolveContactForSignal({
+      apolloKey: 'k', company: 'POWERCHINA', signalType: 'live_job', titleKeywords: ['Deputy CFO'],
+      roleTitle: 'Finance Manager',
+      supabase, apolloOrgId: 'org_1', userId: 'u1', logPrefix: '[test]',
+    })
+    expect(contact).toMatchObject({ name: 'Askar U', title: 'Chief Accountant/Deputy CFO' })
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps a genuinely senior match for a senior role', async () => {
+    const supabase = makeTableAwareSupabase()
+    vi.stubGlobal('fetch', stubDeputyThenLeadershipBucketHit())
+    const { contact } = await resolveContactForSignal({
+      apolloKey: 'k', company: 'POWERCHINA', signalType: 'live_job', titleKeywords: ['CEO'],
+      roleTitle: 'Chief Financial Officer',
+      supabase, apolloOrgId: 'org_1', userId: 'u1', logPrefix: '[test]',
+    })
+    expect(contact).toMatchObject({ name: 'Fahad Al Marri', title: 'Chief Executive Officer' })
     vi.unstubAllGlobals()
   })
 })

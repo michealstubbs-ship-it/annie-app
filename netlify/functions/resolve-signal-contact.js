@@ -71,7 +71,7 @@ export default async (req, context) => {
     // contact for a signal that belongs to someone else's account.
     const { data: signal, error: fetchError } = await supabase
       .from('intelligence_signals')
-      .select('id, user_id, company_name, signal_type, title_keywords, contact_verified, contact_candidates')
+      .select('id, user_id, company_name, signal_type, title_keywords, headline, contact_verified, contact_candidates')
       .eq('id', signalId)
       .eq('user_id', user.id)
       .maybeSingle()
@@ -107,6 +107,12 @@ export default async (req, context) => {
       signalType: signal.signal_type,
       titleKeywords: signal.title_keywords,
       appointedName: null,
+      // 2026-09-06: same implausible-hiring-contact guard the scan-time
+      // resolver now applies (see resolveContactForSignal's own header in
+      // scanShared.js). Without this, a manual retry on a signal that
+      // originally matched a subordinate-flavored contact could just
+      // re-resolve that exact same wrong person again.
+      roleTitle: signal.headline,
       supabase,
       apolloOrgId: companyInfo?.apolloOrgId,
       userId: user.id,

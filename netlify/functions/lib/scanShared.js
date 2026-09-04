@@ -2187,7 +2187,53 @@ function sanitizeCandidateProfile(profile) {
 // real Apollo lookup against real data. If a company genuinely has nobody
 // findable across all three layers, this returns nothing found; that's
 // still the honest, correct outcome, not a bug to route around.
-export async function resolveContactForSignal({ apolloKey, company, signalType, titleKeywords, appointedName, supabase, apolloOrgId, userId, apolloContactRetry = false, apolloCaps = {} }) {
+//
+// 2026-09-06, Michael, real report: a "Chief Financial Officer" live_job
+// opening resolved "Askar U, Chief Accountant/Deputy CFO" as the verified
+// contact, then separately wrote "approach the CEO or Regional Managing
+// Director" in the card's own whoToApproach prose. The two fields
+// disagreed because they're written by two completely independent steps
+// (the AI's free-text whoToApproach vs. Apollo's raw fuzzy match on
+// titleKeywords), with nothing anywhere cross-checking that the matched
+// person could plausibly be the one hiring for the role. A Deputy CFO
+// isn't the person who hires a CFO; they're a peer or subordinate.
+//
+// roleTitle (the open role's own headline, e.g. "Chief Financial Officer",
+// separate from titleKeywords, which describes who to APPROACH, not the
+// role being filled) lets this catch that specific mismatch: for a senior
+// (C-suite/VP-level) opening, a matched contact whose own title reads as
+// deputy/assistant/acting/interim can't be the hiring authority, so it is
+// discarded below rather than accepted. That routes straight into the
+// existing `!contact` fallback a few lines down, which already searches
+// the `leadership` bucket (Founder/CEO/Managing Director/Owner, see
+// FUNCTION_TITLE_BUCKETS) instead of inventing a second, parallel check.
+const SENIOR_ROLE_TITLE_PATTERN = /\b(chief \w+ officer|ceo|cfo|coo|cto|president|managing director|vice president|\bvp\b)\b/i
+const SUBORDINATE_CONTACT_TITLE_PATTERN = /\b(deputy|assistant|associate|acting|interim)\b/i
+
+export function looksLikeSeniorRoleTitle(roleTitle) {
+  if (!roleTitle) return false
+  return SENIOR_ROLE_TITLE_PATTERN.test(roleTitle)
+}
+
+export function looksLikeSubordinateContactTitle(contactTitle) {
+  if (!contactTitle) return false
+  return SUBORDINATE_CONTACT_TITLE_PATTERN.test(contactTitle)
+}
+
+// True when a matched contact plainly can't be the hiring authority for
+// this specific open role: a deputy/assistant/acting/interim title can
+// never plausibly hire for a senior role above their own. This is a
+// deliberately narrow, high-confidence check (a hard, unambiguous
+// vocabulary match, same shape as looksLikeStaffingAgencyName), not a
+// general seniority-ranking system. It does not catch every possible
+// lateral-peer mismatch (e.g. a "Chief Accountant" with no "Deputy" in
+// the title, approached for a CFO opening), only the specific, confident
+// case a subordinate-flavored title makes obvious.
+export function isImplausibleHiringContact(roleTitle, contactTitle) {
+  return looksLikeSeniorRoleTitle(roleTitle) && looksLikeSubordinateContactTitle(contactTitle)
+}
+
+export async function resolveContactForSignal({ apolloKey, company, signalType, titleKeywords, appointedName, roleTitle, supabase, apolloOrgId, userId, apolloContactRetry = false, apolloCaps = {}, logPrefix = '' }) {
   const isFundingOrExpansion = ['funding', 'expansion'].includes(signalType)
   let contact = null
   let contactCandidates = []
@@ -2197,6 +2243,17 @@ export async function resolveContactForSignal({ apolloKey, company, signalType, 
     }
   } else {
     contact = await verifyContact(apolloKey, company, titleKeywords, supabase, apolloOrgId, appointedName, userId, apolloCaps)
+
+    // See isImplausibleHiringContact's own header just above. A present
+    // but implausible match (e.g. a Deputy CFO for a CFO opening) is
+    // discarded here, before the `!contact` fallback below, so it falls
+    // through into that same existing leadership-bucket search instead of
+    // being accepted just because Apollo returned someone.
+    if (contact && isImplausibleHiringContact(roleTitle, contact.title)) {
+      console.log(`${logPrefix} discarding "${contact.name}, ${contact.title}" as the contact for a senior "${roleTitle}" opening, reads as subordinate to the role, not a plausible hiring authority over it`)
+      contact = null
+    }
+
     if (!contact && apolloOrgId) {
       contactCandidates = await verifyContactsAcrossFunctions(apolloKey, company, supabase, apolloOrgId, undefined, undefined, userId, apolloCaps)
     }
@@ -2326,7 +2383,12 @@ export async function buildEnrichedSignalRow(s, { userId, apolloKey, companiesHo
   const { contact, contactCandidates } = await resolveContactForSignal({
     apolloKey, company: s.company, signalType, titleKeywords: s.titleKeywords,
     appointedName: signalType === 'leadership_change' ? s.appointedName : null,
-    supabase, apolloOrgId: companyInfo?.apolloOrgId, userId, apolloContactRetry, apolloCaps,
+    // roleTitle: the open role's own headline (e.g. "Chief Financial
+    // Officer"), separate from titleKeywords above which describes who to
+    // approach, not the role being filled. See isImplausibleHiringContact's
+    // own header for why this is needed.
+    roleTitle: s.headline,
+    supabase, apolloOrgId: companyInfo?.apolloOrgId, userId, apolloContactRetry, apolloCaps, logPrefix,
   })
 
   return {
@@ -3722,7 +3784,7 @@ For each live job you found, use this exact shape:
 - sourceLabel: short label, e.g. adzuna.com, bayt.com, or the company's own domain
 - eventDate: the posting date if you can tell, else your best estimate, as YYYY-MM-DD
 - whoToApproach: the specific person or role to approach about this exact opening
-- titleKeywords: 2-4 likely job title strings for the right decision-maker, used afterwards to look up a real verified contact
+- titleKeywords: 2-4 likely job title strings for the right decision-maker, used afterwards to look up a real verified contact. These titles must describe the same person or level of seniority as whoToApproach above, and must be senior to (or the genuine hiring authority over) the role being filled: for a C-suite or VP-level opening, this is the CEO, Managing Director, Board, or an equivalent senior leader, never a peer or subordinate title in the same function (a Deputy CFO or Chief Accountant cannot hire a CFO, for example).
 - introMessage: ${opts.introMessageField || 'the ready-to-send outreach message body, in this recruiter\'s tone, tailored to this exact role'}
 - candidateAngle: a specific, credible candidate pitch to lead with. Leave blank if it doesn't call for one.
 - benchStrengthAngle: a positioning pitch naming 1-2 real, specific peer companies, never vague. Leave blank if you cannot confidently name genuine peers.

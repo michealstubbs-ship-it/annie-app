@@ -158,8 +158,14 @@ export default function TodaysActions() {
                           <>
                             <div className="text-[9.5px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">What Annie found</div>
                             {action.sourceUrl && (
-                              <a href={action.sourceUrl} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline block mb-3">
-                                🔗 {action.sourceLabel || action.sourceUrl}
+                              // 2026-09-06, Michael, real report: the link was always here
+                              // and always pointed at the real posting, but rendered as a
+                              // bare domain ("linkedin.com") with no visible sign it was
+                              // clickable proof, not just a citation. Explicit call-to-action
+                              // text for a live_job card, domain kept as provenance in
+                              // parentheses rather than being the whole link text.
+                              <a href={action.sourceUrl} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline font-semibold block mb-3">
+                                🔗 {action.signalType === 'live_job' ? 'View the live job posting' : 'View the source'}{action.sourceLabel ? ` (${action.sourceLabel})` : ''}
                               </a>
                             )}
                             <div className="text-[9.5px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Who to approach, and why</div>
