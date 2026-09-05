@@ -124,7 +124,42 @@ export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen
         )}
       </div>
 
+      {/* FEED-6, in Michael's own words about a regulatory card: "This should
+          just be a news tab... It should not come with any of the bottom half."
+          isNews has been computed in buildStream since the single-stream
+          rebuild and was never read here, so an M&A filing, a regulatory note
+          and a piece of public commentary each arrived wearing the full BD
+          apparatus - find the contact, draft the approach, log the call - for
+          an event nobody can act on commercially. NEWS_SIGNAL_TYPES already
+          says which types those are; this is the first place it changes what
+          the customer sees.
+
+          The card itself stays: the headline and why-it-matters are genuinely
+          worth knowing, and the way-in panel still says who the recruiter knows
+          there. Only the actions that imply "call someone about this" are
+          withheld, along with the Apollo lookup that would have spent a credit
+          on a lead that was never a lead. */}
       <WayInPanel wayIn={item.wayIn} companyName={s.company_name}>
+        {item.isNews ? (
+          <div className="flex gap-2 flex-wrap mt-3 items-center">
+            <span className="text-[12px] text-gray-500">
+              Background, not a lead — nothing here to act on today.
+            </span>
+            {item.linkedinRoute && (
+              <a
+                className="inline-flex items-center gap-2 text-[12.5px] font-medium px-3 py-1.5 rounded-lg bg-white border border-gray-200 text-navy hover:bg-page-bg transition-colors"
+                href={item.linkedinRoute.url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >{item.linkedinRoute.label}</a>
+            )}
+            <button
+              type="button"
+              onClick={() => onDismiss(item)}
+              className="text-[12.5px] font-medium px-3 py-1.5 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
+            >Not relevant</button>
+          </div>
+        ) : (
         <div className="flex gap-2 flex-wrap mt-3 items-center">
           <ContactLookup
             item={item}
@@ -165,6 +200,7 @@ export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen
             {open ? 'Hide detail' : 'More detail'}
           </button>
         </div>
+        )}
 
         {open && (
           <div className="mt-3 pt-3 border-t border-gray-200/70 space-y-3">

@@ -3591,9 +3591,23 @@ describe('getMarketCoverageReport (aggregating scan history into a per sector+lo
 // to analyze the companies either they are adding, or that have come from
 // their CSV, start monitoring those companies and their competitors").
 describe('getCustomerWatchlistCompanies (personal, per-account company watchlist fed from the CRM)', () => {
-  function makeWatchlistSupabase({ teamId = null, companiesByUser = [], candidatesByUser = [], companiesByTeam = [], candidatesByTeam = [], errorTable = null } = {}) {
+  function makeWatchlistSupabase({ teamId = null, companiesByUser = [], candidatesByUser = [], companiesByTeam = [], candidatesByTeam = [], contacts = [], errorTable = null } = {}) {
     return {
       from: (table) => {
+        // Contacts now decide the ORDER of the watchlist, not just its
+        // membership: a company where the recruiter knows four C-suite people
+        // outranks one where they know a single manager. Recency stopped being
+        // a usable proxy the moment a CSV import created 618 companies sharing
+        // one created_at.
+        if (table === 'contacts') {
+          return {
+            select: () => ({
+              limit: async () => (errorTable === 'contacts'
+                ? { data: null, error: { message: 'db down' } }
+                : { data: contacts, error: null }),
+            }),
+          }
+        }
         if (table === 'team_members') {
           return {
             select: () => ({
@@ -3627,6 +3641,47 @@ describe('getCustomerWatchlistCompanies (personal, per-account company watchlist
       },
     }
   }
+
+  it('ranks companies by how deep the relationship is, not by when they were added', async () => {
+    const supabase = makeWatchlistSupabase({
+      contacts: [
+        { company: 'Khazna Data Centers', seniority_band: 'c_suite' },
+        { company: 'Khazna Data Centers', seniority_band: 'c_suite' },
+        { company: 'Khazna Data Centers', seniority_band: 'director_vp' },
+        { company: 'Small Co', seniority_band: 'manager_plus' },
+      ],
+    })
+    const result = await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })
+    expect(result[0]).toBe('Khazna Data Centers')
+    expect(result).toContain('Small Co')
+  })
+
+  it('leaves a rival recruiter\'s own firm off the watchlist', async () => {
+    const supabase = makeWatchlistSupabase({
+      contacts: [
+        { company: 'Rival Search Partners', seniority_band: 'c_suite', is_competitor: true },
+        { company: 'ADQ', seniority_band: 'director_vp' },
+      ],
+    })
+    expect(await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })).toEqual(['ADQ'])
+  })
+
+  it('still keeps a hand-added company with no contacts against it, just below the ones with people', async () => {
+    const supabase = makeWatchlistSupabase({
+      contacts: [{ company: 'ADQ', seniority_band: 'c_suite' }],
+      companiesByUser: [{ name: 'Typed In By Hand' }],
+    })
+    const result = await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })
+    expect(result).toEqual(['ADQ', 'Typed In By Hand'])
+  })
+
+  it('logs rather than throws when the contacts query fails, and still returns the rest', async () => {
+    const supabase = makeWatchlistSupabase({
+      companiesByUser: [{ name: 'Acme Corp' }],
+      errorTable: 'contacts',
+    })
+    expect(await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })).toEqual(['Acme Corp'])
+  })
 
   it('returns an empty array without a supabase client or without a user_id', async () => {
     expect(await getCustomerWatchlistCompanies(null, { user_id: 'u1' })).toEqual([])

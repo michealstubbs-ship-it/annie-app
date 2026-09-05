@@ -3923,7 +3923,30 @@ export async function getMarketCoverageReport(supabase, { sinceDays = 30, minSca
 // account with a large CRM doesn't balloon the scan prompt's token cost —
 // most recently added companies first, since those are the freshest signal
 // of current interest.
-const WATCHLIST_COMPANY_LIMIT = 20
+// 2026-09-05, network-first: raised 20 -> 40, and the ordering changed from
+// "most recently added" to "where the relationship is deepest".
+//
+// Recency was the right proxy when companies arrived one at a time, as a client
+// or a prospect someone typed in. It stopped meaning anything the moment a
+// LinkedIn CSV import created 618 companies in one batch — every row then
+// shares a created_at, so "most recent 20" is an arbitrary 3% slice of the
+// network, and the scan was as likely to watch a company the recruiter knows
+// one junior person at as the sovereign fund they know four C-suite people at.
+//
+// Depth is the honest ordering under a network-first product: the companies
+// worth watching are the ones the customer can actually get into. 40 names cost
+// roughly 200 prompt tokens, which is nothing against what a scan already
+// spends, so the cap is set by usefulness rather than by budget.
+const WATCHLIST_COMPANY_LIMIT = 40
+
+// Weight per contact, by seniority band. A company where the recruiter knows
+// three C-suite people is a different proposition from one where they know
+// three managers, and the flat count cannot tell them apart.
+const WATCHLIST_BAND_WEIGHT = {
+  c_suite: 5,
+  director_vp: 3,
+  manager_plus: 1,
+}
 
 export async function getCustomerWatchlistCompanies(supabase, ob, limit = WATCHLIST_COMPANY_LIMIT) {
   if (!supabase || !ob?.user_id) return []
@@ -3940,7 +3963,16 @@ export async function getCustomerWatchlistCompanies(supabase, ob, limit = WATCHL
       .single()
     const teamId = teamRow?.team_id || null
 
+    // Contacts are what carry the relationship, so they decide the order.
+    // Companies and candidates still contribute names — a company added by hand
+    // with no contact against it is a deliberate act of interest and belongs on
+    // the list — they just score below anywhere with real people in it.
+    const contactQuery = supabase
+      .from('contacts')
+      .select('company, seniority_band, is_competitor')
+      .limit(2000)
     const queries = [
+      contactQuery,
       supabase.from('companies').select('name').eq('user_id', ob.user_id).order('created_at', { ascending: false }).limit(limit),
       supabase.from('candidates').select('company').eq('user_id', ob.user_id).order('created_at', { ascending: false }).limit(limit),
     ]
@@ -3948,19 +3980,42 @@ export async function getCustomerWatchlistCompanies(supabase, ob, limit = WATCHL
       queries.push(supabase.from('companies').select('name').eq('team_id', teamId).order('created_at', { ascending: false }).limit(limit))
       queries.push(supabase.from('candidates').select('company').eq('team_id', teamId).order('created_at', { ascending: false }).limit(limit))
     }
-    const results = await Promise.all(queries)
-    const names = new Set()
-    for (const { data, error } of results) {
+    const [contactsRes, ...rest] = await Promise.all(queries)
+
+    const scored = new Map()
+    const bump = (rawName, weight) => {
+      const val = String(rawName || '').trim()
+      if (!val) return
+      const key = val.toLowerCase()
+      const prev = scored.get(key)
+      if (prev) prev.score += weight
+      else scored.set(key, { name: val, score: weight })
+    }
+
+    if (contactsRes?.error) {
+      console.error('[scanShared] failed to read customer watchlist companies:', contactsRes.error.message)
+    } else {
+      for (const row of contactsRes?.data || []) {
+        // A rival recruiter's own firm is not a company to watch for BD.
+        if (row.is_competitor) continue
+        bump(row.company, WATCHLIST_BAND_WEIGHT[row.seniority_band] ?? 1)
+      }
+    }
+
+    for (const { data, error } of rest) {
       if (error) {
         console.error('[scanShared] failed to read customer watchlist companies:', error.message)
         continue
       }
-      for (const row of data || []) {
-        const val = (row.name || row.company || '').trim()
-        if (val) names.add(val)
-      }
+      // Enough to put a hand-added company on the list, not enough to outrank
+      // somewhere the recruiter knows a real person.
+      for (const row of data || []) bump(row.name || row.company, 1)
     }
-    return [...names].slice(0, limit)
+
+    return [...scored.values()]
+      .sort((a, b) => (b.score - a.score) || a.name.localeCompare(b.name))
+      .slice(0, limit)
+      .map(entry => entry.name)
   } catch (err) {
     console.error('[scanShared] failed to read customer watchlist companies:', err.message)
     return []
