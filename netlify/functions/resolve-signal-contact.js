@@ -179,6 +179,14 @@ export default async (req, context) => {
     // Only now, with a real person in hand, does this cost the customer
     // anything. consumeContactCredit returns the new running total so the
     // meter in the UI updates from the same number the server just wrote.
+    //
+    // A person WITHOUT an email still costs a credit, because Apollo still
+    // charges for it — measured 2026-09-05: 10 people submitted, 10 person
+    // matches, 5 emails, 10 credits. That is not hidden from the customer:
+    // hasEmail below is what lets the feed say "found them, no email — message
+    // on LinkedIn instead" rather than showing a spent credit and an empty
+    // field, which is what makes it read as a broken feature rather than a
+    // known limit of the data.
     const consumed = await consumeContactCredit(supabase, teamId, tier)
     const updatedCredits = consumed === null
       ? credits
@@ -187,6 +195,7 @@ export default async (req, context) => {
     return new Response(JSON.stringify({
       found: true,
       charged: true,
+      hasEmail: !!contact?.email,
       credits: updatedCredits,
       contact: contact ? { name: contact.name, title: contact.title, linkedin_url: contact.linkedin_url, email: contact.email, partialIdentity: !!contact.partialIdentity } : null,
       contactCandidates: contactCandidates.length ? contactCandidates : null,

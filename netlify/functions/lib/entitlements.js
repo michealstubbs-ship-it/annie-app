@@ -59,20 +59,36 @@ import { canonicalTier } from '../../../src/lib/pricing.js'
 // through a 2,500/month Apollo plan in under two weeks. They are now fetched
 // only when the recruiter clicks, and this is the allowance for that.
 //
-// A credit is consumed ONLY when a real person comes back. Verified against
-// the live Apollo API on 2026-09-04: a search costs nothing, and an enrichment
-// that matches nobody costs nothing either. So a failed lookup is free to
-// Annie and is free to the customer — there is deliberately no state where
-// someone spends an allowance and receives nothing.
+// A credit is consumed ONLY when a real person comes back. A lookup that
+// matches nobody is free — re-verified against the live Apollo API on
+// 2026-09-05 with two invented people: 2 requested, 0 enriched, 0 credits.
 //
-// That also changes what the number means when it is shown to them: 50 is 50
-// CONTACTS, not 50 attempts, which is both easier to sell and easier to
-// explain at the ceiling. Team's pool is shared across the whole team, which
-// is why usage is keyed on team_id rather than user_id.
-// emailSync (2026-09-05, Michael): Growth and Team only. A Starter recruiter
-// still gets the drafted approach — they just copy it into Outlook themselves,
-// and Annie never sees the reply. That gap is the upgrade argument, and it is
-// visible in the product rather than buried on a pricing page.
+// CORRECTION, 2026-09-05. This comment used to continue "so 50 is 50 CONTACTS,
+// not 50 attempts... there is deliberately no state where someone spends an
+// allowance and receives nothing." The first half is right and the second half
+// was not, and the difference matters because it was also the pricing copy.
+//
+// Measured the same day: 10 real senior contacts submitted to Apollo returned
+// 10 person matches, 5 verified work emails, and 10 credits consumed. Apollo
+// charges when it matches a PERSON, and roughly half of those carry no email.
+// So a customer CAN spend a credit and get no email — what they receive is a
+// confirmed name, title and LinkedIn profile.
+//
+// That is a real thing to receive rather than nothing, and in a product whose
+// primary action is now a LinkedIn message it is often the whole route in. But
+// it is not what "50 contacts" promised, so the promise changed rather than
+// the price: pricing.js says "contact lookups", and the feed says plainly when
+// a lookup found the person but no email.
+//
+// The geography matters too, and is not in the price: on that sample Apollo
+// found the Western multinationals (Visa, Nubank, The Guardian, Zain) and
+// missed the Gulf ones (DP World, ADNOC Distribution, Rejlers Abu Dhabi).
+// A GCC-focused desk should expect a lower yield than a European one.
+//
+// Team's pool is shared across the whole team, which is why usage is keyed on
+// team_id rather than user_id.
+//
+// emailSync: on every live tier since Starter was removed (2026-09-05).
 // 2026-09-05, Michael: Starter is removed and Growth becomes Solo. Two tiers,
 // named for who they are for rather than for an ambition.
 //

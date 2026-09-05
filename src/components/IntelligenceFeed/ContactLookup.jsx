@@ -4,7 +4,12 @@
 //
 // Three outcomes, each stated plainly:
 //   found, with email    a usable contact
-//   found, no email      Apollo matched the person but holds no address. The
+//   found, no email      Apollo matched the person but holds no address. This
+//                        still costs a credit, because Apollo still charges for
+//                        it — measured 2026-09-05: 10 people submitted, 10
+//                        matched, 5 emails, 10 credits. Saying "1 credit if
+//                        found" invited the reading "if an email is found", so
+//                        the button now says "if the person is found". The
 //                        name and the LinkedIn profile still go to the
 //                        recruiter — a name and a profile is still a way in.
 //   nothing found        said out loud, charged nothing, LinkedIn offered
@@ -175,7 +180,7 @@ export default function ContactLookup({ item, onResolved, linkedinRoute, userId,
       className="inline-flex items-center gap-2 text-[12.5px] font-bold px-3 py-1.5 rounded-lg bg-navy text-gold hover:bg-navy-light transition-colors disabled:opacity-60"
     >
       {status === 'searching' ? 'Searching Apollo…' : alreadyHasSomeone ? 'Find the decision-maker' : 'Find me the contact'}
-      {status !== 'searching' && <span className="font-medium text-[10.5px] text-gold/70 border-l border-gold/30 pl-2">1 credit if found</span>}
+      {status !== 'searching' && <span className="font-medium text-[10.5px] text-gold/70 border-l border-gold/30 pl-2">1 credit if the person is found</span>}
     </button>
   )
 }
