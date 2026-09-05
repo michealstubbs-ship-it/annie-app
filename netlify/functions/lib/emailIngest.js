@@ -17,19 +17,18 @@
 // duplicate delivery cost nothing instead of writing the same note twice and
 // paying Anthropic twice for the privilege.
 
-import { classifyAddress, pickCounterparty, detectAutoReply, detectBounce, parseSignature } from './emailSync.js'
+import { classifyAddress, pickCounterparty, detectAutoReply, detectBounce, parseSignature, ownIdentity } from './emailSync.js'
 import { resolveCompanyName, ensureCompany, matchContact, applySignature, appendContactNote } from './emailMatch.js'
 import { writeNote, autoReplyNote } from './emailNote.js'
 import { markApproachReplied } from './outreachApproach.js'
 
 const SKIP = (reason, extra = {}) => ({ ingested: false, reason, ...extra })
 
-export function ownIdentity(account, extraAddresses = []) {
-  const address = String(account?.email_address || '').trim().toLowerCase()
-  const domain = address.includes('@') ? address.split('@').pop() : ''
-  const ownAddresses = [address, ...extraAddresses.map(a => String(a || '').toLowerCase())].filter(Boolean)
-  return { ownAddresses, ownDomains: domain ? [domain] : [] }
-}
+// Moved to emailSync.js so the mailbox sweep can use it without importing this
+// file — which would drag the Anthropic note writer into the backfill's module
+// graph. Re-exported here because this is where every existing caller and test
+// expects to find it, and one definition is the point.
+export { ownIdentity }
 
 /**
  * @param supabase  service-role client (RLS is bypassed; every write below

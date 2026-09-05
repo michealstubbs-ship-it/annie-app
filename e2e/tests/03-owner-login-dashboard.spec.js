@@ -2,9 +2,11 @@ import { test, expect } from '@playwright/test'
 import { OWNER } from '../fixtures/accounts.js'
 import { loginAndReachDashboard } from '../fixtures/auth.js'
 
-// Scenario 3: e2e-owner is fully onboarded (onboarding_completed=true,
-// linkedin_import_completed=true), so logging in should land directly on
-// the dashboard overview, not onboarding or the LinkedIn import step.
+// Scenario 3: e2e-owner is fully onboarded and has contacts, so logging in
+// should land directly on the dashboard overview, not onboarding and not the
+// getting-started screen. Since 2026-09-05 that second condition is the real
+// one: admission is having a network, not having once been shown a dialog —
+// see src/lib/networkGate.js.
 // Deliberately logs in fresh here (not via the cached storageState) so the
 // actual post-login redirect behaviour itself is under test.
 test.describe('Existing onboarded user login', () => {
@@ -16,7 +18,7 @@ test.describe('Existing onboarded user login', () => {
       await page.getByRole('button', { name: 'Sign in' }).click()
     })
 
-    await test.step('lands on /dashboard, not /onboarding or /import', async () => {
+    await test.step('lands on /dashboard, not /onboarding or /get-started', async () => {
       await page.waitForURL(url => !url.pathname.startsWith('/login'), { timeout: 20000 })
       await expect(page).toHaveURL(/\/dashboard$/)
     })

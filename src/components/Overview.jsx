@@ -26,6 +26,8 @@ import {
 } from '../lib/todaysActions/index.js'
 import { useMarketCurrency } from '../lib/useMarketCurrency'
 import { canonicalTier } from '../lib/pricing'
+import { emptyNetworkPanel, ACTION_CONNECT_MAILBOX } from '../lib/stream/emptyNetwork'
+import { startEmailConnect } from '../lib/email/emailApi'
 
 const JOB_STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled', lost: 'Lost' }
 const JOB_STATUS_COLOR = { active: '#2f9e5b', onhold: '#d99a2b', filled: '#c9a84c', lost: '#9ca0ac' }
@@ -126,7 +128,7 @@ function Tag({ kind, children }) {
 }
 
 export default function Overview() {
-  const { user, profile } = useAuth()
+  const { user, profile, network } = useAuth()
   const navigate = useNavigate()
 
   const [loading, setLoading] = useState(true)
@@ -154,11 +156,12 @@ export default function Overview() {
   // includes follow_up_date/follow_up_reason, same due-today-or-overdue
   // rule bd_tasks already uses just below.
   const [contactFollowUps, setContactFollowUps] = useState([])
-  // 2026-09-01: renamed from contactsCount — this only ever counts contacts
-  // tagged 'linkedin-import' now (see the query's own comment below), not
-  // every contact, so the old name was actively misleading about what it
-  // gates.
-  const [linkedinImportedCount, setLinkedinImportedCount] = useState(null) // null = not checked yet, avoids a flash of the reminder
+  // 2026-09-05: the linkedin-import contact counter that used to live here is
+  // gone with the banner it gated. What the dashboard needs to know is whether
+  // this account has a NETWORK — a connected mailbox or contacts from any
+  // source — and that is read once at boot by AuthContext rather than
+  // re-counted here. See lib/networkGate.js.
+  const [connectingMailbox, setConnectingMailbox] = useState(false)
   const [scanOutcome, setScanOutcome] = useState(null) // set once scan-status.js reports the scan is actually done, tells us WHY there's nothing (or something) to show
   const [chainProgress, setChainProgress] = useState(null) // live counts while a chained scan is still running — updated on every poll tick via useScanStatusPoll's onTick
   const [retrying, setRetrying] = useState(false)
@@ -290,7 +293,6 @@ export default function Overview() {
       { data: signalCountRows },
       { data: meetingRows },
       { data: taskRows },
-      { count: linkedinImportedCountResult },
       tierResult,
     ] = await Promise.all([
       // jobs/candidates/meetings/bd_tasks/contacts are the shared CRM —
@@ -315,21 +317,14 @@ export default function Overview() {
       supabase.from('intelligence_signals').select('id').eq('user_id', user.id).gte('found_at', sevenDaysAgo),
       supabase.from('meetings').select('id, title, meeting_type, meeting_date').gte('meeting_date', todayStart).lte('meeting_date', todayEnd).order('meeting_date', { ascending: true }),
       supabase.from('bd_tasks').select('id, title, due_date').eq('status', 'open').lte('due_date', todayDateStr).order('due_date', { ascending: true }).limit(5),
-      // 2026-09-01 audit fix, real report: Michael added a contact manually
-      // (from Today's Actions, well before ever running the LinkedIn import)
-      // and the banner vanished anyway. Root cause: this used to count ALL
-      // contacts regardless of source, on the assumption that contacts only
-      // ever come from the LinkedIn import — no longer true now that
-      // Contacts, Companies, and Today's Actions can all create one
-      // directly. LinkedInImport.jsx already tags every contact it inserts
-      // with tags: ['linkedin-import'] (see that file's own insert), so
-      // this now counts only THOSE, which is what actually answers "has a
-      // real import happened" regardless of how many other contacts exist.
-      // Still deliberately independent of profiles.linkedin_import_completed
-      // (see that flag's own note — it's also set true on a skip, and the
-      // banner is meant to keep nudging until a real import lands, not just
-      // until the user has seen the screen once).
-      supabase.from('contacts').select('id', { count: 'exact', head: true }).contains('tags', ['linkedin-import']),
+      // 2026-09-05: a count of contacts tagged 'linkedin-import' used to sit
+      // here, gating a banner that told anyone without one to go and export
+      // their LinkedIn connections. Once the mailbox became the first way in,
+      // that banner started telling recruiters whose mailbox had already filed
+      // hundreds of people that they had not started yet — it was measuring
+      // one source rather than whether the account had a network at all. The
+      // question it was really asking is now answered by AuthContext's
+      // network reading, so the query is gone rather than reworded.
       fetchTier(),
     ])
 
@@ -398,7 +393,6 @@ export default function Overview() {
         .sort((a, b) => a.follow_up_date.localeCompare(b.follow_up_date))
         .slice(0, 5)
     )
-    setLinkedinImportedCount(linkedinImportedCountResult ?? 0)
     setTier(tierResult)
     } catch (err) {
       if (loadTokenRef.current !== token) return
@@ -443,6 +437,26 @@ export default function Overview() {
 
   const urgentCount = topActions.filter(a => a.urgency >= 1).length
   const scanCopy = scanOutcomeCopy(scanOutcome)
+
+  // Whether this account has a network yet, and what to say if not. Read from
+  // AuthContext's boot-time reading rather than re-counted here. A contact
+  // count of null means the read failed — treated as "has a network" so a
+  // blocked request cannot invent a first-run banner for a customer with 753
+  // contacts.
+  const networkPanel = emptyNetworkPanel({
+    mailbox: network?.mailbox || 'none',
+    sweeping: Boolean(network?.sweeping),
+    contactCount: network?.contacts ?? 1,
+    mailboxOffered: Boolean(network?.available && network?.configured),
+  })
+
+  async function startNetwork(key) {
+    if (key !== ACTION_CONNECT_MAILBOX) { navigate('/dashboard/import-linkedin'); return }
+    setConnectingMailbox(true)
+    const { url } = await startEmailConnect({ returnTo: '/dashboard?email=connected' })
+    if (url) { window.location.href = url; return }
+    setConnectingMailbox(false)
+  }
   // Only worth surfacing a scan explanation on an otherwise-quiet dashboard
   // — a customer with real actions, meetings or signals already showing
   // doesn't need to be told about the scan that ran hours ago, that would
@@ -557,25 +571,36 @@ export default function Overview() {
         </div>
       )}
 
-      {!loading && linkedinImportedCount === 0 && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-5 py-4 mb-5 flex items-center gap-3.5">
+      {/* NO NETWORK, OR ONE STILL ARRIVING. This used to be an unconditional
+          "import your LinkedIn contacts" nag whenever no linkedin-import-tagged
+          contact existed — which, once the mailbox became the first way in,
+          meant telling someone whose mailbox had already filed 300 people that
+          they had not started yet. It now says whichever of those two things
+          is actually true, in the same words the feed uses (see
+          lib/stream/emptyNetwork.js), and says nothing at all once the account
+          has a network by any route. */}
+      {!loading && networkPanel ? (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-5 py-4 mb-5 flex items-start gap-3.5">
           <div className="w-9 h-9 rounded-full bg-white flex items-center justify-center flex-shrink-0">
-            <IconUsers className="w-[18px] h-[18px] text-amber-600" />
+            {networkPanel.waiting
+              ? <div className="w-4 h-4 border-2 border-amber-600 border-t-transparent rounded-full animate-spin" />
+              : <IconUsers className="w-[18px] h-[18px] text-amber-600" />}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-[13.5px] font-semibold text-amber-900">Import your LinkedIn contacts to unlock Annie's full intelligence</p>
-            <p className="text-[12.5px] text-amber-700 mt-0.5 leading-relaxed">
-              If you've requested your LinkedIn export, come back here once the email arrives (can take up to 24 hours) and upload the CSV. Haven't requested it yet? Do that first, it's the slow step.
-            </p>
+            <p className="text-[13.5px] font-semibold text-amber-900">{networkPanel.heading}</p>
+            <p className="text-[12.5px] text-amber-700 mt-0.5 leading-relaxed">{networkPanel.detail}</p>
           </div>
-          <button
-            onClick={() => navigate('/dashboard/import-linkedin')}
-            className="flex-shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[12.5px] font-semibold bg-amber-600 text-white whitespace-nowrap"
-          >
-            Import contacts <IconArrowRight className="w-3.5 h-3.5" />
-          </button>
+          {networkPanel.actions.length > 0 && (
+            <button
+              onClick={() => startNetwork(networkPanel.actions[0].key)}
+              disabled={connectingMailbox}
+              className="flex-shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[12.5px] font-semibold bg-amber-600 text-white whitespace-nowrap disabled:opacity-60"
+            >
+              {connectingMailbox ? 'Opening…' : networkPanel.actions[0].label} <IconArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
-      )}
+      ) : null}
 
       {/* 2026-08-31 audit fix, "the dashboard shows £0 before it shows the
           truth": these four tiles used to render unconditionally straight

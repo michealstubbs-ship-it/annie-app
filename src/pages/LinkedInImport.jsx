@@ -45,11 +45,17 @@ const DEFAULT_SENIORITY = ['Manager+', 'Director / VP+', 'C-Suite / Partner / MD
 // stale again.
 const SIGNAL_TYPES = Object.values(SIGNAL_TYPE_META).map(m => m.label)
 
+// 2026-09-05: framed as one source among several rather than as THE source.
+// Annie's parser has always read .csv/.xlsx/.xls/.ods from anywhere — Outlook,
+// a previous CRM — while every string on this screen said LinkedIn, so the
+// only export anyone knew they could give her was the one that takes 24 hours
+// to arrive. Collapsed by default for the same reason: an Outlook export needs
+// none of this.
 function ExportWalkthrough() {
   return (
-    <div className="bg-page-bg rounded-xl p-5 mb-6">
-      <h3 className="text-sm font-bold text-navy mb-1">How to export your LinkedIn connections</h3>
-      <p className="text-xs text-gray-500 mb-4">Requesting it takes two minutes, but LinkedIn itself can take up to 24 hours to actually prepare the file, so request it now so it's ready when you come back. Nothing leaves your inbox until you upload it here.</p>
+    <details className="bg-page-bg rounded-xl p-5 mb-6">
+      <summary className="text-sm font-bold text-navy cursor-pointer">Getting the file out of LinkedIn</summary>
+      <p className="text-xs text-gray-500 mb-4 mt-2">Requesting it takes two minutes, but LinkedIn itself can take up to 24 hours to actually prepare the file. Nothing leaves your inbox until you upload it here. Exporting from Outlook or another CRM needs none of these steps — upload that file directly.</p>
 
       <div className="space-y-2.5">
         {[
@@ -73,7 +79,7 @@ function ExportWalkthrough() {
                 </div>
               )}
               {step.n === 3 && <p className="text-[11px] text-gray-400 mt-1">LinkedIn removed the option to request just your connections on their own, so this bundles in more than you need, but it's the only way to get them now. Only Connections.csv matters here.</p>}
-              {step.n === 4 && <p className="text-[11px] text-gray-400 mt-1">This is the slow part: LinkedIn can take anywhere from a few hours up to 24 hours to email it. Skip below for now, use Annie in the meantime, and come back to Settings → Import LinkedIn contacts once it lands in your inbox. However it ends up saved — the original .csv, or a version saved from opening it in Excel or Google Sheets (.xlsx, .xls, .ods) — Annie can read it.</p>}
+              {step.n === 4 && <p className="text-[11px] text-gray-400 mt-1">This is the slow part: LinkedIn can take anywhere from a few hours up to 24 hours to email it. If you would rather not wait, connect your mailbox instead and come back to Settings → Import contacts once LinkedIn's email lands. However it ends up saved — the original .csv, or a version saved from opening it in Excel or Google Sheets (.xlsx, .xls, .ods) — Annie can read it.</p>}
             </div>
           </div>
         ))}
@@ -82,7 +88,7 @@ function ExportWalkthrough() {
       <p className="text-[11px] text-gray-400 mt-4 leading-relaxed">
         This is your own data, exported directly from LinkedIn under its official data portability tools. Nothing is scraped or accessed without your permission.
       </p>
-    </div>
+    </details>
   )
 }
 
@@ -99,8 +105,12 @@ function parseConnectedOn(raw) {
   return d.toISOString().slice(0, 10)
 }
 
-export default function LinkedInImport({ embedded = false }) {
-  const { user, refreshProfile } = useAuth()
+// 2026-09-05: onCancel/cancelLabel exist because this screen is now reached
+// two ways — from Settings inside the dashboard, and as step two of
+// GetStarted, where "cancel" means "back to the two options" rather than
+// "leave for the dashboard". The caller says where its own back door goes.
+export default function LinkedInImport({ embedded = false, onCancel = null, cancelLabel = 'Cancel' }) {
+  const { user, refreshProfile, refreshNetwork } = useAuth()
   const navigate = useNavigate()
   const fileInputRef = useRef(null)
 
@@ -191,7 +201,7 @@ export default function LinkedInImport({ embedded = false }) {
         setShowReview(true)
       } catch (err) {
         console.error('[LinkedInImport] handleFile failed:', err)
-        setError("Couldn't read that file. Upload the Connections.csv (or a spreadsheet saved from it) from inside LinkedIn's export zip — Annie reads .csv, .xlsx, .xls and .ods, but the file still needs to actually contain your connections' data.")
+        setError("Couldn't read that file. Annie reads .csv, .xlsx, .xls and .ods — a LinkedIn Connections.csv, an Outlook export, or a CRM export — but the file still needs to contain rows of contacts with names on them.")
         setRawContacts(null)
       }
     }
@@ -525,6 +535,14 @@ export default function LinkedInImport({ embedded = false }) {
       // told the customer everything worked, permanently re-showing the
       // import flow every time they load the dashboard even though their
       // contacts really did import.
+      //
+      // 2026-09-05: this flag no longer admits anyone to anything — the gate
+      // reads whether the customer actually has a network (a connected
+      // mailbox, or contacts), see lib/networkGate.js. It is still written
+      // HERE, on a real completed import, because that is the one thing its
+      // name has always claimed and admin-feature-adoption.js reports it as an
+      // adoption number. What changed is that nothing writes it on a skip any
+      // more, so it has stopped meaning "we asked".
       const { error: profileErr } = await supabase.from('profiles').update({ linkedin_import_completed: true }).eq('id', user.id)
       if (profileErr) console.error('[LinkedInImport] failed to mark import completed:', profileErr.message)
       await refreshProfile()
@@ -541,20 +559,38 @@ export default function LinkedInImport({ embedded = false }) {
       trackEvent('linkedin_import_completed', { skipped: false, imported: toInsert.length, targets: targetCount, alreadySkipped: alreadyImportedCount })
   }
 
-  async function handleSkip() {
-    try {
-      await withTimeout(
-        supabase.from('profiles').update({ linkedin_import_completed: true }).eq('id', user.id),
-        12000,
-        'linkedin-skip',
-      )
-      await refreshProfile()
-      trackEvent('linkedin_import_completed', { skipped: true })
-      navigate('/dashboard')
-    } catch (err) {
-      console.error('[LinkedInImport] handleSkip failed:', err)
-      setError(err.message?.startsWith('TIMEOUT:') ? TIMEOUT_MESSAGE : (err.message || 'Something went wrong. Please try again.'))
-    }
+  // THE SKIP THAT SET THE FLAG IS GONE.
+  //
+  // This used to write profiles.linkedin_import_completed = true and navigate
+  // to the dashboard. That flag was the dashboard's admission gate, so "Skip
+  // for now" was a button that told Annie the customer had a network when they
+  // did not — and most people pressed it, because LinkedIn can take 24 hours
+  // to email the export. What they got was the open market on their first
+  // screen, which is the exact thing the network-first releases removed.
+  //
+  // Backing out of this screen is now just backing out of this screen: it
+  // changes no state at all. Where it goes is the caller's business — back to
+  // the two options during signup, back to the dashboard from Settings — and
+  // the route guard decides what they are allowed to see either way.
+  function handleCancel() {
+    trackEvent('linkedin_import_cancelled')
+    if (onCancel) return onCancel()
+    navigate('/dashboard')
+  }
+
+  // THE CONTACTS THAT JUST LANDED ARE THE NETWORK, and the route guard reads
+  // it rather than a flag now (see lib/networkGate.js). Re-read before leaving
+  // so /dashboard admits them — and re-read HERE rather than at the end of
+  // runImport, because during signup this screen is rendered inside
+  // GetStarted, whose route guard would send them to the dashboard the instant
+  // the network appeared, taking the completion screen with it. If the re-read
+  // fails the gate falls back to the flag the import just set, so this cannot
+  // strand anyone either way.
+  const [leaving, setLeaving] = useState(false)
+  async function goToDashboard() {
+    setLeaving(true)
+    try { await refreshNetwork() } catch (err) { console.error('[LinkedInImport] network refresh failed:', err) }
+    navigate('/dashboard')
   }
 
   const Wrapper = ({ children }) => embedded ? (
@@ -621,9 +657,11 @@ export default function LinkedInImport({ embedded = false }) {
               same question the recruiter has just spent two minutes on:
               where do Annie's contacts come from? Renders nothing at all on
               unconfigured, or once a mailbox is already connected. */}
-          <EmailConnectStep onSkip={() => navigate('/dashboard')} />
+          <EmailConnectStep onSkip={goToDashboard} />
 
-          <button onClick={() => navigate('/dashboard')} className="btn-primary w-full">Go to my dashboard</button>
+          <button onClick={goToDashboard} disabled={leaving} className="btn-primary w-full">
+            {leaving ? 'One moment…' : 'Go to my dashboard'}
+          </button>
         </div>
       </Wrapper>
     )
@@ -633,9 +671,10 @@ export default function LinkedInImport({ embedded = false }) {
     <Wrapper>
       {!showReview && (
         <>
-          <h2 className="text-2xl font-bold text-navy mb-1">Import your LinkedIn connections</h2>
+          <h2 className="text-2xl font-bold text-navy mb-1">Upload a contacts export</h2>
           <p className="text-gray-500 text-sm mb-6">
-            First, tell Annie who to look for. She'll only import and monitor contacts that match these filters.
+            An export from LinkedIn, from Outlook, or from a CRM you used before — .csv, .xlsx, .xls or .ods.
+            First, tell Annie who to look for: she'll only import and monitor contacts that match these filters.
           </p>
 
           <ErrorBanner>{error}</ErrorBanner>
@@ -702,12 +741,13 @@ export default function LinkedInImport({ embedded = false }) {
           {!rawContacts ? (
             <div className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center">
               <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls,.ods,.txt,.tsv" onChange={handleFile} className="hidden" />
-              <button onClick={() => fileInputRef.current?.click()} className="btn-primary">Upload Connections.csv</button>
+              <button onClick={() => fileInputRef.current?.click()} className="btn-primary">Choose a file</button>
+              <p className="text-[11px] text-gray-400 mt-2">LinkedIn's Connections.csv, an Outlook contacts export, or a CRM export.</p>
               {fileName && <p className="text-xs text-gray-400 mt-2">{fileName}</p>}
             </div>
           ) : (
             <div className="bg-page-bg rounded-xl p-5 text-center">
-              <p className="text-xs text-gray-500 mb-3">{fileName || 'Connections.csv'} already uploaded, filters updated above.</p>
+              <p className="text-xs text-gray-500 mb-3">{fileName || 'Your file'} already uploaded, filters updated above.</p>
               <button onClick={async () => { await runEnrichment(rawContacts); setShowReview(true) }} disabled={enriching} className="btn-primary w-full">
                 {enriching ? 'Checking companies...' : 'Continue to review'}
               </button>
@@ -717,8 +757,8 @@ export default function LinkedInImport({ embedded = false }) {
             </div>
           )}
 
-          <button onClick={handleSkip} className="w-full mt-2 text-xs text-gray-400 hover:text-gray-600 py-1">
-            {embedded ? 'Cancel' : "Skip for now, I'll import once LinkedIn's export is ready"}
+          <button onClick={handleCancel} className="w-full mt-2 text-xs text-gray-400 hover:text-gray-600 py-1">
+            {cancelLabel}
           </button>
         </>
       )}
@@ -735,7 +775,7 @@ export default function LinkedInImport({ embedded = false }) {
         <>
           <h2 className="text-2xl font-bold text-navy mb-1">Ready to import</h2>
           <p className="text-gray-500 text-sm mb-6">
-            Connections.csv uploaded and checked against your filters
+            {fileName || 'Your file'} uploaded and checked against your filters
             {apolloConfigured && enrichedCount > 0 ? `, including verified company data for ${enrichedCount.toLocaleString()} companies.` : '.'}
           </p>
 
@@ -777,8 +817,8 @@ export default function LinkedInImport({ embedded = false }) {
             {importing ? 'Importing...' : `Import ${filtered.length.toLocaleString()} contacts into Annie`}
           </button>
 
-          <button onClick={handleSkip} className="w-full mt-2 text-xs text-gray-400 hover:text-gray-600 py-1">
-            {embedded ? 'Cancel' : "Skip for now, I'll import once LinkedIn's export is ready"}
+          <button onClick={handleCancel} className="w-full mt-2 text-xs text-gray-400 hover:text-gray-600 py-1">
+            {cancelLabel}
           </button>
         </>
       )}

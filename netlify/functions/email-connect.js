@@ -36,7 +36,13 @@ export default async (req) => {
   try {
     const { data: account } = await admin
       .from('email_accounts')
-      .select('id, email_address, provider, status, connected_at, last_synced_at, backfill_done')
+      // sweep_stats carries the finished 18-month sweep's tally, including the
+      // free-mail count — the number of people who genuinely correspond with
+      // this recruiter from a personal address and were deliberately NOT filed
+      // as contacts. It is surfaced rather than buried because the decision
+      // about what to do with those people is Michael's, and it should be made
+      // against a real figure rather than an argument about whether they exist.
+      .select('id, email_address, provider, status, connected_at, last_synced_at, backfill_done, sweep_stats, sweep_completed_at')
       .eq('user_id', user.id)
       .maybeSingle()
 

@@ -290,9 +290,13 @@ Only return the style profile text, nothing else.`
       </div>
 
       <div className="card p-6 mb-6">
-        <h2 className="text-lg font-bold text-navy mb-1">LinkedIn contacts</h2>
-        <p className="text-sm text-gray-500 mb-4">Import or re-import your LinkedIn connections. Annie only adds contacts matching the filters you set.</p>
-        <button onClick={() => navigate('/dashboard/import-linkedin')} className="btn-primary">Import LinkedIn contacts</button>
+        <h2 className="text-lg font-bold text-navy mb-1">Contacts export</h2>
+        {/* 2026-09-05: named for what the screen actually accepts. The parser
+            has always read .csv/.xlsx/.xls/.ods from any source, but every
+            string around it said LinkedIn, so the only export anyone knew they
+            could hand over was the one that takes 24 hours to arrive. */}
+        <p className="text-sm text-gray-500 mb-4">Upload an export of your contacts — from LinkedIn, from Outlook, or from a CRM you used before. Re-uploading is safe: existing contacts are updated rather than duplicated, and Annie only adds ones matching the filters you set.</p>
+        <button onClick={() => navigate('/dashboard/import-linkedin')} className="btn-primary">Upload a contacts export</button>
       </div>
 
       {/* Sits directly under LinkedIn contacts because both answer the same

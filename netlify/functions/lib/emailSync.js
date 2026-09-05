@@ -297,6 +297,23 @@ export function parseSignature(bodyPlain, { name = '' } = {}) {
 // ---------------------------------------------------------------------------
 // Reducing a Unipile message to the one person it is about.
 
+/**
+ * The recruiter's own addresses and their own sending domain.
+ *
+ * Lives here rather than in emailIngest.js — where it used to sit and from
+ * where it is still re-exported — because the mailbox sweep needs it and must
+ * not pull emailIngest's module graph in to get it. That graph reaches
+ * emailNote.js, which is the Anthropic note writer, and the backfill's entire
+ * justification is that it cannot reach a model. Keeping the dependency out is
+ * cheaper than remembering not to use it.
+ */
+export function ownIdentity(account, extraAddresses = []) {
+  const address = String(account?.email_address || '').trim().toLowerCase()
+  const domain = address.includes('@') ? address.split('@').pop() : ''
+  const ownAddresses = [address, ...extraAddresses.map(a => String(a || '').toLowerCase())].filter(Boolean)
+  return { ownAddresses, ownDomains: domain ? [domain] : [] }
+}
+
 export function pickCounterparty(message, { ownAddresses = [] } = {}) {
   const owned = new Set(ownAddresses.map(a => String(a || '').trim().toLowerCase()))
   const from = message?.from_attendee || null

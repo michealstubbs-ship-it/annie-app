@@ -46,6 +46,18 @@ Every Netlify function returns JSON with a `Content-Type: application/json` head
 
 When a new endpoint gates on optional configuration, ask the same question: required in every real deployment (500), optional but blocking one feature until set up (503), or optional forever with a working fallback (200 + a `configured` flag)?
 
+## Mailbox sweep — 18 months, metadata only, zero AI
+
+When a recruiter connects a mailbox, `email-sync-background.js` sweeps the last 18 months of it and files the people they actually deal with. Two properties of that sweep are load-bearing and easy to break by accident, so they are worth stating here as well as in the files:
+
+**It costs no AI tokens.** The sweep runs `meta_only=true` at `limit=250` — no message bodies come back, so there is nothing for the note writer to summarise and no Anthropic call is possible on that data. The design it replaced fetched bodies and called `writeNote()` per matched message, which extended to 18 months is on the order of ten thousand model calls per signup. Notes stay **forward-only**: mail arriving from now on still gets its note through `email-webhook.js` exactly as before, and the backfill writes none, ever. `mailboxSweep.js` and `mailboxSweepApply.js` import neither `emailNote.js` nor `aiUsage.js`, and `mailboxSweep.test.js` asserts that over the transitive import graph rather than trusting it.
+
+**A person becomes a contact only if the conversation went both ways.** They were written to *and* they wrote back, inside the window. One-way mail is newsletters, blasts, suppliers and no-reply addresses; a reply is a human choosing to answer, and it needs no model to read. An out-of-office or a bounce is explicitly *not* a reply (`email_interactions.auto_replies` counts them separately). Free-mail addresses — gmail, hotmail, yahoo, outlook.com, icloud — are never promoted even when they pass the test, because they carry no company for Annie to watch; they are kept as background data and counted in `email_accounts.sweep_stats.freeMailTwoWay`, which the Settings → Email panel shows. Everything held back stays in `email_interactions` and is never written into `contacts` or `candidates`.
+
+Dedupe against an already-imported CRM goes through `matchContact()` — email first, then name + company — so the sweep enriches the row the LinkedIn import made instead of creating a second one. Promoted people get real interaction history on the contact (`first_exchange_at`, `last_exchange_at`, `messages_sent`, `messages_received`) and `relationship_tier = 'client'` via `deriveRelationshipTier({ hasTwoWayHistory: true })` — the first thing in the codebase able to pass that argument truthfully.
+
+The sweep is **resumable**: the phase (`sweep_role`), the page cursor (`backfill_cursor`) and the pinned window (`sweep_after`) are written to `email_accounts` after every page, and an unfinished run re-invokes the function for that account. A 15-minute background function therefore completes a large mailbox across several runs instead of silently truncating. Schema: `supabase/migrations/20260905210000_mailbox_sweep.sql`.
+
 ## Bot protection
 
 Signup is gated by Cloudflare Turnstile: `src/components/Turnstile.jsx` renders the widget, and `netlify/functions/verify-turnstile.js` checks the resulting token against Cloudflare's `siteverify` API server-side before `Login.jsx` calls `supabase.auth.signUp` — the client-side widget alone proves nothing, since anyone can skip calling it. Optional in the sense that it degrades gracefully: unset `VITE_TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY` and the widget doesn't render and verification is skipped entirely, exactly like Apollo's optional-forever pattern above — useful for local dev without a Turnstile account.

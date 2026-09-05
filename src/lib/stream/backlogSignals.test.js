@@ -146,17 +146,24 @@ describe('backlog items inside the real stream', () => {
         { id: 's2', signal_type: 'live_job', company_name: 'Confidential Government', headline: 'CDO', status: 'new' },
         { id: 's3', signal_type: 'live_job', company_name: 'ADQ', headline: 'Head of Strategy', status: 'new' },
       ],
-      contacts: [],
+      // All three are at companies inside this CRM as far as the network rule
+      // is concerned — 'Confidential' is dropped for not naming an employer,
+      // which is the point of the test, not for being outside the network.
+      contacts: [contact(), contact({ id: 'c2', company: 'Confidential' }), contact({ id: 'c3', company: 'Confidential Government' })],
+      functions: FUNCTIONS,
     })
     expect(items.map(i => i.signal.company_name)).toEqual(['ADQ'])
   })
 
-  it('adds nothing when the CRM is empty, leaving the feed as it was', () => {
+  it('adds nothing of its own when the CRM is empty', () => {
+    // The backlog is built FROM contacts, so an empty CRM can only ever
+    // produce an empty backlog. Since 2026-09-05 the scan signals beside it go
+    // too — an empty network is an empty stream, see isWithinNetwork.
     const items = buildStream({
       signals: [{ id: 's1', signal_type: 'funding', company_name: 'X', headline: 'Y', status: 'new' }],
       contacts: [],
     })
-    expect(items).toHaveLength(1)
+    expect(items).toHaveLength(0)
   })
 })
 
@@ -231,14 +238,18 @@ describe('the network gate', () => {
     expect(ids).toContain('p')
   })
 
-  // A customer who has imported nothing has no network to be outside of.
-  // Hiding everything would make the product look broken on day one.
-  it('passes everything through for a customer with no CRM yet', () => {
+  // 2026-09-05: this used to assert the opposite — everything passed through
+  // for a customer with no CRM, on the reasoning that hiding it all would make
+  // the product look broken on day one. What it did instead was make a
+  // brand-new customer's FIRST screen the open market, which is what the gate
+  // above exists to remove. The feed now says what it is waiting for; see
+  // stream/emptyNetwork.js.
+  it('shows a customer with no CRM yet nothing at all', () => {
     const items = buildStream({
       signals: [{ id: 's1', signal_type: 'live_job', company_name: 'Anywhere', headline: 'X', status: 'new' }],
       contacts: [],
     })
-    expect(items).toHaveLength(1)
+    expect(items).toHaveLength(0)
   })
 })
 

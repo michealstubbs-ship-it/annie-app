@@ -17,6 +17,7 @@
 // follow-ups, dormant contacts, meeting prep — has moved out; on day one of
 // the snag week this page showed nine cards and every one was admin.
 import { useState, useMemo, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
 import { useStream } from './useStream'
 import StreamItem from './StreamItem'
@@ -28,7 +29,16 @@ import TopUpPanel from './TopUpPanel'
 import QueuePanel from './QueuePanel'
 import EmailSyncBanner from './EmailSyncBanner'
 import OutreachReadout from './OutreachReadout'
-import { getEmailStatus } from '../../lib/email/emailApi'
+import { getEmailStatus, startEmailConnect } from '../../lib/email/emailApi'
+import { mailboxState, readNetwork, NETWORK_SWEEPING, MAILBOX_CONNECTED } from '../../lib/networkGate'
+import { emptyNetworkPanel, ACTION_CONNECT_MAILBOX } from '../../lib/stream/emptyNetwork'
+
+// The mailbox sweep runs in the background and takes minutes. While it is
+// running the feed re-reads itself, so the waiting state turns into a
+// populated list on its own rather than rewarding whoever thinks to refresh.
+// Only ever ticking in that one state — a feed with contacts in it does not
+// poll.
+const SWEEP_POLL_MS = 20000
 
 // 2026-09-05, later: the list got a bottom to it.
 //
@@ -60,20 +70,67 @@ const ASIDES = [
 ]
 
 export default function IntelligenceFeed() {
-  const { user, profile } = useAuth()
-  const { items, daily, queue, counts, credits, loading, error, onboarding, contacts, setState, markDone, dismiss, markSeen, applyResolvedContact, applyContactLogged, applyContactSaved } = useStream({ user })
+  const { user, profile, network: authNetwork } = useAuth()
+  const navigate = useNavigate()
+  const { items, daily, queue, counts, credits, loading, error, onboarding, contacts, refresh, setState, markDone, dismiss, markSeen, applyResolvedContact, applyContactLogged, applyContactSaved } = useStream({ user })
   // Asked once for the whole feed, not once per card: twenty items would
   // otherwise fire twenty identical status calls on every render pass. A
   // failure here is silent on purpose — email is an extra, and the feed must
   // still work exactly as before when it is off or unreachable.
-  const [emailReady, setEmailReady] = useState(false)
+  //
+  // Seeded from the reading AuthContext already took at boot, so the
+  // empty-network panel below renders the right branch on its first paint
+  // rather than flashing "nothing to watch" at someone whose mailbox sweep is
+  // already running. The fetch underneath refreshes it either way.
+  const [emailStatus, setEmailStatus] = useState(() => (
+    authNetwork ? { available: authNetwork.available, configured: authNetwork.configured, account: authNetwork.account, error: null } : null
+  ))
+  const [connecting, setConnecting] = useState(false)
   useEffect(() => {
     let live = true
-    getEmailStatus().then(status => {
-      if (live) setEmailReady(Boolean(status?.available && status?.account?.status === 'connected'))
-    })
+    getEmailStatus().then(status => { if (live) setEmailStatus(status || null) })
     return () => { live = false }
   }, [])
+  const emailReady = Boolean(emailStatus?.available && mailboxState(emailStatus?.account) === MAILBOX_CONNECTED)
+
+  // WHAT TO SAY WHEN THERE IS NOTHING TO SHOW. Until 2026-09-05 the answer was
+  // the open market: isWithinNetwork passed everything through for a customer
+  // with no contacts, so a brand-new account's first screen was a list of
+  // leads at companies they had never heard of. It now shows nothing, which
+  // means this panel is the whole first-run experience and has to be honest
+  // about what Annie is waiting for. See lib/stream/emptyNetwork.js.
+  const network = readNetwork({
+    account: emailStatus?.account || null,
+    contactCount: contacts.length,
+    mailboxKnown: Boolean(emailStatus && !emailStatus.error),
+  })
+  const emptyPanel = useMemo(() => (
+    loading ? null : emptyNetworkPanel({
+      mailbox: network.mailbox,
+      sweeping: network.sweeping,
+      contactCount: contacts.length,
+      mailboxOffered: Boolean(emailStatus?.available && emailStatus?.configured),
+    })
+  ), [loading, network.mailbox, network.sweeping, contacts.length, emailStatus])
+
+  // The sweep landing is the only thing on this page that happens without the
+  // recruiter doing anything, so it is the only thing worth polling for.
+  useEffect(() => {
+    if (network.state !== NETWORK_SWEEPING) return
+    const timer = setInterval(() => {
+      refresh()
+      getEmailStatus().then(status => setEmailStatus(status || null))
+    }, SWEEP_POLL_MS)
+    return () => clearInterval(timer)
+  }, [network.state, refresh])
+
+  async function runEmptyAction(key) {
+    if (key !== ACTION_CONNECT_MAILBOX) { navigate('/dashboard/import-linkedin'); return }
+    setConnecting(true)
+    const { url } = await startEmailConnect({ returnTo: '/dashboard?email=connected' })
+    if (url) { window.location.href = url; return }
+    setConnecting(false)
+  }
 
   const [view, setView] = useState('all')
   const [topUpDismissed, setTopUpDismissed] = useState(false)
@@ -211,14 +268,35 @@ export default function IntelligenceFeed() {
           </h3>
           <p className="text-gray-500 text-sm max-w-sm mx-auto">Close this to go back to your list.</p>
         </div>
-      ) : view === 'all' && visible.length === 0 && contacts.length === 0 ? (
-        // No CRM at all. Nothing to do with the day's set — Annie has no
-        // network to watch yet, and says so rather than pretending to a day.
-        <div className="card p-12 text-center">
-          <h3 className="font-bold text-navy mb-1">No one to call yet</h3>
-          <p className="text-gray-500 text-sm max-w-sm mx-auto">
-            Annie watches the companies and people you already know. Import your LinkedIn contacts and she has a network to watch — until then there is nothing she can honestly recommend.
-          </p>
+      ) : view === 'all' && visible.length === 0 && emptyPanel ? (
+        // No network. Nothing to do with the day's set — Annie has nothing to
+        // watch yet, and says so rather than pretending to a day, and rather
+        // than filling the page with the open market the way this state used
+        // to. The copy is in lib/stream/emptyNetwork.js.
+        <div className="card px-6 py-10 text-center">
+          {emptyPanel.waiting && (
+            <div className="w-8 h-8 border-2 border-gold border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          )}
+          <h3 className="font-bold text-navy mb-1.5">{emptyPanel.heading}</h3>
+          <p className="text-gray-600 text-[13.5px] max-w-[60ch] mx-auto leading-relaxed">{emptyPanel.detail}</p>
+          {emptyPanel.actions.length > 0 && (
+            <div className="flex gap-2 justify-center flex-wrap mt-5">
+              {emptyPanel.actions.map((action, i) => (
+                <button
+                  key={action.key}
+                  onClick={() => runEmptyAction(action.key)}
+                  disabled={connecting && action.key === ACTION_CONNECT_MAILBOX}
+                  className={`text-[12.5px] font-bold px-3.5 py-2 rounded-lg transition-colors ${
+                    i === 0
+                      ? 'bg-navy text-gold hover:bg-navy-light'
+                      : 'bg-white border border-gray-200 text-navy hover:bg-page-bg'
+                  }`}
+                >
+                  {connecting && action.key === ACTION_CONNECT_MAILBOX ? 'Opening…' : action.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       ) : (
         <div className="space-y-3">

@@ -43,6 +43,47 @@ function Keeps() {
   )
 }
 
+// What the 18-month sweep found, once it has finished.
+//
+// The two numbers that matter are the two the promotion rule produced, and they
+// are shown together on purpose. "Filed" is the people the conversation went
+// both ways with. "Held back" is everyone else — and the free-mail line is
+// there because that count is a decision waiting to be made rather than a
+// silent policy: these are people who genuinely correspond with the recruiter
+// from a personal address and were deliberately not filed, because a gmail
+// address carries no company for Annie to watch.
+//
+// The alternative — filing everything the sweep saw — is the LinkedIn CSV
+// import at ten times the scale, and Michael's verdict on that import was
+// "when I did mine it looked very messy with limited organisation."
+function SweepResult({ stats }) {
+  if (!stats || typeof stats !== 'object') return null
+  const filed = Number(stats.promoted || 0)
+  const oneWay = Number(stats.oneWay || 0)
+  const freeMail = Number(stats.freeMailTwoWay || 0)
+  const people = Number(stats.people || 0)
+  if (!people) return null
+
+  return (
+    <div className="mt-4 border border-gray-200 rounded-lg p-4 bg-gray-50/70">
+      <p className="text-[13px] text-gray-700">
+        <span className="font-semibold text-navy">{filed.toLocaleString()} people filed</span>
+        {' '}from {people.toLocaleString()} email addresses in the last 18 months — the ones you
+        wrote to <span className="italic">and</span> who wrote back.
+      </p>
+      <p className="text-xs text-gray-500 mt-2">
+        {oneWay.toLocaleString()} addresses only ever went one way (newsletters, suppliers,
+        no-reply) and were left out of your contacts.
+        {freeMail > 0 && (
+          <> {freeMail.toLocaleString()} more replied from a personal address (Gmail, Hotmail,
+          Outlook.com) — kept on record, not filed, because there is no company behind them
+          for Annie to watch.</>
+        )}
+      </p>
+    </div>
+  )
+}
+
 export default function EmailConnect() {
   const [state, setState] = useState({ loading: true })
   const [busy, setBusy] = useState(false)
@@ -156,10 +197,11 @@ export default function EmailConnect() {
               <div className="text-xs text-gray-600">
                 {account.backfill_done
                   ? 'Up to date. New mail appears against your contacts within a minute.'
-                  : 'Reading your sent mail now — this takes a few minutes the first time.'}
+                  : 'Reading the last 18 months now — this takes a few minutes the first time.'}
               </div>
             </div>
           </div>
+          {account.backfill_done && <SweepResult stats={account.sweep_stats} />}
           <Keeps />
           <ErrorBanner>{error}</ErrorBanner>
           <div className="mt-5">

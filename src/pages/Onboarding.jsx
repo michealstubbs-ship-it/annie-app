@@ -9,6 +9,7 @@ import SectorPicker from '../components/SectorPicker'
 import { withTimeout, TIMEOUT_MESSAGE } from '../lib/withTimeout'
 import { trackEvent } from '../lib/analytics'
 import { triggerScanNow } from '../lib/useScanStatusPoll'
+import { GET_STARTED_PATH } from '../lib/networkGate'
 
 // 2026-08-25, Michael: Annie only actually serves markets with real,
 // verified data behind them — United Kingdom and United States have live
@@ -234,7 +235,7 @@ export default function Onboarding() {
       } catch (refreshErr) {
         console.warn('[Onboarding] profile refresh after save was slow/blocked, continuing anyway:', refreshErr)
       }
-      navigate('/import')
+      navigate(GET_STARTED_PATH)
     } catch (err) {
       console.error('[Onboarding] handleFinish failed:', err)
       if (err.message?.startsWith('TIMEOUT:')) {

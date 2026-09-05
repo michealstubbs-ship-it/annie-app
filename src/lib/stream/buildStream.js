@@ -133,11 +133,30 @@ export function buildKnownCompanies(contacts = []) {
   return known
 }
 
-export function isWithinNetwork(signal, knownCompanies) {
-  // No CRM yet. A customer who has imported nothing has no network to be
-  // outside of, and hiding everything would make the product look broken on
-  // day one. Matches the scan's own empty-watchlist behaviour.
-  if (!knownCompanies || knownCompanies.size === 0) return true
+export function isWithinNetwork(signal, knownCompanies, hasContacts = Boolean(knownCompanies?.size)) {
+  // FAIL CLOSED ON AN EMPTY NETWORK.
+  //
+  // This used to return TRUE here, on the reasoning that a customer who has
+  // imported nothing has no network to be outside of and that hiding
+  // everything would make the product look broken on day one. What it actually
+  // did was make a brand-new customer's very first screen the open market — a
+  // list of leads at companies they have never heard of, which is the exact
+  // thing the two network-first releases were spent removing. Annie's whole
+  // argument is "the best leads are already in your own network"; showing
+  // strangers to the one person who has no network yet contradicts the pitch
+  // at the only moment they are still deciding whether to believe it.
+  //
+  // An empty CRM is not a reason to relax the network rule. It is the
+  // strongest case for it. The feed says what it is waiting for and what
+  // happens when it arrives instead — see stream/emptyNetwork.js — and the
+  // signup gate (lib/networkGate.js) means almost nobody should reach the
+  // dashboard in this state in the first place.
+  //
+  // hasContacts is passed separately from the company set because a contact
+  // whose company field is blank still makes a job-move signal about a real
+  // relationship, and that must not be hidden just because the set of known
+  // COMPANY NAMES happens to be empty.
+  if (!hasContacts) return false
 
   const key = normalizeCompanyName(signal?.company_name || '')
   if (key && knownCompanies.has(key)) return true
@@ -205,6 +224,10 @@ export function buildStream({ signals = [], contacts = [], candidates = [], func
     // is about the person, and the new employer is a company they are not
     // supposed to know yet; that is the whole point of the lead).
     //
+    // And a customer with no contacts at all earns nothing a place, which is
+    // the 2026-09-05 change: an empty network now means an empty stream rather
+    // than the open market. See isWithinNetwork.
+    //
     // Anything the recruiter has already touched is exempt. If they marked a
     // lead as working, or deliberately parked it, they have made a judgment
     // about it and Annie does not get to overrule that by hiding it - a card
@@ -212,7 +235,7 @@ export function buildStream({ signals = [], contacts = [], candidates = [], func
     // someone's work. Caught by the existing ordering test, which had a working
     // item at a company outside the network and expected it to survive.
     const alreadyJudged = signal.status === STATE_WORKING || signal.status === STATE_PARKED
-    if (!alreadyJudged && !isWithinNetwork(signal, knownCompanies)) continue
+    if (!alreadyJudged && !isWithinNetwork(signal, knownCompanies, contacts.length > 0)) continue
 
     const wayIn = computeWayIn(signal, { contacts, candidates })
     const linkedinRoute = buildLinkedinRoute(signal, wayIn.kind === 'spoken' || wayIn.kind === 'contact' ? wayIn.person : null)

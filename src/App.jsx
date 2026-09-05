@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import PageLoader from './components/PageLoader'
 import { pingActivity } from './lib/activityPing'
+import { admitsToDashboard, routeForUser, GET_STARTED_PATH } from './lib/networkGate'
 
 // A scale-readiness audit (2026-08-22) found these six top-level routes
 // were all statically imported here, shipping in the main bundle regardless
@@ -15,7 +16,12 @@ import { pingActivity } from './lib/activityPing'
 // finally gets a real chunk of its own.
 const Login = lazy(() => import('./pages/Login'))
 const Onboarding = lazy(() => import('./pages/Onboarding'))
-const LinkedInImport = lazy(() => import('./pages/LinkedInImport'))
+// 2026-09-05: /import used to render LinkedInImport directly. The CSV import
+// is now the SECOND way into the product, behind connecting a mailbox, so the
+// route renders the screen that offers both. LinkedInImport is still lazily
+// imported — from GetStarted and from Dashboard's settings — and stays out of
+// this file entirely so it keeps its own chunk (see the note above).
+const GetStarted = lazy(() => import('./pages/GetStarted'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const ResetPassword = lazy(() => import('./pages/ResetPassword'))
 const Terms = lazy(() => import('./pages/Terms'))
@@ -26,14 +32,19 @@ const Welcome = lazy(() => import('./pages/Welcome'))
 const ShareJobShortlist = lazy(() => import('./pages/ShareJobShortlist'))
 const SupportWidget = lazy(() => import('./components/SupportWidget'))
 
+// THE GATE IS A FACT NOW, NOT A FLAG. Every one of these used to read
+// profiles.linkedin_import_completed, which "Skip for now" set to true — so
+// the question "has this customer got a network" was answered by "were they
+// once shown a dialog". They now ask AuthContext for what is actually true:
+// a connected mailbox, or contacts in the CRM. See lib/networkGate.js.
 function ProtectedRoute({ children }) {
-  const { user, profile, loading } = useAuth()
+  const { user, profile, network, loading } = useAuth()
 
   if (loading) return <PageLoader label="Loading Annie..." />
 
   if (!user) return <Navigate to="/login" replace />
   if (!profile?.onboarding_completed) return <Navigate to="/onboarding" replace />
-  if (!profile?.linkedin_import_completed) return <Navigate to="/import" replace />
+  if (!admitsToDashboard(network, profile)) return <Navigate to={GET_STARTED_PATH} replace />
   return children
 }
 
@@ -47,26 +58,21 @@ function OnboardingRoute({ children }) {
   return children
 }
 
-function ImportRoute({ children }) {
-  const { user, profile, loading } = useAuth()
+function GetStartedRoute({ children }) {
+  const { user, profile, network, loading } = useAuth()
 
   if (loading) return <PageLoader />
 
   if (!user) return <Navigate to="/login" replace />
   if (!profile?.onboarding_completed) return <Navigate to="/onboarding" replace />
-  if (profile?.linkedin_import_completed) return <Navigate to="/dashboard" replace />
+  // The moment a mailbox connects or the first contacts land, this screen has
+  // nothing left to ask for and gets out of the way.
+  if (admitsToDashboard(network, profile)) return <Navigate to="/dashboard" replace />
   return children
 }
 
-function routeForUser(user, profile) {
-  if (!user) return '/login'
-  if (!profile?.onboarding_completed) return '/onboarding'
-  if (!profile?.linkedin_import_completed) return '/import'
-  return '/dashboard'
-}
-
 function AppRoutes() {
-  const { user, profile, loading } = useAuth()
+  const { user, profile, network, loading } = useAuth()
   const location = useLocation()
 
   // Fires the throttled activityPing on every authenticated route change —
@@ -83,16 +89,19 @@ function AppRoutes() {
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
-        <Route path="/login" element={user ? <Navigate to={routeForUser(user, profile)} replace /> : <Login />} />
+        <Route path="/login" element={user ? <Navigate to={routeForUser(user, profile, network)} replace /> : <Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/privacy" element={<Privacy />} />
         <Route path="/welcome" element={<Welcome />} />
         <Route path="/share/job/:token" element={<ShareJobShortlist />} />
         <Route path="/onboarding" element={<OnboardingRoute><Onboarding /></OnboardingRoute>} />
-        <Route path="/import" element={<ImportRoute><LinkedInImport /></ImportRoute>} />
+        <Route path={GET_STARTED_PATH} element={<GetStartedRoute><GetStarted /></GetStartedRoute>} />
+        {/* The old path, kept as a redirect: it is in browser histories, in
+            the e2e fixtures, and in at least one support email. */}
+        <Route path="/import" element={<Navigate to={GET_STARTED_PATH} replace />} />
         <Route path="/dashboard/*" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-        <Route path="/" element={<Navigate to={routeForUser(user, profile)} replace />} />
+        <Route path="/" element={<Navigate to={routeForUser(user, profile, network)} replace />} />
       </Routes>
       {user && <SupportWidget />}
     </Suspense>

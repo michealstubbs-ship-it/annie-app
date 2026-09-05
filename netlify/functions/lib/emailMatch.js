@@ -147,6 +147,12 @@ export async function matchContact(supabase, {
   kind = 'person',
   companyName = null,
   companyId = null,
+  // The 18-month sweep sets this. It has established that this person wrote
+  // BACK — see mailboxSweep.js's two-way rule — which the forward path cannot
+  // know from a single message, and which is the entire difference between a
+  // contact and a stranger with a gmail address. Michael, 2026-09-05:
+  // "Becomes a contact: anyone you and they both sent to each other."
+  allowPersonal = false,
 }) {
   if (!supabase || !userId || !email) {
     return { contactId: null, outcome: 'skipped_invalid', contact: null }
@@ -184,8 +190,9 @@ export async function matchContact(supabase, {
     if (hit) return { contactId: hit.id, outcome: 'matched_name', contact: hit }
   }
 
-  // Tier three — create, unless this is a bare personal address.
-  if (kind === 'personal' && !CREATE_FROM_PERSONAL) {
+  // Tier three — create, unless this is a bare personal address the caller has
+  // no two-way evidence for.
+  if (kind === 'personal' && !allowPersonal && !CREATE_FROM_PERSONAL) {
     return { contactId: null, outcome: 'skipped_personal', contact: null }
   }
   if (kind === 'role') {

@@ -151,7 +151,7 @@ export default function Contacts() {
           <p className="text-gray-500 mt-1">{contacts.length} contacts in your network</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => navigate('/dashboard/import-linkedin')} className="btn-ghost">Import from LinkedIn</button>
+          <button onClick={() => navigate('/dashboard/import-linkedin')} className="btn-ghost">Import contacts</button>
           <button onClick={openAdd} className="btn-primary">+ Add Contact</button>
         </div>
       </div>
@@ -188,9 +188,9 @@ export default function Contacts() {
         <div className="card p-12 text-center">
           <div className="text-4xl mb-3">👥</div>
           <h3 className="font-bold text-navy mb-1">No contacts yet</h3>
-          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Import your LinkedIn connections to bring in your whole network at once, or add contacts one at a time.</p>
+          <p className="text-gray-500 text-sm max-w-sm mx-auto mb-4">Upload a contacts export — from LinkedIn, Outlook, or a CRM you used before — to bring in your whole network at once, or add contacts one at a time.</p>
           <div className="flex items-center justify-center gap-2">
-            <button onClick={() => navigate('/dashboard/import-linkedin')} className="btn-ghost">Import from LinkedIn</button>
+            <button onClick={() => navigate('/dashboard/import-linkedin')} className="btn-ghost">Import contacts</button>
             <button onClick={openAdd} className="btn-primary">Add a contact</button>
           </div>
         </div>

@@ -72,16 +72,31 @@ export async function getAccount(cfg, accountId) {
 /**
  * List mail. `role` is 'sent' or 'inbox'.
  *
- * meta_only is false because the note writer needs the body — but the body is
- * used and dropped, never written to the database. include_headers is on so
- * an out-of-office can be spotted from Auto-Submitted rather than guessed from
- * the subject line.
+ * meta_only defaults to false because the note writer needs the body — but the
+ * body is used and dropped, never written to the database. include_headers is
+ * on so an out-of-office can be spotted from Auto-Submitted rather than guessed
+ * from the subject line.
+ *
+ * metaOnly:true is the 18-month backfill's setting, and the default stays false
+ * so the forward path (webhook -> ingestBatch -> writeNote) is untouched by its
+ * existence. The distinction is a cost guarantee, not a tuning knob: a
+ * metadata-only page carries no body, so there is literally nothing for the
+ * note writer to summarise and no Anthropic call is even possible on that data.
+ * See mailboxSweep.js for the arithmetic that made this mandatory — the naive
+ * body-reading backfill worked out at roughly 10,000 model calls per signup.
+ *
+ * include_headers stays TRUE even when metaOnly is set, and that is deliberate
+ * rather than an oversight. Headers cost no extra requests (they ride along on
+ * the same page) and they are the only way the sweep can tell a human reply
+ * from an out-of-office. That distinction decides who becomes a contact: an
+ * auto-responder answering a blast would otherwise look exactly like a person
+ * choosing to write back.
  */
-export async function listEmails(cfg, { accountId, role = 'sent', limit = 50, cursor = null, after = null }) {
+export async function listEmails(cfg, { accountId, role = 'sent', limit = 50, cursor = null, after = null, metaOnly = false }) {
   const params = new URLSearchParams({
     account_id: accountId,
     limit: String(Math.min(Math.max(limit, 1), 250)),
-    meta_only: 'false',
+    meta_only: metaOnly ? 'true' : 'false',
     include_headers: 'true',
     role,
   })

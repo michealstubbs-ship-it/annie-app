@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildStream, scoreStreamItem, streamCounts, itemStateFromStatus, STATE_NEW, STATE_WORKING, STATE_PARKED } from './buildStream.js'
+import { buildStream, scoreStreamItem, streamCounts, itemStateFromStatus, isWithinNetwork, buildKnownCompanies, STATE_NEW, STATE_WORKING, STATE_PARKED } from './buildStream.js'
 import { RUNG_SPOKEN, RUNG_COLD } from './wayIn.js'
 
 const sig = (over = {}) => ({
@@ -15,20 +15,37 @@ const sig = (over = {}) => ({
   ...over,
 })
 
+// A customer who HAS a network. Not decoration: since 2026-09-05 an empty CRM
+// means an empty stream (see isWithinNetwork), so a fixture with no contacts
+// would silently be testing the empty-network case rather than whatever the
+// test around it is named after. No seniority_band on any of them, so none of
+// these reach the backlog and change the item counts below.
+const crm = [
+  { id: 'c-acme', name: 'Dana Aziz', company: 'Acme Ltd' },
+  { id: 'c-aldar', name: 'Omar Haddad', company: 'Aldar Properties' },
+  { id: 'c-investcorp', name: 'Vikram Rao', company: 'Investcorp' },
+  { id: 'c-alas', name: 'Reem Saleh', company: 'ALAS Emirates Ready Mix' },
+  { id: 'c-meetup', name: 'Sara Nasser', company: 'Dubai Marketing Meetup Group' },
+]
+
 describe('buildStream — nothing is hidden for lacking a contact', () => {
-  it('returns a lead with no contact at all, which the old contact gate deleted', () => {
-    // This is the whole point of the rebuild. Measured over seven days:
-    // 338 of 446 BD signals were researched, enriched, then never shown.
-    const items = buildStream({ signals: [sig({ company_name: 'Aldar Properties' })], contacts: [], candidates: [] })
+  it('returns a lead whose signal names nobody, which the old contact gate deleted', () => {
+    // This is the whole point of the rebuild. Measured over seven days: 338 of
+    // 446 BD signals were researched, enriched, then never shown, because
+    // isEligibleSourced required a verified Apollo contact ON THE SIGNAL ROW
+    // before anything reached Today's Actions. The network rule that replaced
+    // it asks an entirely different question — is this a company the customer
+    // already knows someone at — and this row still names nobody.
+    const items = buildStream({ signals: [sig({ company_name: 'Aldar Properties' })], contacts: crm, candidates: [] })
     expect(items).toHaveLength(1)
-    expect(items[0].wayIn.rung).toBe(RUNG_COLD)
+    expect(items[0].signal.contact_verified).toBeUndefined()
   })
 
   it('keeps news-type signals in the same stream rather than a separate surface', () => {
     const items = buildStream({ signals: [
       sig({ signal_type: 'regulatory', company_name: 'Aldar Properties' }),
       sig({ signal_type: 'funding', company_name: 'Acme Ltd' }),
-    ] })
+    ], contacts: crm })
     expect(items).toHaveLength(2)
     expect(items.some(i => i.isNews)).toBe(true)
   })
@@ -41,42 +58,93 @@ describe('buildStream — nothing is hidden for lacking a contact', () => {
     const items = buildStream({ signals: [
       sig({ signal_type: 'regulatory', headline: 'Filed for a licence' }),
       sig({ signal_type: 'funding', headline: 'Raised a round' }),
-    ] })
+    ], contacts: crm })
     expect(items).toHaveLength(1)
     expect(items[0].happening).toHaveLength(1)
   })
 
   it('gives every card its provenance line', () => {
-    const items = buildStream({ signals: [sig()] })
+    const items = buildStream({ signals: [sig()], contacts: crm })
     expect(items[0].provenance.label).toBeTruthy()
     expect(items[0].provenance.detail).toBeTruthy()
   })
 
   it('drops an actioned signal, because that is done rather than hidden', () => {
-    expect(buildStream({ signals: [sig({ status: 'actioned' })] })).toHaveLength(0)
+    expect(buildStream({ signals: [sig({ status: 'actioned' })], contacts: crm })).toHaveLength(0)
   })
 
   it('drops a live job at a body that does not employ anyone', () => {
-    const items = buildStream({ signals: [sig({ signal_type: 'live_job', company_name: 'Dubai Marketing Meetup Group' })] })
+    // Known company, real contact in the CRM: it is dropped for what it is,
+    // not for being outside the network.
+    const items = buildStream({ signals: [sig({ signal_type: 'live_job', company_name: 'Dubai Marketing Meetup Group' })], contacts: crm })
     expect(items).toHaveLength(0)
   })
 
   it('carries the source on every item, always', () => {
-    const items = buildStream({ signals: [sig()] })
+    const items = buildStream({ signals: [sig()], contacts: crm })
     expect(items[0].source).toEqual({ url: 'https://example.com/a', label: 'example.com', checked: true })
   })
 
   it('reports an unverified source as unchecked, never as fake', () => {
     // source_verified false means "not checked". Two unchecked URLs opened by
     // hand on 2026-09-04 were real pages.
-    const items = buildStream({ signals: [sig({ source_verified: false })] })
+    const items = buildStream({ signals: [sig({ source_verified: false })], contacts: crm })
     expect(items[0].source.checked).toBe(false)
   })
 
   it('gives every item a LinkedIn route even with nothing else to go on', () => {
-    const items = buildStream({ signals: [sig({ company_name: 'ALAS Emirates Ready Mix' })] })
+    const items = buildStream({ signals: [sig({ company_name: 'ALAS Emirates Ready Mix' })], contacts: crm })
     expect(items[0].linkedinRoute.url).toContain('linkedin.com')
     expect(items[0].linkedinRoute.approximate).toBe(true)
+  })
+})
+
+// 2026-09-05. isWithinNetwork used to return TRUE when the customer had no
+// contacts at all, so a brand-new account's first screen was the open market —
+// the exact thing the two network-first releases were spent removing, shown to
+// the one person still deciding whether to believe the pitch.
+describe('buildStream — an empty network is an empty stream', () => {
+  it('shows a customer with no contacts nothing at all, rather than strangers', () => {
+    const items = buildStream({
+      signals: [
+        sig({ company_name: 'Aldar Properties' }),
+        sig({ company_name: 'Investcorp', signal_type: 'funding' }),
+        sig({ company_name: 'Nobody Ltd', signal_type: 'live_job' }),
+      ],
+      contacts: [],
+    })
+    expect(items).toEqual([])
+  })
+
+  it('still shows a lead the recruiter has already judged, whatever their CRM looks like', () => {
+    // Unchanged, and the reason the gate is not simply applied first: if they
+    // marked something Working or deliberately parked it, they made a judgment
+    // about it, and a card vanishing out of Working is the product losing
+    // someone's work.
+    const items = buildStream({
+      signals: [sig({ id: 'mine', company_name: 'Nobody Ltd', status: 'working' }), sig({ id: 'stranger' })],
+      contacts: [],
+    })
+    expect(items.map(i => i.id)).toEqual(['mine'])
+  })
+
+  // A CSV export can arrive with a blank company column, and a job-move signal
+  // is about the PERSON. Their CRM is not empty, so the empty-network rule has
+  // nothing to say about it.
+  it('does not mistake contacts with no company for having no contacts', () => {
+    const items = buildStream({
+      signals: [sig({ company_name: 'Aldar Properties', signal_type: 'leadership_change', linked_contact_id: 'c9' })],
+      contacts: [{ id: 'c9', name: 'Layla Aziz', company: '' }],
+    })
+    expect(items).toHaveLength(1)
+  })
+
+  it('reads the rule directly the same way', () => {
+    const known = buildKnownCompanies([{ company: 'Acme Ltd' }])
+    expect(isWithinNetwork({ company_name: 'Acme Ltd' }, known)).toBe(true)
+    expect(isWithinNetwork({ company_name: 'Nobody Ltd' }, known)).toBe(false)
+    expect(isWithinNetwork({ company_name: 'Acme Ltd' }, new Set())).toBe(false)
+    expect(isWithinNetwork({ company_name: 'Acme Ltd', linked_contact_id: 'c1' }, new Set())).toBe(false)
   })
 })
 
@@ -106,6 +174,7 @@ describe('buildStream — ordering', () => {
   it('sinks parked items without removing them', () => {
     const items = buildStream({
       signals: [sig({ id: 'parked', status: 'parked' }), sig({ id: 'live' })],
+      contacts: crm,
     })
     expect(items.map(i => i.id)).toEqual(['live', 'parked'])
     expect(items).toHaveLength(2)
@@ -113,7 +182,7 @@ describe('buildStream — ordering', () => {
 
   it('does not cliff-edge an older lead out of existence the way the 21-day cutoff did', () => {
     const old = sig({ id: 'old', found_at: new Date(Date.now() - 45 * 86400000).toISOString() })
-    const items = buildStream({ signals: [old] })
+    const items = buildStream({ signals: [old], contacts: crm })
     expect(items).toHaveLength(1)
   })
 
@@ -123,6 +192,7 @@ describe('buildStream — ordering', () => {
         sig({ id: 'old', found_at: new Date(Date.now() - 45 * 86400000).toISOString() }),
         sig({ id: 'fresh' }),
       ],
+      contacts: crm,
     })
     expect(items[0].id).toBe('fresh')
   })
@@ -142,6 +212,7 @@ describe('buildStream — the pooled employer weight', () => {
         sig({ id: 'unloved', company_name: 'Aldar Properties' }),
         sig({ id: 'ordinary', company_name: 'Investcorp' }),
       ],
+      contacts: crm,
       parkedEmployers: parked(6),
     })
     expect(items.map(i => i.id)).toEqual(['ordinary', 'unloved'])
@@ -153,6 +224,7 @@ describe('buildStream — the pooled employer weight', () => {
     // penalty floors the score at zero rather than driving it negative.
     const items = buildStream({
       signals: [sig({ id: 'unloved', company_name: 'Aldar Properties', signal_type: 'regulatory' })],
+      contacts: crm,
       parkedEmployers: parked(50),
     })
     expect(items).toHaveLength(1)
@@ -184,8 +256,8 @@ describe('buildStream — the pooled employer weight', () => {
       sig({ id: 'unloved', company_name: 'Aldar Properties' }),
       sig({ id: 'ordinary', company_name: 'Investcorp' }),
     ]
-    const thin = buildStream({ signals, parkedEmployers: parked(3) })
-    const none = buildStream({ signals })
+    const thin = buildStream({ signals, contacts: crm, parkedEmployers: parked(3) })
+    const none = buildStream({ signals, contacts: crm })
     expect(thin.find(i => i.id === 'unloved').score).toBe(none.find(i => i.id === 'unloved').score)
   })
 
@@ -214,6 +286,7 @@ describe('buildStream — the pooled employer weight', () => {
     // dropping a contact: a ranking nobody can inspect reads as broken.
     const items = buildStream({
       signals: [sig({ company_name: 'Aldar Properties' })],
+      contacts: crm,
       parkedEmployers: parked(6, 1),
     })
     expect(items[0].employerSignal).toContain('6 recruiters')
@@ -221,7 +294,7 @@ describe('buildStream — the pooled employer weight', () => {
   })
 
   it('leaves the explanation null on the overwhelming majority of cards, which have no pooled verdict', () => {
-    const items = buildStream({ signals: [sig({ company_name: 'Investcorp' })], parkedEmployers: parked(9) })
+    const items = buildStream({ signals: [sig({ company_name: 'Investcorp' })], contacts: crm, parkedEmployers: parked(9) })
     expect(items[0].employerSignal).toBeNull()
   })
 })
