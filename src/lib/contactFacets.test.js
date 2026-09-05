@@ -84,8 +84,25 @@ describe('deriveSeniorityBand', () => {
     expect(deriveSeniorityBand('Strategy Manager - CEO Office')).toBe('manager_plus')
     expect(deriveSeniorityBand('Transformation Portfolio Lead - Wholesale Chief Operating Office')).not.toBe('c_suite')
     // ...while a title that is senior on its own terms survives the strip.
-    expect(deriveSeniorityBand("Chief of Staff - CEO's Office")).toBe('c_suite')
     expect(deriveSeniorityBand('Chief Executive Officer')).toBe('c_suite')
+  })
+
+  // Michael's own call on his own market, 2026-09-05: a Chief of Staff sits in
+  // the C-suite office and opens doors, but does not hold the hiring budget, so
+  // they are an influencer rather than a buyer. Roughly 25 of them in the
+  // measured network, so this decides the whole top of the call list.
+  it('places Chief of Staff in the Director band, not the C-suite', () => {
+    expect(deriveSeniorityBand('Chief of Staff')).toBe('director_vp')
+    expect(deriveSeniorityBand('Group Chief of Staff')).toBe('director_vp')
+    // The reporting line must not re-promote them — a stray 'ceo' or 'chairman'
+    // in "Chief of Staff to Chairman & CEO" names their boss, not their job.
+    expect(deriveSeniorityBand('Chief of Staff to Chairman & CEO')).toBe('director_vp')
+    expect(deriveSeniorityBand("Chief of Staff - CEO's Office")).toBe('director_vp')
+    // ...and stripping the phrase instead would have sunk them to 'below',
+    // which is wrong in the other direction.
+    expect(deriveSeniorityBand('Chief of Staff')).not.toBe('below')
+    // Real C-suite is untouched.
+    expect(deriveSeniorityBand('Chief Strategy Officer')).toBe('c_suite')
   })
 
   it('returns below for an unmarked title and null for nothing', () => {

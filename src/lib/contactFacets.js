@@ -72,8 +72,8 @@ const VP_PHRASES = ['vice president', 'vice-president', 'svp', 'evp']
 //                        Operating Office" had the same problem. Stripping the
 //                        office phrase leaves the real title behind, so an
 //                        Assistant Manager lands on 'manager_plus' where they
-//                        belong — while "Chief of Staff - CEO's Office" still
-//                        reads as senior on its own 'chief of staff'.
+//                        belong. "Chief of Staff - CEO's Office" is handled a
+//                        step earlier, by FORCE_DIRECTOR_PHRASES below.
 //
 // These are stripped before the C-suite test only. A Finance Business Partner
 // still classifies normally on everything else.
@@ -84,6 +84,23 @@ const NOT_C_SUITE_PHRASES = [
   'chief operating office', 'chief executive office',
   'chairman office', "chairman's office",
 ]
+
+// Titles that read as C-suite but sit a band below, by the customer's own
+// judgment of his market. Michael, 2026-09-05, on Chief of Staff: Director.
+//
+// A Chief of Staff sits in the C-suite office and opens doors, but does not
+// hold the hiring budget, so they are an influencer rather than a buyer and
+// should not outrank the people who sign the mandate. There are roughly 25 of
+// them in the measured network — "Group Chief of Staff", "Chief of Staff to
+// Chairman & CEO", "CEO Office - Chief of Staff" — enough that getting this
+// wrong reshapes the whole top of the call list.
+//
+// Forced rather than stripped: removing the phrase would leave "Chief of Staff"
+// with no seniority marker at all and drop it to 'below', which is further
+// wrong in the other direction. The reporting line in "Chief of Staff to the
+// CEO" is also why this returns early instead of falling through — that stray
+// 'ceo' would otherwise re-promote them to the top band.
+const FORCE_DIRECTOR_PHRASES = ['chief of staff']
 
 function textForCSuite(titleText) {
   let t = titleText
@@ -122,6 +139,8 @@ export function isLikelyCompetitor(title, company = '') {
 export function deriveSeniorityBand(title, company = '') {
   const raw = `${title || ''} ${company || ''}`.toLowerCase().trim()
   if (!raw) return null
+
+  if (FORCE_DIRECTOR_PHRASES.some(p => keywordMatches(raw, p))) return 'director_vp'
 
   for (const band of SENIORITY_BANDS) {
     let keywords = keywordsFor(band.from)
