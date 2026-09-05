@@ -84,3 +84,77 @@ export function whyNow(item, contacts = []) {
   }
   return depth ? `${depth}.` : null
 }
+
+// LinkedIn headlines are not job titles. Real rows on the production account:
+// "Managing Partner | Global Practice Leader Growth & Transformation" and
+// "Chief Digital Officer, Global Head of Digital & AI". Dropped into a
+// sentence whole they read as noise, so the sentence takes the first title and
+// the card's own role line still shows the full string.
+export function shortTitle(raw) {
+  const first = String(raw || '').split(/\s*[|•—–]\s*/)[0].trim()
+  const trimmed = first.length > 46 ? first.split(/\s*,\s*/)[0].trim() : first
+  return trimmed.length > 60 ? '' : trimmed
+}
+
+// "one of two C-suite people", not "one of 2". A numeral mid-sentence reads
+// like a database field, which is exactly what a recruiter should not see.
+const NUMBER_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten']
+function numberWord(n) { return n <= 10 ? NUMBER_WORDS[n] : String(n) }
+
+// Why HIM, not why the company.
+//
+// Michael, 2026-09-05, on the shipped card: "it doesnt say why to approach
+// this guy." He was right, and the fault was structural rather than cosmetic:
+// whyNow above answers "why this company, today", and the card had nothing
+// that answered "why this person". Every fact needed to answer it was already
+// stored on the contact — seniority band, function area, and how they stand
+// against everyone else the recruiter knows there — and none of it was said.
+//
+// Three clauses at most, in the order a recruiter would think them:
+//   1  what this person controls, and whether it is a function they work in
+//   2  where they sit among the people already known at that company
+//   3  whether anybody there has actually been called
+export function whyPerson(person, { company, contacts = [], functions = [] } = {}) {
+  if (!person?.name) return null
+  const title = shortTitle(person.title)
+  const band = person.seniority_band
+  const area = person.function_area
+  const target = String(company || person.company || '').trim().toLowerCase()
+
+  const at = contacts.filter(c => String(c?.company || '').trim().toLowerCase() === target)
+  const clauses = []
+
+  // 1. What they control.
+  const chosen = functions.filter(Boolean)
+  const inFunction = area && chosen.includes(area)
+  if (title && inFunction) {
+    clauses.push(`A ${title} holds the budget in ${area}, one of the functions you recruit into`)
+  } else if (title && band === 'c_suite') {
+    clauses.push(`A ${title} is senior enough to open a door in any function`)
+  } else if (title) {
+    clauses.push(`A ${title} is close enough to the hiring to be worth a call`)
+  } else if (band === 'c_suite') {
+    clauses.push('C-suite, so senior enough to open a door in any function')
+  }
+
+  // 2. Where they stand among the people already known there.
+  // No pronouns anywhere in here. Annie does not know anyone's gender and must
+  // not infer one from a name — half this CRM is Gulf and South Asian names,
+  // and getting it wrong in the customer's own outreach is unforgivable.
+  const seniors = at.filter(c => c.seniority_band === 'c_suite')
+  if (band === 'c_suite' && seniors.length === 1 && at.length > 1) {
+    clauses.push(`the most senior person you know at ${company}`)
+  } else if (band === 'c_suite' && seniors.length > 1) {
+    clauses.push(`one of ${numberWord(seniors.length)} C-suite people you know at ${company}`)
+  } else if (at.length > 1) {
+    clauses.push(`one of ${numberWord(at.length)} people you know at ${company}`)
+  }
+
+  // 3. Whether anybody there has been called. The absence IS the argument.
+  const called = at.some(c => c.last_contacted || (c.notes || '').trim())
+  clauses.push(called ? 'and you have history at this company' : 'and nobody there has been called')
+
+  if (clauses.length === 1) return null
+  const [head, ...tail] = clauses
+  return `${head} — ${tail.join(', ')}.`
+}

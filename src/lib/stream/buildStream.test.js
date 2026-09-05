@@ -25,9 +25,31 @@ describe('buildStream — nothing is hidden for lacking a contact', () => {
   })
 
   it('keeps news-type signals in the same stream rather than a separate surface', () => {
-    const items = buildStream({ signals: [sig({ signal_type: 'regulatory' }), sig({ signal_type: 'funding' })] })
+    const items = buildStream({ signals: [
+      sig({ signal_type: 'regulatory', company_name: 'Aldar Properties' }),
+      sig({ signal_type: 'funding', company_name: 'Acme Ltd' }),
+    ] })
     expect(items).toHaveLength(2)
     expect(items.some(i => i.isNews)).toBe(true)
+  })
+
+  // Michael, 2026-09-05: "a live role at NEOM and a person you know at NEOM
+  // are the same lead." Two rows about one company became one card once the
+  // scan was scoped to the customer's own companies and they started landing
+  // on the same account constantly. See companyContext.js.
+  it('folds two things at the same company into one card', () => {
+    const items = buildStream({ signals: [
+      sig({ signal_type: 'regulatory', headline: 'Filed for a licence' }),
+      sig({ signal_type: 'funding', headline: 'Raised a round' }),
+    ] })
+    expect(items).toHaveLength(1)
+    expect(items[0].happening).toHaveLength(1)
+  })
+
+  it('gives every card its provenance line', () => {
+    const items = buildStream({ signals: [sig()] })
+    expect(items[0].provenance.label).toBeTruthy()
+    expect(items[0].provenance.detail).toBeTruthy()
   })
 
   it('drops an actioned signal, because that is done rather than hidden', () => {

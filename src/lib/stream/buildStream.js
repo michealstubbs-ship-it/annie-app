@@ -21,6 +21,10 @@ import { NEWS_SIGNAL_TYPES } from '../signalTypes.js'
 import { buildBacklogSignals, BACKLOG_TYPE_WEIGHT, BACKLOG_SIGNAL_TYPE } from './backlogSignals'
 import { isPlaceholderCompany } from '../backlogRanking'
 import { normalizeCompanyName } from '../companyMatch'
+import { attachCompanyContext } from './companyContext'
+import { buildCompanyPanel } from './companyPanel'
+import { provenanceFor } from './provenance'
+import { whyPerson } from './whyNow'
 
 export const STATE_NEW = 'new'
 export const STATE_WORKING = 'working'
@@ -219,7 +223,28 @@ export function buildStream({ signals = [], contacts = [], candidates = [], func
     return new Date(b.signal.found_at || 0) - new Date(a.signal.found_at || 0)
   })
 
-  return items
+  // One company, one card. Everything else Annie found at that company now
+  // hangs off the row that names somebody to call, rather than sitting three
+  // rows further down as its own card. See companyContext.js.
+  const merged = attachCompanyContext(items)
+
+  const byId = new Map(contacts.filter(c => c?.id).map(c => [c.id, c]))
+  for (const item of merged) {
+    // The contact the card is about, if it is about one. The backlog sets
+    // linked_contact_id; the way-in ladder finds the person for everything else.
+    const person = byId.get(item.signal.linked_contact_id) || item.wayIn?.person || null
+    item.person = person
+    // Why THIS PERSON — Michael's own critique of the shipped card.
+    item.whyPerson = person
+      ? whyPerson(person, { company: item.signal.company_name, contacts, functions })
+      : null
+    // Who else the recruiter knows there, and what that list means.
+    item.companyPanel = buildCompanyPanel({ signal: item.signal, wayIn: item.wayIn, contacts, functions })
+    // What am I looking at, and where did it come from. On every card, always.
+    item.provenance = provenanceFor(item, { contact: person })
+  }
+
+  return merged
 }
 
 // Counts for the filter bar. Deliberately computed over the whole stream, not

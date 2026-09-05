@@ -19,6 +19,8 @@ import { buildStream, streamCounts, STATE_NEW, STATE_WORKING, STATE_PARKED } fro
 import { planFacetBackfill, runFacetBackfill } from '../../lib/backfillFacets'
 import { fetchContactCredits } from '../../lib/data/contactCredits'
 import { logSignalOutcome } from '../../lib/signalOutcomes'
+import { fetchCompanyDomains, learnOwnPatterns, contributePatterns, fetchPooledPatterns, domainForCompany } from '../../lib/data/emailPatterns'
+import { cardEmail } from '../../lib/stream/cardEmail'
 
 export function useStream({ user }) {
   const [signals, setSignals] = useState([])
@@ -28,6 +30,8 @@ export function useStream({ user }) {
   // and writing style. Loaded once, never blocks the stream.
   const [onboarding, setOnboarding] = useState(null)
   const [credits, setCredits] = useState(null)
+  const [domains, setDomains] = useState({ exact: new Map(), loose: new Map() })
+  const [pooled, setPooled] = useState(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -43,7 +47,9 @@ export function useStream({ user }) {
         // The five columns after last_contacted are what the backlog ranks on.
         // Without them every contact scores zero and the backlog is silently
         // empty — a failure that looks exactly like "you have no leads".
-        supabase.from('contacts').select('id, name, company, title, email, linkedin_url, notes, last_contacted, seniority_band, function_area, relationship_tier, is_competitor, connected_on, backlog_parked_at, created_at').limit(1000),
+        // created_from is what lets the card say "Imported from LinkedIn"
+        // rather than the vaguer "in your contacts" — see provenance.js.
+        supabase.from('contacts').select('id, name, company, title, email, linkedin_url, notes, last_contacted, seniority_band, function_area, relationship_tier, is_competitor, connected_on, backlog_parked_at, created_at, created_from').limit(1000),
         listCandidatesForMatching(user.id),
         supabase.from('onboarding').select('sectors, functions, locations, tone, writing_style').eq('user_id', user.id).maybeSingle(),
       ])
@@ -89,6 +95,27 @@ export function useStream({ user }) {
     return () => { cancelled = true }
   }, [user?.id])
 
+  // Domains Annie already holds, from the shared company_enrichment cache.
+  // Loads independently and is allowed to fail silently: without it the card
+  // simply shows no address row, which is the honest state anyway.
+  useEffect(() => {
+    let cancelled = false
+    fetchCompanyDomains().then(d => { if (!cancelled) setDomains(d) })
+    return () => { cancelled = true }
+  }, [user?.id])
+
+  // What this customer's own contacts show about each organisation's email
+  // format. Computed in the browser over data they already have — nothing is
+  // sent anywhere to work it out.
+  const ownPatterns = useMemo(() => learnOwnPatterns(contacts), [contacts])
+
+  // Contribute those formats to the pool. A format key and a count; the RPC's
+  // signature cannot carry an address or a name. Michael, 2026-09-05: "We will
+  // not steal exact emails of contacts from our customers."
+  useEffect(() => {
+    if (ownPatterns.size) contributePatterns(ownPatterns)
+  }, [ownPatterns])
+
   const deduped = useMemo(() => collapseFeedDuplicates(signals), [signals])
   const items = useMemo(
     // onboarding.functions is the function filter the recruiter chose at
@@ -102,7 +129,43 @@ export function useStream({ user }) {
     // first-paint value and the function filter never applies.
     [deduped, contacts, candidates, onboarding],
   )
-  const counts = useMemo(() => streamCounts(items), [items])
+  // The domains actually on screen, for cards where the customer's own
+  // contacts taught us nothing. Deliberately capped and only for what is
+  // visible: this is one round trip per domain, and the feed shows ten cards,
+  // not six hundred.
+  const wantedDomains = useMemo(() => {
+    const out = []
+    for (const item of items.slice(0, 25)) {
+      const d = domainForCompany(item.signal.company_name, domains)
+      if (d && !ownPatterns.has(d) && !pooled.has(d)) out.push(d)
+    }
+    return [...new Set(out)].sort().join(',')
+  }, [items, domains, ownPatterns, pooled])
+
+  useEffect(() => {
+    if (!wantedDomains) return
+    let cancelled = false
+    fetchPooledPatterns(wantedDomains.split(',')).then(found => {
+      if (cancelled || !found.size) return
+      setPooled(prev => {
+        const next = new Map(prev)
+        for (const [k, v] of found) next.set(k, v)
+        return next
+      })
+    })
+    return () => { cancelled = true }
+  }, [wantedDomains])
+
+  // The address row. A real address if there is one, otherwise a construction
+  // that is always labelled a guess and says where it came from.
+  const withEmail = useMemo(() => items.map(item => {
+    const person = item.wayIn?.person || null
+    const domain = domainForCompany(item.signal.company_name, domains)
+    const pattern = (domain && (ownPatterns.get(domain) || pooled.get(domain))) || null
+    return { ...item, email: cardEmail({ item, person, domain, pattern }) }
+  }), [items, domains, ownPatterns, pooled])
+
+  const counts = useMemo(() => streamCounts(withEmail), [withEmail])
 
   // Every mutation updates local state first so the stream never jumps or
   // reloads under the recruiter mid-read.
@@ -185,5 +248,5 @@ export function useStream({ user }) {
     setContacts(prev => (prev.some(c => c.id === contact.id) ? prev : [...prev, contact]))
   }, [])
 
-  return { items, counts, credits, loading, error, setError, onboarding, contacts, refresh: load, setState, markDone, dismiss, markSeen, applyResolvedContact, applyContactLogged, applyContactSaved }
+  return { items: withEmail, counts, credits, loading, error, setError, onboarding, contacts, refresh: load, setState, markDone, dismiss, markSeen, applyResolvedContact, applyContactLogged, applyContactSaved }
 }

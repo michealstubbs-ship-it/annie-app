@@ -78,3 +78,56 @@ describe('whyNow', () => {
     expect(() => whyNow(item({ signal_type: BACKLOG_SIGNAL_TYPE }), [null, {}, { company: null }])).not.toThrow()
   })
 })
+
+// ---------------------------------------------------------------------------
+// whyPerson — Michael, 2026-09-05: "it doesnt say why to approach this guy."
+// ---------------------------------------------------------------------------
+import { whyPerson } from './whyNow'
+
+const neom = [
+  { name: 'Nader Ashoor', company: 'NEOM', title: 'Chief Strategy Officer', seniority_band: 'c_suite', function_area: 'Strategy & Corporate Development' },
+  { name: 'Paul Potgieter', company: 'NEOM', title: 'Chief Information Officer', seniority_band: 'c_suite', function_area: 'Technology' },
+  { name: 'Ahmad Alsinan', company: 'NEOM', title: 'Head of Corporate Development', seniority_band: 'director_vp', function_area: 'Strategy & Corporate Development' },
+]
+
+describe('whyPerson', () => {
+  const functions = ['Strategy & Corporate Development', 'Technology', 'Finance & Accounting']
+
+  it('answers why this person, not why this company', () => {
+    const line = whyPerson(neom[0], { company: 'NEOM', contacts: neom, functions })
+    expect(line).toContain('A Chief Strategy Officer holds the budget in Strategy & Corporate Development')
+    expect(line).toContain('one of the functions you recruit into')
+    expect(line).toContain('one of two C-suite people you know at NEOM')
+    // A numeral mid-sentence reads like a database field.
+    expect(line).not.toMatch(/one of \d/)
+    expect(line).toContain('nobody there has been called')
+  })
+
+  it('says most senior when they are the only C-suite name there', () => {
+    const line = whyPerson(neom[0], { company: 'NEOM', contacts: [neom[0], neom[2]], functions })
+    expect(line).toContain('the most senior person you know at NEOM')
+  })
+
+  it('does not claim a function fit the customer never asked for', () => {
+    const line = whyPerson(neom[1], { company: 'NEOM', contacts: neom, functions: ['Finance & Accounting'] })
+    expect(line).not.toContain('one of the functions you recruit into')
+    expect(line).toContain('senior enough to open a door in any function')
+  })
+
+  it('says so when there is real history at the company', () => {
+    const withHistory = neom.map((c, i) => (i === 2 ? { ...c, last_contacted: '2026-07-01' } : c))
+    expect(whyPerson(neom[0], { company: 'NEOM', contacts: withHistory, functions }))
+      .toContain('you have history at this company')
+  })
+
+  // Annie does not know anyone's gender and must never infer one from a name.
+  it('uses no pronouns at all', () => {
+    const line = whyPerson(neom[0], { company: 'NEOM', contacts: neom, functions })
+    expect(line).not.toMatch(/\b(he|she|him|her|his|hers)\b/i)
+  })
+
+  it('returns null rather than a line that says nothing', () => {
+    expect(whyPerson(null, {})).toBeNull()
+    expect(whyPerson({ name: 'A B' }, { company: 'X', contacts: [] })).toBeNull()
+  })
+})
