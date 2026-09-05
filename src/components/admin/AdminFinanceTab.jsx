@@ -17,8 +17,10 @@ const moneyPrecise = (n) => `$${n.toFixed(2)}`
 // clearly-dated reference figure, never mixed into a number presented as
 // live, so it can never be mistaken for real-time data.
 const MODELED_UNIT_ECONOMICS = {
-  starter: { costPerAccount: 20.60, marginPct: 74 },
-  growth: { costPerAccount: 40.15, marginPct: 69 },
+  // Starter removed 2026-09-05. Its cost line is gone with it; solo carries
+  // what was Growth's, since Solo is Growth renamed at the same price.
+
+  solo: { costPerAccount: 40.15, marginPct: 69 },
   team: { costPerAccount: 40.15, marginPct: 59 }, // per seat
 }
 

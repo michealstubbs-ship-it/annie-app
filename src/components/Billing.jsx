@@ -11,7 +11,7 @@ import ErrorBanner from './ErrorBanner'
 // needs these same dollar amounts to compute MRR, and duplicating them
 // there would be exactly the drift this session has spent this pass
 // closing elsewhere. See that file's header for the full reasoning; the
-// tier key ('starter' / 'growth' / 'team') is still the only thing that
+// tier key ('solo' / 'team') is still the only thing that
 // has to match the backend exactly.
 
 function formatDate(iso) {

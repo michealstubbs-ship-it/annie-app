@@ -14,7 +14,10 @@ import { alertIfConfigured, createTimeoutFetch } from './lib/scanShared.js'
 import { parseIntEnv } from './lib/env.js'
 
 const TEAM_MIN_SEATS = 3
-const VALID_TIERS = ['starter', 'growth', 'team']
+// 'growth' and 'starter' stay accepted so an in-flight checkout link, or a
+// bookmarked pricing URL from before 2026-09-05, resolves instead of erroring.
+// canonicalTier turns them into solo.
+const VALID_TIERS = ['solo', 'team', 'growth', 'starter']
 
 // 2026-08-25, per Michael — simplified deliberately, replacing an earlier
 // version that depended on a live Stripe promotion code/coupon existing

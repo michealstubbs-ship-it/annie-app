@@ -16,41 +16,41 @@
 // $/month figure (yearly billing is cheaper per month, not per year) — any
 // consumer computing revenue should use these directly, never multiply
 // `yearly` by 12.
+// 2026-09-05: three tiers became two. Starter is gone and Growth is Solo.
+//
+// Starter was removed rather than repriced because under the network-first
+// product the mailbox is the engine — dormancy, relationship strength and
+// last-contacted all come from email sync, which Starter never had. Selling a
+// plan that structurally cannot do what the page promises is the failure this
+// whole release exists to end.
+//
+// Solo keeps Growth's price and Growth's Stripe prices; only the name and the
+// feature copy changed. The tier key ('solo' / 'team') is still the only thing
+// that has to match the backend exactly — stripeShared.js maps it to a real
+// Stripe Price ID via env vars — everything else here is display copy.
+//
+// `monthly` and `yearly` are both already expressed as an effective $/month
+// figure (yearly billing is cheaper per month, not per year) — any consumer
+// computing revenue should use these directly, never multiply `yearly` by 12.
 export const TIERS = [
   {
-    key: 'starter',
-    name: 'Starter',
-    blurb: 'For a solo recruiter or a single desk.',
-    monthly: 79,
-    yearly: 69,
-    // 2026-09-04: "Today's Actions" retired into the Intelligence Feed, and
-    // contact lookups became a visible, sellable allowance rather than an
-    // invisible cost centre. 50 means 50 CONTACTS RECEIVED — a lookup that
-    // finds nobody costs the customer nothing, because it costs Annie
-    // nothing (verified against the live Apollo API the same day).
-    features: ['Full CRM, pipeline & contacts', 'Recurring BD signal scan', 'Intelligence Feed', 'Ask Annie (up to 500 messages/mo)', '50 contact lookups/mo, top-ups available', 'LinkedIn import'],
-  },
-  {
-    key: 'growth',
-    name: 'Growth',
-    blurb: 'For a biller who wants more from Annie.',
+    key: 'solo',
+    name: 'Solo',
+    blurb: 'For one recruiter and the network they already have.',
     monthly: 129,
     yearly: 109,
-    // 2026-08-26 pricing/copy alignment: dropped 'LinkedIn re-import on
-    // demand' and 'Priority support' — both were sold here as Growth-
-    // exclusive but neither is real. Re-import has no tier check anywhere
-    // in the code and SupportWidget.jsx's own fact base already tells
-    // customers directly it works "for anyone, regardless of plan" — this
-    // bullet contradicted the app's own support answer. Priority support
-    // has no differentiated mechanism to sell: support-escalate.js's own
-    // header is explicit that every escalation, from every tier, goes to
-    // the same one inbox ("he's the entire support team today," Michael's
-    // own call, 2026-08-26). Reworded the research bullet from "onboarding
-    // research pass" to "research scans" — SCAN_TIER_CONFIG's own comment
-    // confirms Growth's deeper scan budget applies to the ongoing cron
-    // permanently, not just a one-time signup bonus, which the old wording
-    // undersold.
-    features: ['Everything in Starter', 'Unlimited Ask Annie messages', '150 contact lookups/mo', 'Deeper, ongoing research scans'],
+    // Every bullet here has to be something the product demonstrably does. The
+    // contact-lookup line says "lookups" rather than "contacts": Apollo charges
+    // when it matches a PERSON, and roughly half of those carry no email
+    // (measured against the live API on a real network, 2026-09-05). The
+    // earlier wording promised 150 contacts received and could not honour it.
+    features: [
+      'Full CRM, pipeline and contacts',
+      'Your network ranked into a daily call list',
+      'Job moves and promotions detected from your LinkedIn export',
+      'Connect your mailbox — Annie keeps notes and dormancy up to date',
+      '150 contact lookups/mo, top-ups available',
+    ],
     featured: true,
   },
   {
@@ -60,23 +60,40 @@ export const TIERS = [
     monthly: 99,
     yearly: 84,
     perSeat: true,
-    // 2026-08-26 pricing/copy alignment: 'Shared target-company list'
-    // replaced with 'Shared CRM across your team' — there's no
-    // target-company-list concept anywhere in the product any more (see
-    // LinkedInImport.jsx's own comment, and SupportWidget.jsx's system
-    // prompt, rewritten after a real incident specifically to stop
-    // claiming this exists). The real, built, RLS-verified Team perk this
-    // was presumably meant to gesture at — every teammate seeing the same
-    // contacts/companies/deals/jobs/candidates — already exists and is
-    // genuinely Team-exclusive (a solo Starter/Growth account has no
-    // teammates to share with), so it replaces the fabricated bullet
-    // rather than just deleting it.
-    features: ['Everything in Growth, per seat', 'Shared CRM across your team', '400 contact lookups/mo, shared', 'Team admin & insights view', 'Volume pricing on extra seats'],
+    features: [
+      'Everything in Solo, per seat',
+      'Shared CRM across your team',
+      'One combined network — every colleague\'s contacts count as a way in',
+      '400 contact lookups/mo, shared',
+      'Team admin and insights view',
+    ],
   },
 ]
 
+// Stripe keeps sending the tier key a subscription was created with, and
+// stripe-webhook.js is the only writer of the subscriptions table — so a
+// webhook can still arrive saying 'growth' or 'starter' long after the
+// database has been migrated. This lives here rather than in
+// netlify/functions/lib/entitlements.js because BOTH sides need it: the server
+// to resolve entitlements, and the browser to render the right plan in
+// Billing, Overview and the support widget. Netlify functions already import
+// from this file (see admin-daily-metrics-snapshot.js).
+//
+// Do not delete this on the strength of the database being migrated — the
+// database is not where these arrive from.
+export const TIER_ALIASES = {
+  starter: 'solo',
+  growth: 'solo',
+}
+
+export function canonicalTier(tier) {
+  if (!tier) return null
+  return TIER_ALIASES[tier] || tier
+}
+
 export function tierByKey(key) {
-  return TIERS.find(t => t.key === key) || null
+  const k = canonicalTier(key)
+  return TIERS.find(t => t.key === k) || null
 }
 
 // $/month this one subscription contributes to MRR. Returns 0 for

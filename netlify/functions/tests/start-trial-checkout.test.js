@@ -58,8 +58,8 @@ beforeEach(async () => {
   process.env.STRIPE_SECRET_KEY = 'sk_test_x'
   process.env.APP_URL = 'https://app.example'
   process.env.MARKETING_URL = 'https://marketing.example'
-  process.env.STRIPE_PRICE_STARTER_MONTHLY = 'price_starter_month'
-  process.env.STRIPE_PRICE_GROWTH_MONTHLY = 'price_growth_month'
+  process.env.STRIPE_PRICE_STARTER_MONTHLY = 'price_solo_month'
+  process.env.STRIPE_PRICE_GROWTH_MONTHLY = 'price_solo_month'
   process.env.STRIPE_PRICE_TEAM_MONTHLY = 'price_team_month'
   process.env.VITE_SUPABASE_URL = 'https://example.supabase.co'
   process.env.SUPABASE_SERVICE_ROLE_KEY = 'service_role_x'
@@ -81,13 +81,13 @@ it('rejects an unknown tier before ever calling Stripe', async () => {
 
 it('rejects a tier with no configured price', async () => {
   delete process.env.STRIPE_PRICE_GROWTH_MONTHLY
-  const res = await handler(makeRequest('?tier=growth&interval=month'))
+  const res = await handler(makeRequest('?tier=solo&interval=month'))
   expect(res.status).toBe(400)
   expect(mockCheckoutCreate).not.toHaveBeenCalled()
 })
 
 it('always requires a card for a normal signup, even though the trial makes $0 due today', async () => {
-  const res = await handler(makeRequest('?tier=starter&interval=month'))
+  const res = await handler(makeRequest('?tier=solo&interval=month'))
   expect(res.status).toBe(302)
   expect(res.headers.get('Location')).toBe('https://checkout.stripe.com/session/abc')
   expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
@@ -104,7 +104,7 @@ it('always requires a card for a normal signup, even though the trial makes $0 d
 
 describe('the ANNIE100 no-card code', () => {
   it('skips the card but keeps the standard 7-day trial for ?code=annie100, under the redemption cap', async () => {
-    const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
+    const res = await handler(makeRequest('?tier=solo&interval=month&code=annie100'))
     expect(res.status).toBe(302)
     expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
       payment_method_collection: 'if_required',
@@ -124,14 +124,14 @@ describe('the ANNIE100 no-card code', () => {
   it('matches regardless of case — ANNIE100, Annie100, annie100 all work', async () => {
     for (const code of ['ANNIE100', 'Annie100', 'annie100']) {
       mockCheckoutCreate.mockClear()
-      const res = await handler(makeRequest(`?tier=starter&interval=month&code=${code}`))
+      const res = await handler(makeRequest(`?tier=solo&interval=month&code=${code}`))
       expect(res.status).toBe(302)
       expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({ payment_method_collection: 'if_required' }))
     }
   })
 
   it('falls back to the normal card-required, 7-day flow for any other code', async () => {
-    const res = await handler(makeRequest('?tier=starter&interval=month&code=not-a-real-code'))
+    const res = await handler(makeRequest('?tier=solo&interval=month&code=not-a-real-code'))
     expect(res.status).toBe(302)
     expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
       payment_method_collection: 'always',
@@ -145,7 +145,7 @@ describe('the ANNIE100 no-card code', () => {
   describe('redemption cap', () => {
     it('quietly falls back to the standard flow once the cap is reached, and alerts', async () => {
       mockCountQuery.mockResolvedValue({ count: 50, error: null }) // == default cap
-      const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
+      const res = await handler(makeRequest('?tier=solo&interval=month&code=annie100'))
       expect(res.status).toBe(302)
       expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
         payment_method_collection: 'always',
@@ -159,7 +159,7 @@ describe('the ANNIE100 no-card code', () => {
       mockCountQuery.mockResolvedValue({ count: 2, error: null })
       vi.resetModules()
       ;({ default: handler } = await import('../start-trial-checkout.js'))
-      const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
+      const res = await handler(makeRequest('?tier=solo&interval=month&code=annie100'))
       expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({ payment_method_collection: 'always' }))
       delete process.env.FREE_MONTH_MAX_REDEMPTIONS
     })
@@ -173,14 +173,14 @@ describe('the ANNIE100 no-card code', () => {
       mockCountQuery.mockResolvedValue({ count: 0, error: null })
       vi.resetModules()
       ;({ default: handler } = await import('../start-trial-checkout.js'))
-      const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
+      const res = await handler(makeRequest('?tier=solo&interval=month&code=annie100'))
       expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({ payment_method_collection: 'always' }))
       delete process.env.FREE_MONTH_MAX_REDEMPTIONS
     })
 
     it('fails closed (denies the free month, does not throw) when the redemption count query errors', async () => {
       mockCountQuery.mockResolvedValue({ count: null, error: { message: 'db down' } })
-      const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
+      const res = await handler(makeRequest('?tier=solo&interval=month&code=annie100'))
       expect(res.status).toBe(302)
       expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({ payment_method_collection: 'always' }))
     })
@@ -189,7 +189,7 @@ describe('the ANNIE100 no-card code', () => {
       delete process.env.VITE_SUPABASE_URL
       vi.resetModules()
       ;({ default: handler } = await import('../start-trial-checkout.js'))
-      const res = await handler(makeRequest('?tier=starter&interval=month&code=annie100'))
+      const res = await handler(makeRequest('?tier=solo&interval=month&code=annie100'))
       expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({ payment_method_collection: 'always' }))
     })
   })
@@ -206,13 +206,13 @@ it('returns 503 without calling Stripe when billing is not configured', async ()
   delete process.env.STRIPE_SECRET_KEY
   vi.resetModules()
   ;({ default: handler } = await import('../start-trial-checkout.js'))
-  const res = await handler(makeRequest('?tier=starter&interval=month'))
+  const res = await handler(makeRequest('?tier=solo&interval=month'))
   expect(res.status).toBe(503)
   expect(mockCheckoutCreate).not.toHaveBeenCalled()
 })
 
 it('returns 500 when Stripe itself errors', async () => {
   mockCheckoutCreate.mockRejectedValue(new Error('stripe is down'))
-  const res = await handler(makeRequest('?tier=starter&interval=month'))
+  const res = await handler(makeRequest('?tier=solo&interval=month'))
   expect(res.status).toBe(500)
 })

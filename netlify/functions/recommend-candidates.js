@@ -88,7 +88,7 @@ export default async (req) => {
   }
 
   const usageClient = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
-  const entitlements = await getEntitlements(usageClient, user.id).catch(() => ({ tier: 'starter' }))
+  const entitlements = await getEntitlements(usageClient, user.id).catch(() => ({ tier: 'solo' }))
   const caps = resolveResourceCaps(entitlements.tier).anthropicTokens
   const reserved = await reserveAnthropicTokens(usageClient, user.id, MAX_TOKENS, caps)
   if (!reserved) {

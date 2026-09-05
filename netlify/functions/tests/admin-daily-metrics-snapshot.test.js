@@ -85,18 +85,17 @@ beforeEach(async () => {
   ;({ default: handler } = await import('../admin-daily-metrics-snapshot.js'))
 })
 
-const growth = TIERS.find(t => t.key === 'growth')
-const starter = TIERS.find(t => t.key === 'starter')
+const solo = TIERS.find(t => t.key === 'solo')
 const team = TIERS.find(t => t.key === 'team')
 
 it('computes MRR across a flat-rate tier and a per-seat tier using the real pricing.js prices', async () => {
   state.subs = [
-    { tier: 'starter', status: 'active', seats: 1 },
-    { tier: 'growth', status: 'active', seats: 1 },
+    { tier: 'solo', status: 'active', seats: 1 },
+    { tier: 'solo', status: 'active', seats: 1 },
     { tier: 'team', status: 'active', seats: 4 },
   ]
   await handler()
-  const expectedMrr = starter.monthly + growth.monthly + (team.monthly * 4)
+  const expectedMrr = solo.monthly + solo.monthly + (team.monthly * 4)
   expect(mockUpsert).toHaveBeenCalledWith(
     expect.objectContaining({ mrr: expectedMrr, active_accounts: 3 }),
     { onConflict: 'day' },
@@ -111,11 +110,11 @@ it('defaults a per-seat account with no seats value to 1 seat, never NaN/undefin
 
 it('skips an unrecognized tier key rather than letting it throw off the whole total or crash', async () => {
   state.subs = [
-    { tier: 'growth', status: 'active', seats: 1 },
+    { tier: 'solo', status: 'active', seats: 1 },
     { tier: 'legacy-plan-2024', status: 'active', seats: 1 },
   ]
   await handler()
-  expect(mockUpsert).toHaveBeenCalledWith(expect.objectContaining({ mrr: growth.monthly, active_accounts: 2 }), expect.anything())
+  expect(mockUpsert).toHaveBeenCalledWith(expect.objectContaining({ mrr: solo.monthly, active_accounts: 2 }), expect.anything())
 })
 
 it('computes contact-verified and company-matched rates from real counts', async () => {

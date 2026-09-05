@@ -1,4 +1,5 @@
 import { parseIntEnv } from './env.js'
+import { canonicalTier } from '../../../src/lib/pricing.js'
 
 // Soft-gate tier lookup, shared by every Netlify function that needs to
 // know "what plan is this caller's team on" (chat.js's message cap,
@@ -72,11 +73,40 @@ import { parseIntEnv } from './env.js'
 // still gets the drafted approach — they just copy it into Outlook themselves,
 // and Annie never sees the reply. That gap is the upgrade argument, and it is
 // visible in the product rather than buried on a pricing page.
+// 2026-09-05, Michael: Starter is removed and Growth becomes Solo. Two tiers,
+// named for who they are for rather than for an ambition.
+//
+// Starter was not repriced, it was deleted, and the reason is structural rather
+// than commercial. Under the network-first product the mailbox IS the engine:
+// dormancy, relationship strength and last-contacted all come from email sync,
+// and Starter never had email sync. A Starter customer would have been sold a
+// plan that could not do the thing the marketing promises. That is the exact
+// failure this release exists to end, so keeping a cheap tier that structurally
+// under-delivers would have reintroduced it on day one.
+//
+// Verified before removing it: all three Starter rows on production had no
+// stripe_subscription_id and 4-6 contacts each - Snag Week test tenants. There
+// were zero paying Starter customers.
+// chatMessagesPerMonth is a RUNAWAY BACKSTOP, not a product limit.
+//
+// Both tiers were Infinity the moment Starter was removed, which meant the
+// server-side ceiling in chat.js could never fire on any live plan — a refusal
+// path that exists, is tested, costs nothing to keep, and can never run. A
+// stuck client loop or a shared credential would have burned Anthropic spend
+// with nothing but an alert to notice it.
+//
+// Michael's constraint stands ("for Solo there cannot be a significant cap"),
+// so these are set where no real person reaches them: 3,000/month is 150 per
+// working day, against a measured heavy user at roughly 25. The previous
+// Starter cap that customers did feel was 500. Nobody will meet these; a loop
+// will meet them within the hour.
 export const TIER_LIMITS = {
-  starter: { chatMessagesPerMonth: 500, deepOnboardingResearch: false, contactCreditsPerMonth: 50, emailSync: false },
-  growth: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true, contactCreditsPerMonth: 150, emailSync: true },
-  team: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true, contactCreditsPerMonth: 400, emailSync: true },
+  solo: { chatMessagesPerMonth: 3000, deepOnboardingResearch: true, contactCreditsPerMonth: 150, emailSync: true },
+  team: { chatMessagesPerMonth: 5000, deepOnboardingResearch: true, contactCreditsPerMonth: 400, emailSync: true },
 }
+
+// canonicalTier and TIER_ALIASES live in src/lib/pricing.js so the server and
+// the browser resolve an old tier key the same way. See that file's comment.
 
 // The actual numbers behind deepOnboardingResearch above (2026-08-25,
 // confirmed with Michael). Starter gets one solid, honest scan; Growth and
@@ -134,32 +164,10 @@ export const TIER_LIMITS = {
 // plan quotas before trusting them at scale, and tune via the env vars
 // resolveResourceCaps reads (documented there).
 export const SCAN_TIER_CONFIG = {
-  starter: {
-    feedSignalTarget: 10,
-    actionsEligibleTarget: 1,
-    maxRounds: 2,
-    maxWallClockMs: 10 * 60 * 1000,
-    anthropicMaxTokens: 6144,
-    anthropicMaxUses: 8,
-    anthropicBroadenMaxUses: 10,
-    apolloContactRetry: false,
-    apolloUserDailyCap: 120,
-    // 2026-08-31: raised 40 -> 60 (Michael's call, cheap headroom on top of
-    // the scan-now over-spend fix shipped the same day). The routine daily
-    // cron alone already costs 20/day (confirmed in Annie-Cost-Analysis-
-    // 50-100-Clients.md) — after fixing manual "Scan now" to cost the same
-    // 10 credits as a routine scan instead of up to 40, a customer who
-    // scans once automatically and clicks "Scan now" a couple more times
-    // the same day could still reach 40 within a few days. 60 gives real
-    // room above that pattern (cron 20 + up to 4 manual scans at 10 each)
-    // without raising the platform-wide backstop — extra cost is small:
-    // TheirStack's real bulk rate is $0.012/credit, so 20 more credits/day
-    // ceiling is at most ~$7.20/customer/month if fully used, well under
-    // what a once-daily-cadence cut would have cost in detection delay.
-    theirStackUserDailyCap: 60,
-    anthropicUserDailyTokenCap: 80_000,
-  },
-  growth: {
+  // Solo (formerly Growth). The Starter entry that sat above this is gone with
+  // the tier itself; its numbers are not preserved anywhere, because nothing
+  // resolves to Starter any more - canonicalTier maps the old key to solo.
+  solo: {
     feedSignalTarget: 20,
     actionsEligibleTarget: 3,
     maxRounds: 6,
@@ -191,7 +199,7 @@ export const SCAN_TIER_CONFIG = {
   },
 }
 
-const DEFAULT_TIER = 'starter'
+const DEFAULT_TIER = 'solo'
 
 // Platform-wide backstop defaults — see the SQL migration's own header for
 // why this stays as a secondary ceiling under the per-customer caps above,
@@ -232,7 +240,7 @@ const DEFAULT_PLATFORM_CAPS = {
 // and thread the result down, rather than every low-level Apollo/
 // TheirStack/Anthropic call site needing to know about tiers itself.
 export function resolveResourceCaps(tier) {
-  const t = SCAN_TIER_CONFIG[tier] || SCAN_TIER_CONFIG[DEFAULT_TIER]
+  const t = SCAN_TIER_CONFIG[canonicalTier(tier)] || SCAN_TIER_CONFIG[DEFAULT_TIER]
   return {
     apollo: {
       userDailyCap: t.apolloUserDailyCap,
@@ -301,8 +309,12 @@ export async function getEntitlements(supabase, userId) {
     isAdminOverride = !!profile?.is_admin
   }
 
-  const isEntitled = sub && (['active', 'trialing'].includes(sub.status) || isAdminOverride) && TIER_LIMITS[sub.tier]
-  const tier = isEntitled ? sub.tier : DEFAULT_TIER
+  // canonicalTier is what lets a subscription row still saying 'growth' (or a
+  // webhook still sending it) resolve to Solo instead of silently failing the
+  // TIER_LIMITS lookup and dropping the customer to the default.
+  const subTier = canonicalTier(sub?.tier)
+  const isEntitled = sub && (['active', 'trialing'].includes(sub.status) || isAdminOverride) && TIER_LIMITS[subTier]
+  const tier = isEntitled ? subTier : DEFAULT_TIER
 
   return { tier, status: sub?.status || null, teamId: membership.team_id, limits: TIER_LIMITS[tier] }
 }
@@ -311,7 +323,7 @@ export async function getEntitlements(supabase, userId) {
 // Never throws: a meter that cannot be read must not stop a customer finding a
 // contact, so a failure here degrades to "no meter shown" rather than an error.
 export async function getContactCredits(supabase, teamId, tier) {
-  const limit = TIER_LIMITS[tier]?.contactCreditsPerMonth ?? TIER_LIMITS[DEFAULT_TIER].contactCreditsPerMonth
+  const limit = TIER_LIMITS[canonicalTier(tier)]?.contactCreditsPerMonth ?? TIER_LIMITS[DEFAULT_TIER].contactCreditsPerMonth
   const empty = { used: 0, limit, topupBalance: 0, remaining: limit }
   if (!supabase || !teamId) return empty
   try {
@@ -354,7 +366,7 @@ export async function getContactCredits(supabase, teamId, tier) {
 // Returns the state after consuming, or null if nothing could be consumed.
 export async function consumeContactCredit(supabase, teamId, tier) {
   if (!supabase || !teamId) return null
-  const limit = TIER_LIMITS[tier]?.contactCreditsPerMonth ?? TIER_LIMITS[DEFAULT_TIER].contactCreditsPerMonth
+  const limit = TIER_LIMITS[canonicalTier(tier)]?.contactCreditsPerMonth ?? TIER_LIMITS[DEFAULT_TIER].contactCreditsPerMonth
   try {
     const { data, error } = await supabase.rpc('contact_credits_consume_v2', {
       p_team_id: teamId, p_monthly_cap: limit,

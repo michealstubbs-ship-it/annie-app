@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { mockGetAuthedClient } = vi.hoisted(() => ({ mockGetAuthedClient: vi.fn() }))
 const { mockReserveAnthropicTokens } = vi.hoisted(() => ({ mockReserveAnthropicTokens: vi.fn().mockResolvedValue(true) }))
 const { mockGetEntitlements, mockResolveResourceCaps } = vi.hoisted(() => ({
-  mockGetEntitlements: vi.fn().mockResolvedValue({ tier: 'starter' }),
+  mockGetEntitlements: vi.fn().mockResolvedValue({ tier: 'solo' }),
   mockResolveResourceCaps: vi.fn().mockReturnValue({ anthropicTokens: { userDailyCap: 1000, platformDailyCap: 10000 } }),
 }))
 const { mockReportServerError } = vi.hoisted(() => ({ mockReportServerError: vi.fn().mockResolvedValue(undefined) }))

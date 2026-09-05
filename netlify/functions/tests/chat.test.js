@@ -33,7 +33,7 @@ const { mockReportServerError } = vi.hoisted(() => ({ mockReportServerError: vi.
 // chat_messages count check) calls supabase.from(...).select(...).eq(...)
 // directly on this client, so it needs to resolve to something sane rather
 // than throwing "not a function". Defaults to "no team membership found" /
-// "0 messages this month", which resolves to Starter-level defaults and
+// "0 messages this month", which resolves to Solo-level defaults and
 // never trips the cap in tests that don't care about it.
 const { mockCreateClient, mockChatUsage, mockRpc } = vi.hoisted(() => {
   function makeChainableResult(result = { data: null, count: 0, error: null }) {
@@ -395,7 +395,7 @@ describe('Anthropic token reconciliation', () => {
 // used to be enforced by counting rows in chat_messages — a table written by
 // the BROWSER and never by this endpoint. So the counter only moved when
 // someone used the website: a script, curl, or anything else holding a valid
-// session token had unlimited Ask Annie on a Starter plan, on Anthropic's bill,
+// session token had unlimited Ask Annie on a Solo plan, on Anthropic's bill,
 // while the dashboard showed them at zero. It is also why four days of
 // snag-week conversation recorded nothing — none of it went through a browser.
 describe('the Ask Annie allowance is counted on the server, for every caller', () => {
@@ -418,7 +418,7 @@ describe('the Ask Annie allowance is counted on the server, for every caller', (
   })
 
   it('refuses at the ceiling, before anything is spent at Anthropic', async () => {
-    mockChatUsage.used = 500
+    mockChatUsage.used = 3000
     const fetchSpy = vi.fn()
     global.fetch = fetchSpy
     const resp = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
@@ -427,11 +427,11 @@ describe('the Ask Annie allowance is counted on the server, for every caller', (
   })
 
   it('reports the real server-side count in the usage headers', async () => {
-    mockChatUsage.used = 480
+    mockChatUsage.used = 2980
     global.fetch = vi.fn().mockResolvedValue(anthropicNonStreamResponse())
     const resp = await handler(makeRequest({ messages: [{ role: 'user', content: 'hi' }] }))
-    expect(resp.headers.get('X-Annie-Chat-Used')).toBe('480')
-    expect(resp.headers.get('X-Annie-Chat-Limit')).toBe('500')
+    expect(resp.headers.get('X-Annie-Chat-Used')).toBe('2980')
+    expect(resp.headers.get('X-Annie-Chat-Limit')).toBe('3000')
   })
 
   it('fails OPEN when the counter cannot be read — a broken meter must not take Ask Annie down', async () => {

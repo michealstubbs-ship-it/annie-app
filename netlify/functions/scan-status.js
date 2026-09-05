@@ -7,6 +7,7 @@ import { getStore } from '@netlify/blobs'
 import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { SCAN_TIER_CONFIG } from './lib/entitlements.js'
+import { canonicalTier } from '../../src/lib/pricing.js'
 
 export default async (req) => {
   const unknown = () => new Response(JSON.stringify({ status: 'unknown' }), {
@@ -39,14 +40,18 @@ export default async (req) => {
     // is what stops this from flagging a legitimately still-chaining
     // Growth/Team scan as dead partway through its longer allowance.
     if (record?.status === 'running' && record?.startedAt) {
-      // 2026-08-26 audit fix: the fallback for a missing/unrecognized tier
-      // used to be a separately hardcoded `10 * 60 * 1000` — it happened to
-      // equal starter's own maxWallClockMs today, but nothing kept them in
-      // sync; a future change to starter's ceiling would silently leave
-      // this fallback stale. References the real config value instead, same
-      // "unknown tier degrades to starter" default entitlements.js itself
-      // uses (see getEntitlements/resolveResourceCaps).
-      const tierCeilingMs = SCAN_TIER_CONFIG[record.tier]?.maxWallClockMs ?? SCAN_TIER_CONFIG.starter.maxWallClockMs
+      // 2026-08-26 audit fix: the fallback for a missing/unrecognized tier used
+      // to be a separately hardcoded `10 * 60 * 1000` — it happened to equal the
+      // default tier's own maxWallClockMs, but nothing kept them in sync.
+      // References the real config value instead.
+      //
+      // 2026-09-05: canonicalTier so a record stamped with a retired tier key resolves to
+      // its real ceiling rather than falling through to the default. The
+      // fallback is Solo because Starter no longer exists — reading
+      // SCAN_TIER_CONFIG.starter here threw once the tier was removed, and the
+      // handler answered "unknown" for every scan, which looks exactly like a
+      // scan that never ran.
+      const tierCeilingMs = SCAN_TIER_CONFIG[canonicalTier(record.tier)]?.maxWallClockMs ?? SCAN_TIER_CONFIG.solo.maxWallClockMs
       const timeoutMs = tierCeilingMs + 4 * 60 * 1000
       const ageMs = Date.now() - record.startedAt
       if (ageMs > timeoutMs) {

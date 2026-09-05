@@ -57,7 +57,7 @@ export default async (req) => {
       return jsonError(403, 'Not authorized')
     }
 
-    const caps = resolveResourceCaps('starter')
+    const caps = resolveResourceCaps('solo')
     return new Response(JSON.stringify({
       apollo: caps.apollo.platformDailyCap,
       theirStack: caps.theirStack.platformDailyCap,

@@ -8,8 +8,12 @@
 // hardcode a price ID directly — it's environment-specific (test mode vs
 // live mode have different IDs for the same nominal price).
 export const PRICE_ENV_VARS = {
-  starter: { month: 'STRIPE_PRICE_STARTER_MONTHLY', year: 'STRIPE_PRICE_STARTER_YEARLY' },
-  growth: { month: 'STRIPE_PRICE_GROWTH_MONTHLY', year: 'STRIPE_PRICE_GROWTH_YEARLY' },
+  // Solo replaced Growth 2026-09-05 and Starter was removed. The env var names
+  // deliberately keep the GROWTH spelling: they point at the SAME Stripe prices
+  // customers are already subscribed to, and renaming the variables would mean
+  // re-pointing live subscriptions at new price IDs for a cosmetic gain. The
+  // tier key is what changed; the price behind it did not.
+  solo: { month: 'STRIPE_PRICE_GROWTH_MONTHLY', year: 'STRIPE_PRICE_GROWTH_YEARLY' },
   team: { month: 'STRIPE_PRICE_TEAM_MONTHLY', year: 'STRIPE_PRICE_TEAM_YEARLY' },
 }
 

@@ -540,7 +540,7 @@ export default function LinkedInImport({ embedded = false }) {
           {/* Offered here, at the end of the import, because it answers the
               same question the recruiter has just spent two minutes on:
               where do Annie's contacts come from? Renders nothing at all on
-              Starter, or once a mailbox is already connected. */}
+              unconfigured, or once a mailbox is already connected. */}
           <EmailConnectStep onSkip={() => navigate('/dashboard')} />
 
           <button onClick={() => navigate('/dashboard')} className="btn-primary w-full">Go to my dashboard</button>

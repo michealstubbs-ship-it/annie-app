@@ -129,7 +129,7 @@ describe('already resolved', () => {
     expect(body.alreadyResolved).toBe(true)
     // topupBalance is part of the shape now — purchased credits sit on top of
     // the monthly allowance and do not expire (see topups.js).
-    expect(body.credits).toEqual({ used: 0, limit: 50, topupBalance: 0, remaining: 50 })
+    expect(body.credits).toEqual({ used: 0, limit: 150, topupBalance: 0, remaining: 150 })
     expect(global.fetch).not.toHaveBeenCalled()
   })
 
@@ -184,7 +184,7 @@ describe('live re-resolution', () => {
 // nobody costs zero credits. So a failed lookup is free to Annie and must be
 // free to the customer.
 describe('the monthly contact allowance', () => {
-  function withTeam({ used = 0, tier = 'starter', topupBalance = 0 } = {}) {
+  function withTeam({ used = 0, tier = 'solo', topupBalance = 0 } = {}) {
     mockCreateClient.mockImplementation(() => ({
       from: vi.fn((table) => {
         if (table === 'team_members') {
@@ -219,7 +219,7 @@ describe('the monthly contact allowance', () => {
   }
 
   it('refuses BEFORE spending anything at Apollo when the allowance is gone', async () => {
-    withTeam({ used: 50, tier: 'starter' })
+    withTeam({ used: 150, tier: 'solo' })
     mockSignalSelect.mockResolvedValue({ data: BASE_SIGNAL, error: null })
     const fetchSpy = vi.fn()
     global.fetch = fetchSpy
@@ -251,8 +251,8 @@ describe('the monthly contact allowance', () => {
     expect(body.credits.used).toBe(3)
   })
 
-  it('gives Growth a larger allowance than Starter', async () => {
-    withTeam({ used: 0, tier: 'growth' })
+  it('gives Solo a larger allowance than Solo', async () => {
+    withTeam({ used: 0, tier: 'solo' })
     mockSignalSelect.mockResolvedValue({ data: { ...BASE_SIGNAL, contact_verified: true, contact_name: 'Dana Riaz' }, error: null })
     const res = await handler(makeRequest({ signalId: 'sig_1' }))
     const body = await res.json()

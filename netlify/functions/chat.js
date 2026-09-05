@@ -180,7 +180,7 @@ export default async (req, context) => {
   const perMinuteCap = parseIntEnv(process.env.CHAT_PER_MINUTE_CAP, DEFAULT_CHAT_PER_MINUTE_CAP)
   const [chatCallReserved, entitlements] = await Promise.all([
     reserveChatCall(usageClient, user.id, perMinuteCap),
-    usageClient ? getEntitlements(usageClient, user.id) : Promise.resolve({ tier: 'starter', limits: { chatMessagesPerMonth: Infinity } }),
+    usageClient ? getEntitlements(usageClient, user.id) : Promise.resolve({ tier: 'solo', limits: { chatMessagesPerMonth: Infinity } }),
   ])
   if (!chatCallReserved) {
     return new Response(JSON.stringify({ error: 'Too many requests — please slow down and try again in a minute.' }), { status: 429, headers: { 'Content-Type': 'application/json' } })

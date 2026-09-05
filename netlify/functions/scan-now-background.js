@@ -31,6 +31,7 @@ import { reportServerError } from './lib/reportError.js'
 import { getAuthedUser } from './lib/auth.js'
 import { reserveAnthropicTokens, reconcileAnthropicTokens } from './lib/aiUsage.js'
 import { getEntitlements, SCAN_TIER_CONFIG, resolveResourceCaps } from './lib/entitlements.js'
+import { canonicalTier } from '../../src/lib/pricing.js'
 import {
   SIGNAL_TYPES, SIGNAL_LOOKBACK_DAYS, normalizeKey, fundingFuzzyKey, splitToKeywords, extractJson, looksTruncatedByTokenLimit,
   buildExistingByCompanyType, findSemanticDedupTargets, filterSemanticDuplicates, SEMANTIC_DEDUP_MAX_TOKENS,
@@ -1108,7 +1109,11 @@ export default async (req) => {
     // is entirely driven from here on. See SCAN_TIER_CONFIG in
     // entitlements.js for the actual numbers and the reasoning behind them.
     const { tier } = await getEntitlements(supabase, userId)
-    const tierConfig = SCAN_TIER_CONFIG[tier] || SCAN_TIER_CONFIG.starter
+    // canonicalTier resolves a retired key ('growth'/'starter') to the tier that
+  // replaced it. The fallback is solo because starter no longer exists —
+  // SCAN_TIER_CONFIG.starter became undefined when the tier was removed, and
+  // every property read off it threw mid-scan.
+  const tierConfig = SCAN_TIER_CONFIG[canonicalTier(tier)] || SCAN_TIER_CONFIG.solo
     // Resolved once per chain (not once per round — tier doesn't change
     // mid-chain) — see resolveResourceCaps's own header in entitlements.js.
     const resourceCaps = resolveResourceCaps(tier)

@@ -123,7 +123,7 @@ export default async (req) => {
   if (!paths.length) { await writeStatus(user.id, { status: 'done', startedAt: Date.now(), total: 0, completed: 0, results: [] }); return }
 
   const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: createTimeoutFetch() } })
-  const entitlements = await getEntitlements(supabase, user.id).catch(() => ({ tier: 'starter' }))
+  const entitlements = await getEntitlements(supabase, user.id).catch(() => ({ tier: 'solo' }))
   const caps = resolveResourceCaps(entitlements.tier).anthropicTokens
 
   const startedAt = Date.now()

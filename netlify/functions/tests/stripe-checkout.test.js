@@ -42,7 +42,7 @@ beforeEach(async () => {
   process.env.VITE_SUPABASE_URL = 'https://example.supabase.co'
   process.env.VITE_SUPABASE_ANON_KEY = 'anon_x'
   process.env.SUPABASE_SERVICE_ROLE_KEY = 'service_role_x'
-  process.env.STRIPE_PRICE_STARTER_MONTHLY = 'price_starter_month'
+  process.env.STRIPE_PRICE_GROWTH_MONTHLY = 'price_solo_month'
   process.env.STRIPE_PRICE_TEAM_MONTHLY = 'price_team_month'
 
   mockGetAuthedUser.mockResolvedValue({ user: { id: 'user_123', email: 'a@b.com' }, error: null })
@@ -62,7 +62,7 @@ describe('method and configuration guards', () => {
 
   it('returns 503 when billing is not configured', async () => {
     delete process.env.STRIPE_SECRET_KEY
-    const res = await handler(makeRequest({ tier: 'starter', interval: 'month' }))
+    const res = await handler(makeRequest({ tier: 'solo', interval: 'month' }))
     expect(res.status).toBe(503)
   })
 })
@@ -70,7 +70,7 @@ describe('method and configuration guards', () => {
 describe('authentication', () => {
   it('returns 401 for an unauthenticated caller', async () => {
     mockGetAuthedUser.mockResolvedValue({ user: null, error: 'invalid_session' })
-    const res = await handler(makeRequest({ tier: 'starter', interval: 'month' }))
+    const res = await handler(makeRequest({ tier: 'solo', interval: 'month' }))
     expect(res.status).toBe(401)
     expect(mockCheckoutCreate).not.toHaveBeenCalled()
   })
@@ -90,7 +90,7 @@ describe('request validation', () => {
 
 describe('checkout session creation', () => {
   it('creates a new Stripe customer and starts a trial-eligible session for a first-time subscriber', async () => {
-    const res = await handler(makeRequest({ tier: 'starter', interval: 'month' }))
+    const res = await handler(makeRequest({ tier: 'solo', interval: 'month' }))
     expect(res.status).toBe(200)
     expect(mockCustomersCreate).toHaveBeenCalledWith(expect.objectContaining({ email: 'a@b.com' }))
     expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
@@ -103,7 +103,7 @@ describe('checkout session creation', () => {
 
   it('reuses an existing Stripe customer and is not trial-eligible for a returning subscriber', async () => {
     mockMaybeSingle.mockResolvedValue({ data: { stripe_customer_id: 'cus_existing' } })
-    const res = await handler(makeRequest({ tier: 'starter', interval: 'month' }))
+    const res = await handler(makeRequest({ tier: 'solo', interval: 'month' }))
     expect(res.status).toBe(200)
     expect(mockCustomersCreate).not.toHaveBeenCalled()
     expect(mockCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({ customer: 'cus_existing' }))
@@ -121,7 +121,7 @@ describe('checkout session creation', () => {
 
   it('reports and returns 500 when Stripe itself throws', async () => {
     mockCheckoutCreate.mockRejectedValue(new Error('stripe down'))
-    const res = await handler(makeRequest({ tier: 'starter', interval: 'month' }))
+    const res = await handler(makeRequest({ tier: 'solo', interval: 'month' }))
     expect(res.status).toBe(500)
     expect(mockReportServerError).toHaveBeenCalled()
   })

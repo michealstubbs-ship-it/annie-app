@@ -25,6 +25,7 @@ import {
   selectDailyItems, resolveTodaysActions,
 } from '../lib/todaysActions/index.js'
 import { useMarketCurrency } from '../lib/useMarketCurrency'
+import { canonicalTier } from '../lib/pricing'
 
 const JOB_STATUS_LABEL = { active: 'Active', onhold: 'On hold', filled: 'Filled', lost: 'Lost' }
 const JOB_STATUS_COLOR = { active: '#2f9e5b', onhold: '#d99a2b', filled: '#c9a84c', lost: '#9ca0ac' }
@@ -167,10 +168,10 @@ export default function Overview() {
   // as a real contrast the customer can feel ("here's what you got"), not a
   // sales pitch shown before they've seen anything. Never shown to Growth/
   // Team — there's nothing to upgrade to that changes this. Defaults to
-  // 'starter' the same way getEntitlements does server-side (see
+  // 'solo' the same way getEntitlements does server-side (see
   // entitlements.js) — an unrecognised or missing subscription degrades to
   // Starter-level rather than hiding the nudge incorrectly.
-  const [tier, setTier] = useState('starter')
+  const [tier, setTier] = useState('solo')
   const [upgradeNudgeDismissed, setUpgradeNudgeDismissed] = useState(false)
 
   useEffect(() => { load() }, [user])
@@ -275,9 +276,9 @@ export default function Overview() {
     // Starter" fallback as everywhere else this is looked up.
     async function fetchTier() {
       const { data: membership } = await supabase.from('team_members').select('team_id').eq('user_id', user.id).eq('status', 'active').maybeSingle()
-      if (!membership?.team_id) return 'starter'
+      if (!membership?.team_id) return 'solo'
       const { data: sub } = await supabase.from('subscriptions').select('tier').eq('team_id', membership.team_id).maybeSingle()
-      return sub?.tier || 'starter'
+      return canonicalTier(sub?.tier) || 'solo'
     }
 
     const [
@@ -475,7 +476,7 @@ export default function Overview() {
   // the copy now leads with what that time buys (more signals, more depth)
   // rather than the time itself.
   const scanBannerCopy = useMemo(() => {
-    if (tier === 'starter') {
+    if (tier === 'solo') {
       return { minutes: 10, upgradeHint: 'Growth and Team give Annie twice as long to dig — more signals, more depth.' }
     }
     return { minutes: 20, upgradeHint: null }

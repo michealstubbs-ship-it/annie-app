@@ -7,8 +7,10 @@
 //
 // Two rules it obeys:
 //
-//   Growth and Team only. 3 of 9 accounts are on Starter, and showing them a
-//   paywall in the middle of setup is a worse first impression than never
+//   Shown only when the account can actually use it. Email sync is included on
+//   every live plan since Starter was removed (2026-09-05), so this is now a
+//   configuration check rather than a plan check — but the rule is unchanged:
+//   a dead end in the middle of setup is a worse first impression than never
 //   mentioning the feature.
 //
 //   Always skippable. Mailbox access is the largest trust ask in the product
@@ -37,7 +39,7 @@ export default function EmailConnectStep({ onSkip }) {
     setError(err || 'Could not start the connection. You can do this later in Settings.')
   }
 
-  // Silent for Starter, for an unconfigured install, and for anyone who has
+  // Silent for an unconfigured install, and for anyone who has
   // already connected — no half-offers, no teasing.
   if (state.loading) return null
   if (!state.available || !state.configured) return null

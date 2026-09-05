@@ -1,9 +1,15 @@
 // Settings → Email. Four states, and the copy for each one is the product.
 //
 //   loading      checking
-//   upgrade      Starter — say exactly what they are missing, not "unavailable"
+//   unavailable  no mailbox provider configured on this deployment — an
+//                operational state, not a plan state
 //   disconnected the connect button, and what Annie will and will not keep
 //   connected    what it is doing, and how to stop it
+//
+// There is no longer an "upgrade" state. Starter was removed 2026-09-05 and
+// both remaining tiers have email sync, so the only reason `available` can be
+// false now is configuration. Keeping a plan-gate message here would have told
+// a paying customer to upgrade to the plan they are already on.
 //
 // The three lines under "What Annie keeps" are not marketing. They are the
 // answer to the first question every recruiter asks, and they are true: the
@@ -76,7 +82,9 @@ export default function EmailConnect() {
     const { url, upgrade, error: err } = await startEmailConnect()
     setBusy(false)
     if (url) { window.location.href = url; return }
-    setError(upgrade ? 'Email sync is on Growth and Team.' : (err || 'Could not start the connection.'))
+    // `upgrade` can still come back from an older deployed function; both live
+    // tiers include email sync, so it can no longer mean "wrong plan".
+    setError(upgrade ? 'Email sync is not available on this account yet.' : (err || 'Could not start the connection.'))
   }
 
   async function disconnect() {
@@ -111,9 +119,9 @@ export default function EmailConnect() {
           </p>
           <div className="border border-dashed border-amber-200 bg-amber-50/60 rounded-lg p-4">
             <p className="text-[13px] text-gray-700">
-              <span className="font-bold text-amber-800">Email is on Growth and Team.</span> Annie still
-              writes your approach on Starter — you copy it into Outlook yourself, and Annie
-              never sees the reply.
+              <span className="font-bold text-amber-800">Not available yet.</span> Email sync is
+              included on your plan — it just is not switched on for this account. Annie still
+              writes your approach in the meantime; you copy it into Outlook yourself.
             </p>
           </div>
         </>

@@ -10,22 +10,35 @@ beforeEach(() => {
 })
 afterEach(() => { process.env = { ...ORIGINAL_ENV } })
 
-// The governing constraint on top-up pricing is not cost, it is that a top-up
-// must never be cheaper per credit than upgrading. Otherwise a Starter
-// customer tops up forever and the upgrade path dies. This test exists so that
-// anyone changing a price has to consciously break it rather than do it by
-// accident.
-describe('top-up pricing must never undercut the upgrade', () => {
-  it('prices every pack above the per-credit cost of upgrading Starter to Growth', () => {
-    const extraCredits = TIER_LIMITS.growth.contactCreditsPerMonth - TIER_LIMITS.starter.contactCreditsPerMonth
-    // Starter $79 -> Growth $129 is +$50 for those extra credits, and the
-    // upgrade also brings unlimited Ask Annie and deeper scans.
-    const upgradePerCredit = 50 / extraCredits
-    expect(upgradePerCredit).toBeCloseTo(0.5, 2)
+// The governing constraint on top-up pricing changed when Starter was removed.
+//
+// It used to be "a top-up must never be cheaper per credit than upgrading",
+// measured on Starter $79/50 credits -> Growth $129/150 credits = $0.50 per
+// extra credit. With Starter gone there is no credit-driven upgrade left: Solo
+// to Team is a seat and collaboration decision, not a way to buy credits, so
+// that comparison no longer means anything.
+//
+// The constraint that replaces it is a floor, and it is measured rather than
+// assumed. Apollo overage costs $0.20 per credit (verified against the live
+// account, 2026-09-05), and a credit is consumed whenever Apollo matches a
+// PERSON — roughly half of which carry no email — so the true cost per USABLE
+// contact is about double the headline rate. A pack priced under that loses
+// money on every sale.
+const APOLLO_OVERAGE_PER_CREDIT = 0.20
+const REALISTIC_COST_PER_CREDIT = APOLLO_OVERAGE_PER_CREDIT * 2
 
+describe('top-up pricing must never sell credits below what they cost', () => {
+  it('prices every pack above the real per-credit cost, with margin', () => {
     for (const pack of TOPUP_PACKS) {
       const perCredit = pack.priceUsd / pack.credits
-      expect(perCredit).toBeGreaterThan(upgradePerCredit)
+      expect(perCredit).toBeGreaterThan(REALISTIC_COST_PER_CREDIT)
+    }
+  })
+
+  it('keeps larger packs cheaper per credit than smaller ones, or the ladder makes no sense', () => {
+    const perCredit = TOPUP_PACKS.map(p => p.priceUsd / p.credits)
+    for (let i = 1; i < perCredit.length; i += 1) {
+      expect(perCredit[i]).toBeLessThan(perCredit[i - 1])
     }
   })
 

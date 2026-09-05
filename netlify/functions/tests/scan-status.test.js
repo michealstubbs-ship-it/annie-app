@@ -48,8 +48,8 @@ describe('status blob handling', () => {
     expect(await res.json()).toEqual(record)
   })
 
-  it('treats a "running" status older than the 14-minute budget as timed out', async () => {
-    mockGet.mockResolvedValue({ status: 'running', startedAt: Date.now() - 15 * 60 * 1000 })
+  it('treats a "running" status older than the 24-minute budget as timed out', async () => {
+    mockGet.mockResolvedValue({ status: 'running', startedAt: Date.now() - 30 * 60 * 1000 })
     const res = await handler(makeRequest())
     const body = await res.json()
     expect(body.status).toBe('done')
@@ -63,18 +63,23 @@ describe('status blob handling', () => {
     expect(body.status).toBe('running')
   })
 
-  // 2026-08-26 audit fix: the missing/unrecognized-tier fallback used to be
-  // a separately hardcoded 10-minute constant that only happened to match
-  // starter's own maxWallClockMs — this pins that a record with no `tier`
-  // at all (the exact case this fallback exists for) times out at exactly
-  // starter's real ceiling plus the 4-minute margin, not a moment sooner.
-  it('uses starter\'s real maxWallClockMs (plus the 4-minute margin) as the timeout for a record with no tier', async () => {
-    const justUnderBudget = 10 * 60 * 1000 + 4 * 60 * 1000 - 1000
+  // 2026-08-26 audit fix: the missing/unrecognized-tier fallback used to be a
+  // separately hardcoded 10-minute constant that only happened to match the
+  // then-default tier's own maxWallClockMs — this pins that a record with no
+  // `tier` at all times out at exactly the default tier's real ceiling plus the
+  // 4-minute margin, not a moment sooner.
+  //
+  // 2026-09-05: the number moved from 10 to 20 minutes on its own, without this
+  // file changing, because the default tier became Solo when Starter was
+  // removed. That is the fallback doing its job — it follows the config rather
+  // than restating it.
+  it('uses solo\'s real maxWallClockMs (plus the 4-minute margin) as the timeout for a record with no tier', async () => {
+    const justUnderBudget = 20 * 60 * 1000 + 4 * 60 * 1000 - 1000
     mockGet.mockResolvedValue({ status: 'running', startedAt: Date.now() - justUnderBudget })
     const res = await handler(makeRequest())
     expect((await res.json()).status).toBe('running')
 
-    const justOverBudget = 10 * 60 * 1000 + 4 * 60 * 1000 + 1000
+    const justOverBudget = 20 * 60 * 1000 + 4 * 60 * 1000 + 1000
     mockGet.mockResolvedValue({ status: 'running', startedAt: Date.now() - justOverBudget })
     const res2 = await handler(makeRequest())
     const body2 = await res2.json()

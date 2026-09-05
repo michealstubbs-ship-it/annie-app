@@ -32,7 +32,11 @@ export default function TopUpPanel({ credits, tier, onClose }) {
     }
   }
 
-  const showUpgradeFirst = tier === 'starter'
+  // Was tier === 'starter'. With Starter gone, Solo is the entry plan and the
+  // upgrade path from it is Team — but a solo recruiter has no colleagues to
+  // share a CRM with, so pushing Team at them ahead of a top-up would be
+  // selling the wrong thing. Top-ups lead for everyone now.
+  const showUpgradeFirst = false
 
   return (
     <div className="card p-5 mb-4">

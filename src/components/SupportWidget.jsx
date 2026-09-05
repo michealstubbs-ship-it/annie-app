@@ -9,6 +9,7 @@ import { withTimeout } from '../lib/withTimeout'
 import { reportClientError } from '../lib/errorReporting'
 import { recentHistory } from '../lib/chatHistory'
 import { stripChatMarkdown } from '../lib/textSanitize'
+import { canonicalTier } from '../lib/pricing'
 
 // Rewritten 2026-08-26 after a real production incident: the previous
 // version of this prompt described features that don't exist (a "target
@@ -194,10 +195,13 @@ export default function SupportWidget() {
         .eq('role', 'user')
         .gte('created_at', startOfMonth.toISOString())
 
-      const tier = sub?.tier || 'starter'
+      const tier = canonicalTier(sub?.tier) || 'solo'
       const lines = [
         `Plan: ${tier}${sub?.status ? ` (${sub.status})` : ' (no active subscription found — treated as Starter)'}`,
-        tier === 'starter' ? `Ask Annie messages used this month: ${messagesThisMonth ?? 0} of 500` : `Ask Annie messages used this month: ${messagesThisMonth ?? 0} (unlimited on this plan)`,
+        // Not "unlimited": there is a real 3,000/month runaway backstop. Saying
+        // unlimited would be the same class of untrue claim this release exists
+        // to remove, even though no customer will ever reach it.
+        `Ask Annie messages used this month: ${messagesThisMonth ?? 0} (no practical limit on this plan)`,
       ]
       if (sub?.status === 'trialing' && sub?.current_period_end) {
         lines.push(`Trial ends: ${new Date(sub.current_period_end).toLocaleDateString('en-GB')}`)

@@ -60,7 +60,7 @@ async function fetchWithNetworkRetry(url, options, attempts = 2, delayMs = 400) 
 // automatically instead of each one needing to remember it.
 // Reads the used/limit pair chat.js attaches to every successful reply.
 // Returns null on an unlimited plan (the headers are deliberately omitted
-// there, so a Growth user never sees a countdown implying a limit exists)
+// there, so a normal user never sees a countdown implying a limit exists)
 // and on any response where the values aren't two real numbers.
 function readChatUsage(resp) {
   // Defensive on purpose: this must never be the thing that breaks a reply.
@@ -104,7 +104,7 @@ export async function callChat({ messages, systemOverride, maxTokens, model, web
   }
 
   // 2026-09-01: chat.js now returns the caller's monthly Ask Annie usage in
-  // response headers so Chat.jsx can warn a Starter recruiter BEFORE they hit
+  // response headers so Chat.jsx can warn a recruiter BEFORE they hit
   // the ceiling. Additive on purpose — `usage` is undefined on an unlimited
   // plan and every existing caller that only destructures { text, citations }
   // is unaffected.

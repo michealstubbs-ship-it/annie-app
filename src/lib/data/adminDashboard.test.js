@@ -54,19 +54,19 @@ describe('summarizeAccounts', () => {
       activeAccounts: 0,
       seatsLive: 0,
       canceledLast30d: 0,
-      tierCounts: { starter: 0, growth: 0, team: 0 },
-      tierMrr: { starter: 0, growth: 0, team: 0 },
+      tierCounts: { solo: 0, team: 0 },
+      tierMrr: { solo: 0, team: 0 },
       atRisk: [],
     })
   })
 
-  it('counts an active starter account into MRR, active count, and tier breakdown', () => {
-    const result = summarizeAccounts([{ tier: 'starter', status: 'active', billing_interval: 'month', seats: 1 }])
-    expect(result.mrr).toBe(79)
+  it('counts an active solo account into MRR, active count, and tier breakdown', () => {
+    const result = summarizeAccounts([{ tier: 'solo', status: 'active', billing_interval: 'month', seats: 1 }])
+    expect(result.mrr).toBe(129)
     expect(result.activeAccounts).toBe(1)
     expect(result.seatsLive).toBe(1)
-    expect(result.tierCounts.starter).toBe(1)
-    expect(result.tierMrr.starter).toBe(79)
+    expect(result.tierCounts.solo).toBe(1)
+    expect(result.tierMrr.solo).toBe(129)
   })
 
   it('multiplies a Team subscription by its seat count, on the yearly rate', () => {
@@ -84,25 +84,24 @@ describe('summarizeAccounts', () => {
   // it excludes non-live accounts the same way the overall mrr total does.
   it('sums real per-row revenue into tierMrr, distinct per tier, on top of the aggregate mrr', () => {
     const result = summarizeAccounts([
-      { tier: 'starter', status: 'active', billing_interval: 'year', seats: 1 }, // 69/mo, discounted
-      { tier: 'starter', status: 'active', billing_interval: 'month', seats: 1 }, // 79/mo
-      { tier: 'growth', status: 'active', billing_interval: 'month', seats: 1 }, // 129/mo
+      { tier: 'solo', status: 'active', billing_interval: 'year', seats: 1 },  // 109/mo, discounted
+      { tier: 'solo', status: 'active', billing_interval: 'month', seats: 1 }, // 129/mo
+      { tier: 'team', status: 'active', billing_interval: 'month', seats: 3 }, // 99 x 3
       { tier: 'team', status: 'past_due', billing_interval: 'month', seats: 5 }, // not live — excluded
     ])
-    expect(result.tierMrr.starter).toBe(69 + 79)
-    expect(result.tierMrr.growth).toBe(129)
-    expect(result.tierMrr.team).toBe(0)
-    expect(result.mrr).toBe(69 + 79 + 129)
+    expect(result.tierMrr.solo).toBe(109 + 129)
+    expect(result.tierMrr.team).toBe(99 * 3)
+    expect(result.mrr).toBe(109 + 129 + 99 * 3)
   })
 
   it('treats trialing the same as active for the live count, but not for MRR purposes beyond the normal price lookup', () => {
-    const result = summarizeAccounts([{ tier: 'growth', status: 'trialing', billing_interval: 'month', seats: 1 }])
+    const result = summarizeAccounts([{ tier: 'solo', status: 'trialing', billing_interval: 'month', seats: 1 }])
     expect(result.activeAccounts).toBe(1)
     expect(result.mrr).toBe(129)
   })
 
   it('excludes a past_due account from active/MRR and flags it at-risk instead', () => {
-    const result = summarizeAccounts([{ tier: 'growth', status: 'past_due', billing_interval: 'month', seats: 1 }])
+    const result = summarizeAccounts([{ tier: 'solo', status: 'past_due', billing_interval: 'month', seats: 1 }])
     expect(result.activeAccounts).toBe(0)
     expect(result.mrr).toBe(0)
     expect(result.atRisk).toHaveLength(1)
@@ -110,35 +109,35 @@ describe('summarizeAccounts', () => {
   })
 
   it('flags unpaid separately from past_due', () => {
-    const result = summarizeAccounts([{ tier: 'growth', status: 'unpaid', billing_interval: 'month', seats: 1 }])
+    const result = summarizeAccounts([{ tier: 'solo', status: 'unpaid', billing_interval: 'month', seats: 1 }])
     expect(result.atRisk[0].reason).toBe('Payment method failed (unpaid)')
   })
 
   it('flags a live account set to cancel at period end, while still counting it as active revenue today', () => {
-    const result = summarizeAccounts([{ tier: 'starter', status: 'active', billing_interval: 'month', seats: 1, cancel_at_period_end: true }])
+    const result = summarizeAccounts([{ tier: 'solo', status: 'active', billing_interval: 'month', seats: 1, cancel_at_period_end: true }])
     expect(result.activeAccounts).toBe(1)
-    expect(result.mrr).toBe(79)
+    expect(result.mrr).toBe(129)
     expect(result.atRisk).toHaveLength(1)
     expect(result.atRisk[0].reason).toBe('Set to cancel at period end')
   })
 
   it('does not double-count: an active, non-cancelling account is not at risk', () => {
-    const result = summarizeAccounts([{ tier: 'starter', status: 'active', billing_interval: 'month', seats: 1, cancel_at_period_end: false }])
+    const result = summarizeAccounts([{ tier: 'solo', status: 'active', billing_interval: 'month', seats: 1, cancel_at_period_end: false }])
     expect(result.atRisk).toHaveLength(0)
   })
 
   it('excludes a canceled subscription from active/MRR/at-risk (it already churned, it is not "at risk" of churning)', () => {
-    const result = summarizeAccounts([{ tier: 'starter', status: 'canceled', billing_interval: 'month', seats: 1, subscription_updated_at: new Date().toISOString() }])
+    const result = summarizeAccounts([{ tier: 'solo', status: 'canceled', billing_interval: 'month', seats: 1, subscription_updated_at: new Date().toISOString() }])
     expect(result.activeAccounts).toBe(0)
     expect(result.mrr).toBe(0)
     expect(result.atRisk).toHaveLength(0)
   })
 
   it('counts a canceled subscription toward canceledLast30d only when its status changed recently', () => {
-    const recent = summarizeAccounts([{ tier: 'starter', status: 'canceled', subscription_updated_at: new Date().toISOString() }])
+    const recent = summarizeAccounts([{ tier: 'solo', status: 'canceled', subscription_updated_at: new Date().toISOString() }])
     expect(recent.canceledLast30d).toBe(1)
 
-    const old = summarizeAccounts([{ tier: 'starter', status: 'canceled', subscription_updated_at: '2020-01-01T00:00:00Z' }])
+    const old = summarizeAccounts([{ tier: 'solo', status: 'canceled', subscription_updated_at: '2020-01-01T00:00:00Z' }])
     expect(old.canceledLast30d).toBe(0)
   })
 
@@ -147,7 +146,7 @@ describe('summarizeAccounts', () => {
     // this must still count, because created_at tells us nothing about
     // when the cancellation itself happened.
     const result = summarizeAccounts([{
-      tier: 'starter',
+      tier: 'solo',
       status: 'canceled',
       subscription_created_at: '2020-01-01T00:00:00Z',
       subscription_updated_at: new Date().toISOString(),
@@ -158,7 +157,7 @@ describe('summarizeAccounts', () => {
 
 describe('RPC wrappers', () => {
   it('getAdminAccountSummary calls get_admin_account_summary and summarizes the rows', async () => {
-    rpcMock.mockResolvedValue({ data: [{ tier: 'starter', status: 'active', billing_interval: 'month', seats: 1 }], error: null })
+    rpcMock.mockResolvedValue({ data: [{ tier: 'solo', status: 'active', billing_interval: 'month', seats: 1 }], error: null })
     const result = await getAdminAccountSummary()
     expect(rpcMock).toHaveBeenCalledWith('get_admin_account_summary')
     expect(result.activeAccounts).toBe(1)
@@ -280,10 +279,10 @@ describe('loadAdminOverview', () => {
 
 describe('getAdminAccountRows', () => {
   it('returns the raw rows from get_admin_account_summary, unsummarized', async () => {
-    rpcMock.mockResolvedValue({ data: [{ tier: 'starter', status: 'active' }], error: null })
+    rpcMock.mockResolvedValue({ data: [{ tier: 'solo', status: 'active' }], error: null })
     const result = await getAdminAccountRows()
     expect(rpcMock).toHaveBeenCalledWith('get_admin_account_summary')
-    expect(result).toEqual([{ tier: 'starter', status: 'active' }])
+    expect(result).toEqual([{ tier: 'solo', status: 'active' }])
   })
 
   it('defaults to an empty array rather than null', async () => {

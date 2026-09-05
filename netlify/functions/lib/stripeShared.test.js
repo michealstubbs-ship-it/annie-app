@@ -21,17 +21,17 @@ describe('priceIdFor', () => {
   })
 
   it('maps every real (tier, interval) combination to the right env-var-backed price ID', () => {
-    process.env.STRIPE_PRICE_STARTER_MONTHLY = 'price_starter_month'
-    process.env.STRIPE_PRICE_STARTER_YEARLY = 'price_starter_year'
-    process.env.STRIPE_PRICE_GROWTH_MONTHLY = 'price_growth_month'
-    process.env.STRIPE_PRICE_GROWTH_YEARLY = 'price_growth_year'
+    process.env.STRIPE_PRICE_STARTER_MONTHLY = 'price_solo_month'
+    process.env.STRIPE_PRICE_STARTER_YEARLY = 'price_solo_year'
+    process.env.STRIPE_PRICE_GROWTH_MONTHLY = 'price_solo_month'
+    process.env.STRIPE_PRICE_GROWTH_YEARLY = 'price_solo_year'
     process.env.STRIPE_PRICE_TEAM_MONTHLY = 'price_team_month'
     process.env.STRIPE_PRICE_TEAM_YEARLY = 'price_team_year'
 
-    expect(priceIdFor('starter', 'month')).toBe('price_starter_month')
-    expect(priceIdFor('starter', 'year')).toBe('price_starter_year')
-    expect(priceIdFor('growth', 'month')).toBe('price_growth_month')
-    expect(priceIdFor('growth', 'year')).toBe('price_growth_year')
+    expect(priceIdFor('solo', 'month')).toBe('price_solo_month')
+    expect(priceIdFor('solo', 'year')).toBe('price_solo_year')
+    expect(priceIdFor('solo', 'month')).toBe('price_solo_month')
+    expect(priceIdFor('solo', 'year')).toBe('price_solo_year')
     expect(priceIdFor('team', 'month')).toBe('price_team_month')
     expect(priceIdFor('team', 'year')).toBe('price_team_year')
   })
@@ -42,19 +42,19 @@ describe('priceIdFor', () => {
   })
 
   it('returns falsy for an unknown interval on a real tier', () => {
-    process.env.STRIPE_PRICE_STARTER_MONTHLY = 'price_starter_month'
-    expect(priceIdFor('starter', 'week')).toBeFalsy()
-    expect(priceIdFor('starter', undefined)).toBeFalsy()
+    process.env.STRIPE_PRICE_STARTER_MONTHLY = 'price_solo_month'
+    expect(priceIdFor('solo', 'week')).toBeFalsy()
+    expect(priceIdFor('solo', undefined)).toBeFalsy()
   })
 
   it('returns falsy (not the env var name) when the mapped env var is simply unset', () => {
     // STRIPE_PRICE_GROWTH_MONTHLY deliberately left unset by beforeEach.
-    expect(priceIdFor('growth', 'month')).toBeFalsy()
+    expect(priceIdFor('solo', 'month')).toBeFalsy()
   })
 
   it('returns falsy for null/undefined tier or interval rather than throwing', () => {
     expect(priceIdFor(null, 'month')).toBeFalsy()
-    expect(priceIdFor('starter', null)).toBeFalsy()
+    expect(priceIdFor('solo', null)).toBeFalsy()
     expect(priceIdFor(undefined, undefined)).toBeFalsy()
   })
 })
@@ -67,10 +67,10 @@ describe('resolveTierFromPriceId', () => {
       savedEnv[name] = process.env[name]
       delete process.env[name]
     }
-    process.env.STRIPE_PRICE_STARTER_MONTHLY = 'price_starter_month'
-    process.env.STRIPE_PRICE_STARTER_YEARLY = 'price_starter_year'
-    process.env.STRIPE_PRICE_GROWTH_MONTHLY = 'price_growth_month'
-    process.env.STRIPE_PRICE_GROWTH_YEARLY = 'price_growth_year'
+    process.env.STRIPE_PRICE_STARTER_MONTHLY = 'price_solo_month'
+    process.env.STRIPE_PRICE_STARTER_YEARLY = 'price_solo_year'
+    process.env.STRIPE_PRICE_GROWTH_MONTHLY = 'price_solo_month'
+    process.env.STRIPE_PRICE_GROWTH_YEARLY = 'price_solo_year'
     process.env.STRIPE_PRICE_TEAM_MONTHLY = 'price_team_month'
     process.env.STRIPE_PRICE_TEAM_YEARLY = 'price_team_year'
   })
@@ -83,10 +83,10 @@ describe('resolveTierFromPriceId', () => {
   })
 
   it('resolves every configured price ID back to its exact tier/interval', () => {
-    expect(resolveTierFromPriceId('price_starter_month')).toEqual({ tier: 'starter', interval: 'month' })
-    expect(resolveTierFromPriceId('price_starter_year')).toEqual({ tier: 'starter', interval: 'year' })
-    expect(resolveTierFromPriceId('price_growth_month')).toEqual({ tier: 'growth', interval: 'month' })
-    expect(resolveTierFromPriceId('price_growth_year')).toEqual({ tier: 'growth', interval: 'year' })
+    expect(resolveTierFromPriceId('price_solo_month')).toEqual({ tier: 'solo', interval: 'month' })
+    expect(resolveTierFromPriceId('price_solo_year')).toEqual({ tier: 'solo', interval: 'year' })
+    expect(resolveTierFromPriceId('price_solo_month')).toEqual({ tier: 'solo', interval: 'month' })
+    expect(resolveTierFromPriceId('price_solo_year')).toEqual({ tier: 'solo', interval: 'year' })
     expect(resolveTierFromPriceId('price_team_month')).toEqual({ tier: 'team', interval: 'month' })
     expect(resolveTierFromPriceId('price_team_year')).toEqual({ tier: 'team', interval: 'year' })
   })

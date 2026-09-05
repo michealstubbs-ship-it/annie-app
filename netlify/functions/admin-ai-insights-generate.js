@@ -34,7 +34,7 @@ Return ONLY a JSON array, no other text, shaped exactly like:
 [{"category": "finance", "severity": "watch", "headline": "short headline", "detail": "one or two sentences", "citedMetric": "the exact figure this is based on"}]`
 
 async function callAnthropic(apiKey, groundingData, supabase) {
-  const caps = resolveResourceCaps('starter').anthropicTokens
+  const caps = resolveResourceCaps('solo').anthropicTokens
   if (!(await reserveAnthropicTokens(supabase, null, MAX_TOKENS, caps))) {
     throw new Error('Anthropic daily token cap reached — skipping insight generation for today')
   }

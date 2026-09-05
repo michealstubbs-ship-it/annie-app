@@ -84,7 +84,7 @@ export default async (req) => {
     return json({ ok: false, reason: 'unreadable', message: 'Annie couldn’t find readable text in this file (a scanned image rather than real text, most likely) — please fill in the candidate’s details manually.' })
   }
 
-  const entitlements = await getEntitlements(usageClient, user.id).catch(() => ({ tier: 'starter' }))
+  const entitlements = await getEntitlements(usageClient, user.id).catch(() => ({ tier: 'solo' }))
   const caps = resolveResourceCaps(entitlements.tier).anthropicTokens
   const reserved = await reserveAnthropicTokens(usageClient, user.id, MAX_TOKENS, caps)
   if (!reserved) {
