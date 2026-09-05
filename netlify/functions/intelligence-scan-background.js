@@ -66,6 +66,7 @@ import {
   logMarketCoverage,
   getCustomerWatchlistCompanies,
   buildCustomerWatchlistHint,
+  restrictLeadsToNetwork,
   buildPriorityDiscoveryPrompt,
   PRIORITY_DISCOVERY_MAX_TOKENS,
   PRIORITY_DISCOVERY_MAX_USES,
@@ -476,12 +477,25 @@ async function scanOneCustomer(ob, ctx) {
   // these four are fully independent of each other, no reason to pay their
   // latency serially, especially now that they run on EVERY customer, not
   // just the full-discovery branch.
-  const [adzunaLeads, theirStackLeads, learned, watchlist] = await Promise.all([
+  const [rawAdzunaLeads, rawTheirStackLeads, learned, watchlist] = await Promise.all([
     discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }),
     discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, ob.user_id, resourceCaps.theirStack),
     getLearnedSources(supabase, ob.sectors, ob.locations),
     getCustomerWatchlistCompanies(supabase, ob),
   ])
+
+  // The job boards search by keyword, so they return the open market by
+  // construction. On the measured account that was 21 of 38 feed items, almost
+  // all at employers the recruiter had never heard of. The watchlist is the
+  // network; anything outside it is not a lead for this customer.
+  const adzunaLeads = restrictLeadsToNetwork(rawAdzunaLeads, watchlist)
+  const theirStackLeads = restrictLeadsToNetwork(rawTheirStackLeads, watchlist)
+  if (watchlist.length) {
+    console.info('[scan] job leads scoped to network:',
+      `adzuna ${rawAdzunaLeads.length}->${adzunaLeads.length}`,
+      `theirstack ${rawTheirStackLeads.length}->${theirStackLeads.length}`,
+      `across ${watchlist.length} companies`)
+  }
 
   // 2026-09-02: kicked off here, not awaited until after the branch below —
   // this is a genuinely separate Anthropic web-search call (its own 90s

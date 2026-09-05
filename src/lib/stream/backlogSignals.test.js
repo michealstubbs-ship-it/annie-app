@@ -104,7 +104,15 @@ describe('backlog items inside the real stream', () => {
         id: 's1', signal_type: 'funding', company_name: 'Khazna Data Centers',
         headline: 'Raised a round', status: 'new', found_at: '2026-09-04T00:00:00Z',
       }],
-      contacts: [contact()],
+      // Two contacts on purpose. The Khazna one puts the funding signal inside
+      // the network so the gate lets it through; the ADQ one has no signal of
+      // its own, so it becomes the backlog card. With a single ADQ contact the
+      // funding signal is a stranger and is correctly dropped - which is the
+      // gate working, not the test failing.
+      contacts: [
+        contact({ id: 'k1', name: 'Johan Nilerud', company: 'Khazna Data Centers' }),
+        contact({ id: 'a1', name: 'Mohamed Kaissi', company: 'ADQ' }),
+      ],
       functions: FUNCTIONS,
     })
     const types = items.map(i => i.signal.signal_type)
@@ -146,6 +154,88 @@ describe('backlog items inside the real stream', () => {
   it('adds nothing when the CRM is empty, leaving the feed as it was', () => {
     const items = buildStream({
       signals: [{ id: 's1', signal_type: 'funding', company_name: 'X', headline: 'Y', status: 'new' }],
+      contacts: [],
+    })
+    expect(items).toHaveLength(1)
+  })
+})
+
+// The measurement that produced the whole gate: on a real account the day
+// after the network-first release, 35 of 38 feed items were at companies the
+// recruiter had never heard of, and the 3 that matched his CRM were artefacts
+// (two at a company he had called terrible, one at "Confidential"). Genuine
+// network leads: zero.
+describe('the network gate', () => {
+  const known = [contact({ id: 'k1', company: 'ADQ' })]
+
+  it('drops a signal at a company the customer has never heard of', () => {
+    const items = buildStream({
+      signals: [
+        { id: 's1', signal_type: 'live_job', company_name: 'ALAS Emirates Ready Mix', headline: 'CFO', status: 'new' },
+        { id: 's2', signal_type: 'live_job', company_name: 'The Justice Law Office', headline: 'Head of Strategy', status: 'new' },
+      ],
+      contacts: known,
+      functions: FUNCTIONS,
+    })
+    expect(items.map(i => i.signal.id)).not.toContain('s1')
+    expect(items.map(i => i.signal.id)).not.toContain('s2')
+  })
+
+  it('keeps a signal at a company the customer has a contact at', () => {
+    const items = buildStream({
+      signals: [{ id: 's1', signal_type: 'live_job', company_name: 'ADQ', headline: 'Head of Strategy', status: 'new' }],
+      contacts: known,
+      functions: FUNCTIONS,
+    })
+    expect(items.map(i => i.signal.id)).toContain('s1')
+  })
+
+  it('matches through a legal-suffix difference rather than on exact text', () => {
+    const items = buildStream({
+      signals: [{ id: 's1', signal_type: 'funding', company_name: 'ADQ LLC', headline: 'Raised', status: 'new' }],
+      contacts: known,
+      functions: FUNCTIONS,
+    })
+    expect(items.map(i => i.signal.id)).toContain('s1')
+  })
+
+  // A job move is about the person, and the destination is by definition a
+  // company they do not know yet - that is what makes it a lead.
+  it('lets a job move through to a company the customer does not know', () => {
+    const items = buildStream({
+      signals: [{
+        id: 's1', signal_type: 'leadership_change', company_name: 'Somewhere New',
+        headline: 'Mohammad has joined Somewhere New', status: 'new', linked_contact_id: 'k1',
+      }],
+      contacts: known,
+      functions: FUNCTIONS,
+    })
+    expect(items.map(i => i.signal.id)).toContain('s1')
+  })
+
+  // Their judgment beats the filter. A card vanishing out of Working because a
+  // filter changed is the product losing someone's work.
+  it('never hides something the recruiter already marked working or parked', () => {
+    const items = buildStream({
+      signals: [
+        { id: 'w', signal_type: 'live_job', company_name: 'Total Stranger Ltd', headline: 'X', status: 'working' },
+        { id: 'p', signal_type: 'live_job', company_name: 'Total Stranger Ltd', headline: 'Y', status: 'parked' },
+      ],
+      contacts: known,
+      functions: FUNCTIONS,
+    })
+    // The ADQ backlog card rides along too, which is correct - it is a real
+    // lead. Assert on the two that matter rather than on an exact list.
+    const ids = items.map(i => i.signal.id)
+    expect(ids).toContain('w')
+    expect(ids).toContain('p')
+  })
+
+  // A customer who has imported nothing has no network to be outside of.
+  // Hiding everything would make the product look broken on day one.
+  it('passes everything through for a customer with no CRM yet', () => {
+    const items = buildStream({
+      signals: [{ id: 's1', signal_type: 'live_job', company_name: 'Anywhere', headline: 'X', status: 'new' }],
       contacts: [],
     })
     expect(items).toHaveLength(1)

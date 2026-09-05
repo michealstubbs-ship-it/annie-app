@@ -4022,19 +4022,65 @@ export async function getCustomerWatchlistCompanies(supabase, ob, limit = WATCHL
   }
 }
 
-// Composes the prompt paragraph for the watchlist above, same
-// only-if-there's-something-real-to-say discipline as buildRegionalSourceHint/
-// buildTargetFirmHint. Deliberately ADDITIVE — sits alongside the existing
-// sector/location/function-driven search the rest of buildScanPrompt
-// already runs, never replacing it, per Michael's explicit "doesn't
-// replace it" instruction. Asks the AI to find real, genuine competitors
-// itself (using the same web-search tool already available for this call)
-// rather than this needing a second AI call or a hand-maintained
-// competitor map — the same "no duplicate logic" reasoning the rest of
-// this file follows.
+// The customer's own companies ARE the search, not an addition to it.
+//
+// This paragraph used to open "In addition to the sector/location/function-
+// driven search above, specifically check each of these companies", and that
+// one phrase is why the feed filled with strangers. Measured on a real account
+// on 2026-09-05, after the network-first release had already shipped: 35 of 38
+// feed items were at companies the recruiter had never heard of, and the three
+// that did match his CRM were artefacts - two at a company he had explicitly
+// called terrible, one at "Confidential", which matched only because he has
+// four contacts filed under that as an employer. Genuine network leads: zero.
+//
+// So the watchlist is now a RESTRICTION. The scan starts from the companies the
+// recruiter knows and looks only there. That is the whole pivot in one
+// paragraph: they vetted these companies by working with them, so their own
+// list is the employer-quality filter that no amount of market knowledge could
+// give us for free.
+//
+// The competitor expansion is deliberately gone. It used to ask for "genuine,
+// real direct competitors" of each watched company, which sounds helpful and is
+// precisely how strangers got in: a competitor of ADQ is still a company this
+// recruiter has no route into, and a lead with no route in is the thing the
+// pivot exists to stop producing.
+//
+// EMPTY WATCHLIST IS THE ONE EXCEPTION. A brand-new customer who has not
+// imported anything has no network to search, and returning nothing would make
+// the product look broken on day one. Returning '' here leaves the existing
+// sector/location/function search in place, which is the only honest thing to
+// do for someone whose network we do not yet know.
+// The job boards search by keyword, not by company, so they return the open
+// market by construction. On the measured account 21 of 38 feed items were
+// live_job rows, almost all at employers the recruiter had never heard of -
+// scaffolding firms, ready-mix concrete, a law office - because Adzuna and
+// TheirStack were asked "who is hiring a Head of Strategy in the GCC" rather
+// than "is anyone I know hiring".
+//
+// Fixing only the AI prompt would have left this whole path untouched and the
+// feed would have kept filling with strangers from a different door.
+//
+// Post-filter rather than a query change on purpose: neither API can search by
+// a 40-company list, so the honest options are to fetch broadly and discard, or
+// to run 40 separate queries. Discarding is one call instead of forty, and the
+// credits are already spent by the time the rows come back either way.
+//
+// An empty watchlist passes everything through, matching
+// buildCustomerWatchlistHint: a customer with no network yet has nothing to
+// scope to, and showing them nothing would make the product look broken.
+export function restrictLeadsToNetwork(leads = [], watchlist = []) {
+  if (!watchlist.length) return leads
+  const known = new Set(watchlist.map(normalizeCompanyName).filter(Boolean))
+  return leads.filter(lead => {
+    const name = lead?.company || lead?.company_name || lead?.employer || ''
+    const key = normalizeCompanyName(name)
+    return key ? known.has(key) : false
+  })
+}
+
 export function buildCustomerWatchlistHint(companies) {
   if (!companies?.length) return ''
-  return `\nThis recruiter has personally added the following companies to their own CRM — as a client, a prospect, or as a candidate's current employer, either one at a time or via a bulk CSV/LinkedIn import: ${companies.join(', ')}. In addition to the sector/location/function-driven search above, specifically check each of these companies, AND any genuine, real direct competitors of theirs that you know to be active in the same space, for the same kind of BD signal (funding, expansion, leadership change, live hiring, M&A) — even one that might not otherwise have surfaced from a general search. Only name a competitor you're confident is real and genuinely comparable, never a guess.\n`
+  return `\nSCOPE - THIS OVERRIDES THE SECTOR, LOCATION AND FUNCTION SEARCH DESCRIBED ABOVE.\n\nThis recruiter's own network is the search universe. These are the companies they have a real relationship with - a client, a prospect, or the current employer of someone in their CRM: ${companies.join(', ')}.\n\nSearch ONLY these companies. For each one, look for the BD signals listed above (funding, expansion, leadership change, live hiring, M&A). Do not broaden to their competitors, to similar companies, to the wider sector, or to anything else in the market, however relevant it looks - a company this recruiter has no relationship with is not a lead for them, it is noise, no matter how good the signal is.\n\nIf several of these companies have nothing worth reporting, return fewer entries. A short list of real openings at companies they can actually get into is the product; a long list of strangers is what this replaced.\n`
 }
 
 // Deliberately smaller than POOL_PERSONALIZE_MAX_TOKENS/the main scan's own

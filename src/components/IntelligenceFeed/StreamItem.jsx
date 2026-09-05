@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import CompanyLogo from '../CompanyLogo'
 import WayInPanel from './WayInPanel'
+import { whyNow } from '../../lib/stream/whyNow'
 import ContactLookup from './ContactLookup'
 import LogNote from './LogNote'
 import DraftPanel from './DraftPanel'
@@ -24,9 +25,10 @@ const STATES = [
   { key: STATE_PARKED, label: 'Park' },
 ]
 
-export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen, onResolved, onContactLogged, onContactSaved, userId, profile, onboarding, emailReady = false }) {
+export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen, onResolved, onContactLogged, onContactSaved, userId, profile, onboarding, contacts = [], emailReady = false }) {
   const [open, setOpen] = useState(false)
   const s = item.signal
+  const reason = whyNow(item, contacts)
 
   // Who the draft is addressed to. Only ever a real address Annie holds — the
   // person already on the card, or the one the scan verified. Never assembled
@@ -92,6 +94,15 @@ export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen
           </div>
         </div>
 
+        {/* One line saying why this, today. It sits ABOVE why_it_matters
+            because it is the answer to the question the reader actually has,
+            and the longer paragraph is the supporting detail. Returns null
+            rather than an empty string when there is nothing true to say - a
+            generic line is worse than none, because it trains people to skip
+            the row. */}
+        {reason && (
+          <p className="text-[13.5px] font-semibold text-navy mt-2 max-w-[68ch]">{reason}</p>
+        )}
         {s.why_it_matters && (
           <p className="text-[13.5px] text-gray-600 mt-2 max-w-[68ch]">{s.why_it_matters}</p>
         )}

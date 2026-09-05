@@ -20,6 +20,7 @@ import { NEWS_SIGNAL_TYPES } from '../signalTypes.js'
 
 import { buildBacklogSignals, BACKLOG_TYPE_WEIGHT, BACKLOG_SIGNAL_TYPE } from './backlogSignals'
 import { isPlaceholderCompany } from '../backlogRanking'
+import { normalizeCompanyName } from '../companyMatch'
 
 export const STATE_NEW = 'new'
 export const STATE_WORKING = 'working'
@@ -95,7 +96,39 @@ export function scoreStreamItem({ signal, wayIn }) {
  * Every returned item carries its own way in, its source, and its state, so
  * the component renders without going back to the data layer.
  */
+// The set of companies the customer has a contact at. Built once per stream
+// rather than per signal - on a real account this is 618 companies against 38
+// signals, so the wrong order here is 23,000 string comparisons instead of 656.
+export function buildKnownCompanies(contacts = []) {
+  const known = new Set()
+  for (const c of contacts) {
+    const key = normalizeCompanyName(c?.company || '')
+    if (key) known.add(key)
+  }
+  return known
+}
+
+export function isWithinNetwork(signal, knownCompanies) {
+  // No CRM yet. A customer who has imported nothing has no network to be
+  // outside of, and hiding everything would make the product look broken on
+  // day one. Matches the scan's own empty-watchlist behaviour.
+  if (!knownCompanies || knownCompanies.size === 0) return true
+
+  const key = normalizeCompanyName(signal?.company_name || '')
+  if (key && knownCompanies.has(key)) return true
+
+  // A job move is about a person the customer knows, and the destination is by
+  // definition a company they do not - "Mohammad has joined PIF" is a lead
+  // precisely because PIF is new. linked_contact_id is only ever set by the
+  // import diff and the backlog, both of which start from the customer's own
+  // CRM, so it cannot let an open-market stranger through.
+  if (signal?.linked_contact_id) return true
+
+  return false
+}
+
 export function buildStream({ signals = [], contacts = [], candidates = [], functions = [], backlogLimit } = {}) {
+  const knownCompanies = buildKnownCompanies(contacts)
   // The measurement that put this here: on a real account, 600 of 753 contacts
   // were C-suite or Director/VP/Head and not one had ever been contacted, while
   // the market scan beside them was surfacing scaffolding firms and law
@@ -122,6 +155,31 @@ export function buildStream({ signals = [], contacts = [], candidates = [], func
     // on the card - find the contact, draft the approach - is spending effort
     // against a company that was never identified.
     if (isPlaceholderCompany(signal.company_name)) continue
+
+    // THE NETWORK GATE. Measured on a real account the day after the
+    // network-first release shipped: 35 of 38 feed items were at companies the
+    // recruiter had never heard of, and the three that did match his CRM were
+    // artefacts. Genuine network leads: zero.
+    //
+    // The scan is now scoped to the customer's own companies, which fixes the
+    // cause. This is the backstop, and it is here rather than only in the scan
+    // because signals outlive the run that created them: rows written before
+    // this release, rows from the shared signal pool, and anything a future
+    // source adds all arrive through this same function.
+    //
+    // A signal earns its place two ways - the company is one the customer has a
+    // contact at, or the signal names a contact they already know (a job move
+    // is about the person, and the new employer is a company they are not
+    // supposed to know yet; that is the whole point of the lead).
+    //
+    // Anything the recruiter has already touched is exempt. If they marked a
+    // lead as working, or deliberately parked it, they have made a judgment
+    // about it and Annie does not get to overrule that by hiding it - a card
+    // vanishing out of "Working" because a filter changed is the product losing
+    // someone's work. Caught by the existing ordering test, which had a working
+    // item at a company outside the network and expected it to survive.
+    const alreadyJudged = signal.status === STATE_WORKING || signal.status === STATE_PARKED
+    if (!alreadyJudged && !isWithinNetwork(signal, knownCompanies)) continue
 
     const wayIn = computeWayIn(signal, { contacts, candidates })
     const linkedinRoute = buildLinkedinRoute(signal, wayIn.kind === 'spoken' || wayIn.kind === 'contact' ? wayIn.person : null)

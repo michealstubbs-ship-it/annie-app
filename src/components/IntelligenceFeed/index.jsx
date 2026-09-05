@@ -22,23 +22,32 @@ import { useStream } from './useStream'
 import StreamItem from './StreamItem'
 import Spinner from '../Spinner'
 import ErrorBanner from '../ErrorBanner'
-import { SIGNAL_TYPE_META } from '../../lib/signalTypes'
 import { STATE_WORKING, STATE_PARKED } from '../../lib/stream/buildStream'
-import { RUNG_COLD } from '../../lib/stream/wayIn'
 import TopUpPanel from './TopUpPanel'
 import EmailSyncBanner from './EmailSyncBanner'
 import { getEmailStatus } from '../../lib/email/emailApi'
 
-const VIEWS = [
-  { key: 'all', label: 'Everything' },
-  { key: 'route', label: 'With a route in' },
+// 2026-09-05: four tabs became one list.
+//
+// "With a route in" only ever needed to exist because most items had no route
+// in - 31 of 38 on a real account. Now that the scan is scoped to the
+// customer's own companies, everything in the list has a route in, so the tab
+// was selecting the whole list. Working and Parked are STATES, not places: they
+// belong on a quiet toggle beside the list, not as destinations you navigate
+// to and have to remember to come back from.
+//
+// The eight type chips went with them. The type is already a coloured pill on
+// every card, and filtering thirty-odd items by "Expansion" is not a job a
+// recruiter does - they read the list. Nine controls removed, two rows became
+// one, and the first card moved up the page by about eighty pixels.
+const ASIDES = [
   { key: 'working', label: 'Working' },
   { key: 'parked', label: 'Parked' },
 ]
 
 export default function IntelligenceFeed() {
   const { user, profile } = useAuth()
-  const { items, counts, credits, loading, error, onboarding, setState, markDone, dismiss, markSeen, applyResolvedContact, applyContactLogged, applyContactSaved } = useStream({ user })
+  const { items, counts, credits, loading, error, onboarding, contacts, setState, markDone, dismiss, markSeen, applyResolvedContact, applyContactLogged, applyContactSaved } = useStream({ user })
   // Asked once for the whole feed, not once per card: twenty items would
   // otherwise fire twenty identical status calls on every render pass. A
   // failure here is silent on purpose — email is an extra, and the feed must
@@ -53,34 +62,22 @@ export default function IntelligenceFeed() {
   }, [])
 
   const [view, setView] = useState('all')
-  const [typeFilter, setTypeFilter] = useState('all')
   const [topUpDismissed, setTopUpDismissed] = useState(false)
 
   // Only surfaced when the allowance is genuinely nearly gone. Showing a buy
   // prompt to someone with 40 of 50 left is a shop, not a product.
   const lowOnCredits = !!credits && credits.limit > 0 && credits.remaining <= Math.max(3, Math.round(credits.limit * 0.1))
 
-  const presentTypes = useMemo(
-    () => [...new Set(items.map(i => i.signal.signal_type))],
-    [items],
-  )
-
   const visible = useMemo(() => {
-    let list = items
-    if (view === 'route') list = list.filter(i => i.wayIn.rung !== RUNG_COLD)
-    else if (view === 'working') list = list.filter(i => i.state === STATE_WORKING)
-    else if (view === 'parked') list = list.filter(i => i.state === STATE_PARKED)
-    else list = list.filter(i => i.state !== STATE_PARKED)
-    if (typeFilter !== 'all') list = list.filter(i => i.signal.signal_type === typeFilter)
-    return list
-  }, [items, view, typeFilter])
+    if (view === 'working') return items.filter(i => i.state === STATE_WORKING)
+    if (view === 'parked') return items.filter(i => i.state === STATE_PARKED)
+    // The list. Parked items are the only thing held back, because the
+    // recruiter explicitly said not now.
+    return items.filter(i => i.state !== STATE_PARKED)
+  }, [items, view])
 
-  const viewCount = (key) => {
-    if (key === 'all') return counts.all - counts.parked
-    if (key === 'route') return counts.withWayIn
-    if (key === 'working') return counts.working
-    return counts.parked
-  }
+  const asideCount = (key) => (key === 'working' ? counts.working : counts.parked)
+  const listCount = counts.all - counts.parked
 
   return (
     <div className="max-w-4xl">
@@ -124,53 +121,47 @@ export default function IntelligenceFeed() {
         </div>
       )}
 
-      <div className="flex items-center gap-1 border-b border-gray-200 mt-4 mb-3 overflow-x-auto">
-        {VIEWS.map(v => (
-          <button
-            key={v.key}
-            onClick={() => setView(v.key)}
-            className={`px-3 py-2.5 text-[13.5px] font-bold border-b-2 -mb-0.5 whitespace-nowrap transition-colors ${
-              view === v.key ? 'text-navy border-gold' : 'text-gray-500 border-transparent hover:text-gray-600'
-            }`}
-          >
-            {v.label} {viewCount(v.key) > 0 && <span className="text-xs font-semibold">({viewCount(v.key)})</span>}
-          </button>
-        ))}
-      </div>
+      {/* One row. The list is the product; Working and Parked are somewhere you
+          glance, not somewhere you go, so they sit to the right as quiet
+          toggles that show a count only when they hold something. */}
+      <div className="flex items-center justify-between gap-3 flex-wrap border-b border-gray-200 mt-4 mb-3 pb-2">
+        <button
+          onClick={() => setView('all')}
+          className={`text-[15px] font-bold pb-1.5 border-b-2 -mb-2.5 transition-colors ${
+            view === 'all' ? 'text-navy border-gold' : 'text-gray-500 border-transparent hover:text-gray-600'
+          }`}
+        >
+          Who to call {listCount > 0 && <span className="text-[13px] font-semibold text-gray-400">({listCount})</span>}
+        </button>
 
-      {presentTypes.length > 1 && (
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 mb-4">
-          <button
-            onClick={() => setTypeFilter('all')}
-            className={`flex-shrink-0 text-[12.5px] font-bold px-3.5 py-1.5 rounded-full border transition-colors whitespace-nowrap ${
-              typeFilter === 'all' ? 'bg-navy text-gold border-navy' : 'bg-page-bg text-gray-600 border-gray-200 hover:border-gray-300'
-            }`}
-          >All types</button>
-          {presentTypes.map(t => (
-            <button
-              key={t}
-              onClick={() => setTypeFilter(t)}
-              className={`flex-shrink-0 text-[12.5px] font-bold px-3.5 py-1.5 rounded-full border transition-colors whitespace-nowrap ${
-                typeFilter === t ? 'bg-navy text-gold border-navy' : 'bg-page-bg text-gray-600 border-gray-200 hover:border-gray-300'
-              }`}
-            >
-              {(SIGNAL_TYPE_META[t]?.icon ? SIGNAL_TYPE_META[t].icon + ' ' : '') + (SIGNAL_TYPE_META[t]?.chipLabel || SIGNAL_TYPE_META[t]?.label || t)}
-            </button>
+        <div className="flex items-center gap-1">
+          {ASIDES.map(a => (
+            asideCount(a.key) > 0 || view === a.key ? (
+              <button
+                key={a.key}
+                onClick={() => setView(view === a.key ? 'all' : a.key)}
+                className={`text-[12.5px] font-semibold px-2.5 py-1 rounded-lg transition-colors ${
+                  view === a.key ? 'bg-navy text-gold' : 'text-gray-500 hover:bg-gray-100'
+                }`}
+              >
+                {a.label} {asideCount(a.key) > 0 && `(${asideCount(a.key)})`}
+              </button>
+            ) : null
           ))}
         </div>
-      )}
+      </div>
 
       {loading ? (
         <div className="flex justify-center py-20"><Spinner /></div>
       ) : visible.length === 0 ? (
         <div className="card p-12 text-center">
           <h3 className="font-bold text-navy mb-1">
-            {view === 'parked' ? 'Nothing parked' : view === 'working' ? 'Nothing in progress' : 'Nothing here yet'}
+            {view === 'parked' ? 'Nothing parked' : view === 'working' ? 'Nothing in progress' : 'No one to call yet'}
           </h3>
           <p className="text-gray-500 text-sm max-w-sm mx-auto">
             {view === 'all'
-              ? 'Annie scans your sectors and markets twice a day in the background. Check back soon, or import your LinkedIn contacts so she has more to watch.'
-              : 'Switch back to Everything to see the rest of your stream.'}
+              ? 'Annie watches the companies and people you already know. Import your LinkedIn contacts and she has a network to watch — until then there is nothing she can honestly recommend.'
+              : 'Close this to go back to your list.'}
           </p>
         </div>
       ) : (
@@ -178,6 +169,7 @@ export default function IntelligenceFeed() {
           <EmailSyncBanner userId={user?.id} />
           {visible.map(item => (
             <StreamItem
+              contacts={contacts}
               key={item.id}
               item={item}
               userId={user?.id}

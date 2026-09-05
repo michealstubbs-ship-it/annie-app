@@ -51,6 +51,7 @@ import {
   logMarketCoverage,
   getCustomerWatchlistCompanies,
   buildCustomerWatchlistHint,
+  restrictLeadsToNetwork,
   buildPriorityDiscoveryPrompt,
   PRIORITY_DISCOVERY_MAX_TOKENS,
   PRIORITY_DISCOVERY_MAX_USES,
@@ -523,12 +524,23 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   // no real quality loss from asking once with the full sector profile
   // instead of once per narrower group — this just brings scan-now's
   // TheirStack cost in line with what a routine daily scan already costs.
-  const [adzunaLeads, learned, watchlist, theirStackLeads] = await Promise.all([
+  const [rawAdzunaLeads, learned, watchlist, rawTheirStackLeads] = await Promise.all([
     discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }),
     getLearnedSources(supabase, ob.sectors, ob.locations),
     getCustomerWatchlistCompanies(supabase, ob),
     discoverTheirStackJobs(theirStackApiKey, { sectors: ob.sectors, functions: ob.functions, locations: ob.locations }, supabase, userId, resourceCaps.theirStack),
   ])
+
+  // Job boards search by keyword, so they return the open market by
+  // construction - 21 of 38 feed items on the measured account, almost all at
+  // employers the recruiter had never heard of. The watchlist is the network.
+  const adzunaLeads = restrictLeadsToNetwork(rawAdzunaLeads, watchlist)
+  const theirStackLeads = restrictLeadsToNetwork(rawTheirStackLeads, watchlist)
+  if (watchlist.length) {
+    console.info('[scan-now] job leads scoped to network:',
+      `adzuna ${rawAdzunaLeads.length}->${adzunaLeads.length}`,
+      `theirstack ${rawTheirStackLeads.length}->${theirStackLeads.length}`)
+  }
 
   const poolMatches = await fetchSignalPoolMatches(supabase, ob, existingKeys, tierConfig.feedSignalTarget)
   let poolPersonalized = []
@@ -587,10 +599,15 @@ async function runResearchPhase(ob, tierConfig, ctx) {
   const [sectorGroupResults, crossIndustryResult, priorityFound] = await Promise.all([
     Promise.all(groups.map(async (sectorGroup) => {
       const groupSectors = sectorGroup?.length ? sectorGroup : ob.sectors
-      const [apolloLeads, adzunaLeads] = await Promise.all([
+      // This per-group Adzuna call SHADOWS the outer adzunaLeads, so scoping
+      // only the outer one would have left this path feeding the open market
+      // straight back in - the same bug in a second place.
+      const [rawApolloLeads, rawGroupAdzuna] = await Promise.all([
         discoverHotCompanies(apolloKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }, supabase, userId, resourceCaps.apollo),
         discoverAdzunaJobs(adzunaAppId, adzunaAppKey, { sectors: groupSectors, functions: ob.functions, locations: ob.locations }),
       ])
+      const apolloLeads = restrictLeadsToNetwork(rawApolloLeads, watchlist)
+      const adzunaLeads = restrictLeadsToNetwork(rawGroupAdzuna, watchlist)
       try {
         // theirStackLeads is the same full-profile result for every group
         // (fetched once above) — matches the noAdzunaCoverage broaden-pass

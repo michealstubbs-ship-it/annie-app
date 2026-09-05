@@ -3760,12 +3760,43 @@ describe('buildCustomerWatchlistHint', () => {
     expect(buildCustomerWatchlistHint(undefined)).toBe('')
   })
 
-  it('names every company and explicitly asks for their competitors to be checked too, as an addition rather than a replacement', () => {
+  // This test used to assert the exact opposite - that the watchlist was "an
+  // addition rather than a replacement" - and that phrasing was the bug. On a
+  // real account the day after the network-first release, 35 of 38 feed items
+  // were at companies the recruiter had never heard of, because the prompt
+  // asked the model to check his companies IN ADDITION TO an open-market search
+  // and the open market is far larger. The customer's own network is now the
+  // search universe.
+  it('makes the network the search universe, not an addition to it', () => {
     const hint = buildCustomerWatchlistHint(['Acme Corp', 'Beta Industries'])
     expect(hint).toContain('Acme Corp')
     expect(hint).toContain('Beta Industries')
-    expect(hint).toContain('competitors')
-    expect(hint).toContain('In addition to the sector/location/function-driven search above')
+    expect(hint).toContain('Search ONLY these companies')
+    expect(hint).toMatch(/OVERRIDES/)
+    expect(hint).not.toContain('In addition to')
+  })
+
+  // The competitor expansion sounded helpful and was precisely how strangers
+  // got in: a competitor of ADQ is still a company this recruiter has no route
+  // into, and a lead with no route in is what the pivot exists to stop making.
+  it('no longer asks the model to broaden to competitors or similar companies', () => {
+    const hint = buildCustomerWatchlistHint(['Acme Corp'])
+    expect(hint).toMatch(/Do not broaden/)
+    expect(hint).not.toMatch(/direct competitors of theirs/)
+  })
+
+  // A brand-new customer who has imported nothing has no network to scope to.
+  // Returning nothing would make the product look broken on day one, so the
+  // existing sector/location search stays in place for them.
+  it('stays silent for a customer with no network yet', () => {
+    expect(buildCustomerWatchlistHint([])).toBe('')
+    expect(buildCustomerWatchlistHint(undefined)).toBe('')
+  })
+
+  // Fewer real leads is the product. A long list of strangers is what it
+  // replaced, so the prompt has to say so or the model pads to fill the target.
+  it('tells the model to return fewer entries rather than pad with strangers', () => {
+    expect(buildCustomerWatchlistHint(['Acme Corp'])).toMatch(/return fewer entries/)
   })
 })
 

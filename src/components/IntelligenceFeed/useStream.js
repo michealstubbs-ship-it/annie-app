@@ -185,5 +185,5 @@ export function useStream({ user }) {
     setContacts(prev => (prev.some(c => c.id === contact.id) ? prev : [...prev, contact]))
   }, [])
 
-  return { items, counts, credits, loading, error, setError, onboarding, refresh: load, setState, markDone, dismiss, markSeen, applyResolvedContact, applyContactLogged, applyContactSaved }
+  return { items, counts, credits, loading, error, setError, onboarding, contacts, refresh: load, setState, markDone, dismiss, markSeen, applyResolvedContact, applyContactLogged, applyContactSaved }
 }
