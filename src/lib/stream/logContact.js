@@ -17,8 +17,16 @@
 import { supabase } from '../supabase'
 import { createContact } from '../data/contacts'
 
+// Not toLocaleDateString: email sync writes notes into this same column from
+// Node, whose en-GB renders September as "Sept" on some ICU builds while
+// browsers render "Sep". Two writers, one format, no drifting apart — and the
+// server's duplicate check compares these strings literally.
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
 function stamp(date = new Date()) {
-  return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+  const d = date instanceof Date ? date : new Date(date)
+  if (Number.isNaN(d.getTime())) return ''
+  return `${d.getUTCDate()} ${MONTHS_SHORT[d.getUTCMonth()]} ${d.getUTCFullYear()}`
 }
 
 /**

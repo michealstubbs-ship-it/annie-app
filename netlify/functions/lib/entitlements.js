@@ -68,10 +68,14 @@ import { parseIntEnv } from './env.js'
 // CONTACTS, not 50 attempts, which is both easier to sell and easier to
 // explain at the ceiling. Team's pool is shared across the whole team, which
 // is why usage is keyed on team_id rather than user_id.
+// emailSync (2026-09-05, Michael): Growth and Team only. A Starter recruiter
+// still gets the drafted approach — they just copy it into Outlook themselves,
+// and Annie never sees the reply. That gap is the upgrade argument, and it is
+// visible in the product rather than buried on a pricing page.
 export const TIER_LIMITS = {
-  starter: { chatMessagesPerMonth: 500, deepOnboardingResearch: false, contactCreditsPerMonth: 50 },
-  growth: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true, contactCreditsPerMonth: 150 },
-  team: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true, contactCreditsPerMonth: 400 },
+  starter: { chatMessagesPerMonth: 500, deepOnboardingResearch: false, contactCreditsPerMonth: 50, emailSync: false },
+  growth: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true, contactCreditsPerMonth: 150, emailSync: true },
+  team: { chatMessagesPerMonth: Infinity, deepOnboardingResearch: true, contactCreditsPerMonth: 400, emailSync: true },
 }
 
 // The actual numbers behind deepOnboardingResearch above (2026-08-25,
