@@ -19,7 +19,7 @@
 // relationship reset, and an account the recruiter already understands.
 import { isPlaceholderCompany } from './backlogRanking'
 import { normalizeCompanyName } from './companyMatch'
-import { deriveSeniorityBand, SENIORITY_BANDS } from './contactFacets'
+import { deriveSeniorityBand, deriveContactFacets, SENIORITY_BANDS } from './contactFacets'
 
 export const CHANGE_JOB_MOVE = 'job_move'
 export const CHANGE_PROMOTION = 'promotion'
@@ -217,9 +217,18 @@ export function buildAllChangeSignals(changes = [], opts = {}) {
 // contact is not.
 export function contactUpdateFor(change) {
   if (!change) return null
+  // The facets are recomputed, not just carried over. seniority_band and
+  // function_area are derived from the title, so a move or a promotion makes
+  // the stored ones wrong the moment the title changes — and the backlog and
+  // the watchlist both rank on them. Writing the new company without the new
+  // band would leave a promoted Head of Strategy still filed as a Director.
+  const facets = deriveContactFacets({ title: change.to.title, company: change.to.company })
   return {
     id: change.contactId,
     company: change.to.company,
     title: change.to.title || null,
+    seniority_band: facets.seniority_band,
+    function_area: facets.function_area,
+    is_competitor: facets.is_competitor,
   }
 }

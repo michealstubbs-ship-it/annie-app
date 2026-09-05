@@ -188,7 +188,33 @@ describe('contactUpdateFor', () => {
     expect(contactUpdateFor({
       contactId: 'c1',
       to: { company: 'PIF', title: 'Group CSO' },
-    })).toEqual({ id: 'c1', company: 'PIF', title: 'Group CSO' })
+    })).toMatchObject({ id: 'c1', company: 'PIF', title: 'Group CSO' })
+  })
+
+  // The facets are derived from the title, so a move or a promotion makes the
+  // stored ones wrong the moment the title changes — and both the backlog and
+  // the scan watchlist rank on them. Writing the new company without the new
+  // band would leave a promoted Head of Strategy still filed as a Director.
+  it('recomputes the facets rather than leaving them stale', () => {
+    const promoted = contactUpdateFor({
+      contactId: 'c1',
+      from: { company: 'ADQ', title: 'Head of Strategy' },
+      to: { company: 'ADQ', title: 'Chief Strategy Officer' },
+    })
+    expect(promoted.seniority_band).toBe('c_suite')
+    expect(promoted.function_area).toBe('Strategy & Corporate Development')
+    expect(promoted.is_competitor).toBe(false)
+  })
+
+  // A contact who moves to a search firm becomes a competitor, and the ranking
+  // has to stop offering them as a lead.
+  it('notices when the move made them a competitor', () => {
+    const moved = contactUpdateFor({
+      contactId: 'c2',
+      from: { company: 'ADQ', title: 'Head of Strategy' },
+      to: { company: 'Some Executive Search', title: 'Managing Partner' },
+    })
+    expect(moved.is_competitor).toBe(true)
   })
 
   it('returns null for nothing', () => {

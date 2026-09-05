@@ -436,7 +436,16 @@ export default function LinkedInImport({ embedded = false }) {
         const update = contactUpdateFor(change)
         if (!update) continue
         const { error: updErr } = await supabase.from('contacts')
-          .update({ company: update.company, title: update.title })
+          // Facets included: they are derived from the title, so a move or a
+          // promotion makes the stored ones wrong, and the backlog and the
+          // watchlist both rank on them.
+          .update({
+            company: update.company,
+            title: update.title,
+            seniority_band: update.seniority_band,
+            function_area: update.function_area,
+            is_competitor: update.is_competitor,
+          })
           .eq('id', update.id)
         if (updErr) console.error('[linkedin-import] failed to update moved contact:', updErr.message)
       }

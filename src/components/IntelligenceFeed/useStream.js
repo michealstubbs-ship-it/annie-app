@@ -16,6 +16,7 @@ import { listActiveSignals, markSignalSeen, markSignalActioned, markSignalWorkin
 import { listCandidatesForMatching } from '../../lib/data/candidates'
 import { collapseFeedDuplicates } from '../../lib/intelligenceFeedDedup'
 import { buildStream, streamCounts, STATE_NEW, STATE_WORKING, STATE_PARKED } from '../../lib/stream/buildStream'
+import { planFacetBackfill, runFacetBackfill } from '../../lib/backfillFacets'
 import { fetchContactCredits } from '../../lib/data/contactCredits'
 import { logSignalOutcome } from '../../lib/signalOutcomes'
 
@@ -47,10 +48,30 @@ export function useStream({ user }) {
         supabase.from('onboarding').select('sectors, functions, locations, tone, writing_style').eq('user_id', user.id).maybeSingle(),
       ])
       if (contactRes.error) throw contactRes.error
+      const contactRows = contactRes.data || []
+
+      // Contacts imported before the classifier existed have null facets, and a
+      // contact with no seniority_band scores zero and never reaches the
+      // backlog — on the account this was built for that was all 778 rows and
+      // a completely empty call list.
+      //
+      // planFacetBackfill computes the facets from data already in hand, so
+      // `patched` is what gets rendered: the backlog is correct on this paint
+      // rather than after a write returns. The write itself is
+      // fire-and-forget and never throws — a failed repair must not take the
+      // feed down, and it simply happens again on the next load.
+      const { updates, patched } = planFacetBackfill(contactRows)
+
       setSignals(signalRows || [])
-      setContacts(contactRes.data || [])
+      setContacts(patched)
       setCandidates(candidateRows || [])
       setOnboarding(onboardingRes?.data || null)
+
+      if (updates.length) {
+        runFacetBackfill(supabase, contactRows)
+          .then(({ written }) => console.info(`[backfillFacets] classified ${written} contact(s)`))
+          .catch(() => {})
+      }
     } catch (err) {
       setError(err.message || 'Could not load your stream.')
     } finally {
