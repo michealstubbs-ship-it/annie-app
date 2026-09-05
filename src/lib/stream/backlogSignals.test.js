@@ -127,6 +127,22 @@ describe('backlog items inside the real stream', () => {
     expect(items).toHaveLength(0)
   })
 
+  // FEED-1, Michael's first words about the rebuilt feed: "Confidential is not
+  // a company. So, this should not have showed up." The card was still there
+  // after the network-first release because isPlaceholderCompany had been wired
+  // into the backlog and the import diff but never into the scan's own signals.
+  it('drops a scan signal whose employer cannot be named', () => {
+    const items = buildStream({
+      signals: [
+        { id: 's1', signal_type: 'live_job', company_name: 'Confidential', headline: 'Chief Investment Officer', status: 'new' },
+        { id: 's2', signal_type: 'live_job', company_name: 'Confidential Government', headline: 'CDO', status: 'new' },
+        { id: 's3', signal_type: 'live_job', company_name: 'ADQ', headline: 'Head of Strategy', status: 'new' },
+      ],
+      contacts: [],
+    })
+    expect(items.map(i => i.signal.company_name)).toEqual(['ADQ'])
+  })
+
   it('adds nothing when the CRM is empty, leaving the feed as it was', () => {
     const items = buildStream({
       signals: [{ id: 's1', signal_type: 'funding', company_name: 'X', headline: 'Y', status: 'new' }],

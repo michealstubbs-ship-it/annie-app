@@ -19,6 +19,7 @@ import { looksLikeNonEmployerOrg } from '../agencyMatch.js'
 import { NEWS_SIGNAL_TYPES } from '../signalTypes.js'
 
 import { buildBacklogSignals, BACKLOG_TYPE_WEIGHT, BACKLOG_SIGNAL_TYPE } from './backlogSignals'
+import { isPlaceholderCompany } from '../backlogRanking'
 
 export const STATE_NEW = 'new'
 export const STATE_WORKING = 'working'
@@ -108,6 +109,19 @@ export function buildStream({ signals = [], contacts = [], candidates = [], func
     // Not a lead: a "live job" at a membership body, a meetup group or an
     // agency is not an employer hiring.
     if (signal.signal_type === 'live_job' && looksLikeNonEmployerOrg(signal.company_name, signal.company_industry)) continue
+
+    // FEED-1, and the first thing Michael said about the rebuilt feed:
+    // "Confidential is not a company. So, this should not have showed up."
+    // The top card that day was a live role at "Confidential", and the same
+    // card was still there after the network-first release, because
+    // isPlaceholderCompany was wired into the backlog and the import diff and
+    // never into the signals the scan itself writes.
+    //
+    // A lead has to be a lead at a nameable employer. If Annie cannot say where
+    // the role is, she cannot tell the recruiter who to call, and every action
+    // on the card - find the contact, draft the approach - is spending effort
+    // against a company that was never identified.
+    if (isPlaceholderCompany(signal.company_name)) continue
 
     const wayIn = computeWayIn(signal, { contacts, candidates })
     const linkedinRoute = buildLinkedinRoute(signal, wayIn.kind === 'spoken' || wayIn.kind === 'contact' ? wayIn.person : null)
