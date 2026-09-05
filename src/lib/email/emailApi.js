@@ -73,13 +73,18 @@ export async function disconnectEmail() {
  *
  * A failure here is always reported honestly rather than swallowed: a user who
  * is unsure whether their message went will send it twice.
+ *
+ * signalId is the lead the approach came from. It is what lets a reply weeks
+ * later be attributed back to the card that produced it — without it, the send
+ * is recorded against the contact only and the signal's outcome is unknowable.
+ * The server checks it belongs to the caller before storing it.
  */
-export async function sendFromAnnie({ to, subject, body }) {
+export async function sendFromAnnie({ to, subject, body, signalId = null }) {
   try {
     const resp = await fetch('/api/email-send', {
       method: 'POST',
       headers: await authHeaders(),
-      body: JSON.stringify({ to, subject, body }),
+      body: JSON.stringify({ to, subject, body, signalId }),
     })
     const data = await readJson(resp)
     if (resp.status === 402) return { sent: false, upgrade: true, error: data?.error || 'Sending is on Growth and Team.' }

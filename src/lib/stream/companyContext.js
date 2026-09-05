@@ -75,10 +75,10 @@ export function attachCompanyContext(items = []) {
     groups.get(key).push(item)
   }
 
-  const out = [...standalone.map(i => ({ ...i, happening: [] }))]
+  const out = [...standalone.map(i => ({ ...i, happening: [], absorbed: [] }))]
 
   for (const group of groups.values()) {
-    if (group.length === 1) { out.push({ ...group[0], happening: [] }); continue }
+    if (group.length === 1) { out.push({ ...group[0], happening: [], absorbed: [] }); continue }
 
     const ordered = [...group].sort((a, b) => {
       const h = hostRank(b) - hostRank(a)
@@ -97,6 +97,12 @@ export function attachCompanyContext(items = []) {
     out.push({
       ...host,
       score: Math.max(...group.map(i => i.score)),
+      // Which rows this card now speaks for. Merging happens at 11am as
+      // readily as at 9am — the scan writes a funding signal at a company
+      // whose backlog card is already on today's list — and without this the
+      // recorded id would simply stop existing, which today's set would read
+      // as "dealt with" and quietly shrink the day. See stream/dailySet.js.
+      absorbed: rest.map(i => i.id),
       happening: events
         .map(i => ({
           id: i.signal.id,

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   splitAddress, cleanDisplayName, nameFromAddress, classifyAddress,
-  parseAwayUntil, detectAutoReply, parseSignature, pickCounterparty,
+  parseAwayUntil, detectAutoReply, detectBounce, parseSignature, pickCounterparty,
 } from './emailSync.js'
 
 // The fixtures below are the real thing. They were taken from a live recruiter
@@ -181,6 +181,98 @@ describe('detectAutoReply', () => {
     })
     expect(got.isAutoReply).toBe(true)
     expect(got.awayUntil).toBeNull()
+  })
+})
+
+describe('detectBounce', () => {
+  // Why this exists at all, given classifyAddress already rejects
+  // mailer-daemon, postmaster, bounce* and no-reply as automated: that filter
+  // is an ADDRESS list, and Exchange and some mail appliances send a
+  // non-delivery report from an ordinary-looking address that no address list
+  // can anticipate. Two independent gates, so neither has to be complete.
+  //
+  // The stakes are higher than for an out-of-office. An OOO wrongly counted as
+  // an answer stops a chase. A BOUNCE wrongly counted as an answer tells the
+  // customer the message landed and was replied to, when it never arrived —
+  // not an unproven claim, a false one.
+
+  it('spots the canonical delivery status notification', () => {
+    // RFC 3464. This header is what a DSN IS; nothing else sets it.
+    const got = detectBounce({
+      subject: 'Mail delivery failed',
+      headers: [{ name: 'Content-Type', value: 'multipart/report; report-type=delivery-status; boundary="x"' }],
+    })
+    expect(got.isBounce).toBe(true)
+    expect(got.reason).toBe('dsn_content_type')
+  })
+
+  it('spots the header Postfix and Exchange set on a failure', () => {
+    expect(detectBounce({
+      subject: 'Undeliverable: Al Akaria — hiring',
+      headers: [{ name: 'X-Failed-Recipients', value: 'balkhalaf@al-akaria.com' }],
+    }).isBounce).toBe(true)
+  })
+
+  it('spots the subjects the big providers actually send', () => {
+    const subjects = [
+      'Undeliverable: Recruitment - Vantage Search Group',
+      'Delivery Status Notification (Failure)',
+      'Mail delivery failed: returning message to sender',
+      'Returned mail: see transcript for details',
+      'Failure notice',
+      'Message not delivered',
+      'Delivery incomplete',
+    ]
+    for (const subject of subjects) {
+      expect(detectBounce({ subject }).isBounce, subject).toBe(true)
+    }
+  })
+
+  it('spots a DSN by its machine-readable body, with no useful headers', () => {
+    // Unipile does not always hand back headers. The RFC 3464 field names
+    // below appear nowhere in ordinary prose, which is what makes matching on
+    // them safe against mail a person wrote.
+    const got = detectBounce({
+      subject: 'Re: Al Akaria — hiring',
+      bodyPlain: [
+        'This is the mail system at host mail.example.',
+        '',
+        'Final-Recipient: rfc822; balkhalaf@al-akaria.com',
+        'Action: failed',
+        'Diagnostic-Code: smtp; 550 5.1.1 User unknown',
+      ].join('\n'),
+    })
+    expect(got.isBounce).toBe(true)
+    expect(got.reason).toBe('dsn_body')
+  })
+
+  it('leaves a real reply alone even when it talks about mail failing', () => {
+    // The check has to be structural rather than a phrase in the prose, or a
+    // human sentence about a delivery problem would be read as a bounce and
+    // the reply would be discarded. This is Bayan's real reply shape with the
+    // most awkward possible content.
+    const got = detectBounce({
+      subject: 'Re: Senior Marketing Manager profile',
+      bodyPlain: 'Hi Michael\n\nSorry, your last message failed to reach me and was returned — please resend the CV.\n\nBayan AlKhalaf',
+    })
+    expect(got.isBounce).toBe(false)
+    expect(got.reason).toBeNull()
+  })
+
+  it('leaves an out-of-office alone — it is the other verdict, not this one', () => {
+    // Hannah Wild's real out-of-office. It proves the address WORKS. Reading
+    // it as a bounce would throw away the return date, which is the one
+    // genuinely useful thing in it.
+    expect(detectBounce({
+      subject: 'Automatic reply: Follow up to call',
+      bodyPlain: 'Thank you for your email. I am out of office until Monday 21st September.',
+      headers: [{ name: 'Auto-Submitted', value: 'auto-replied' }],
+    }).isBounce).toBe(false)
+  })
+
+  it('does not fire on an empty message', () => {
+    expect(detectBounce({}).isBounce).toBe(false)
+    expect(detectBounce({ subject: '', bodyPlain: '', headers: [] }).isBounce).toBe(false)
   })
 })
 

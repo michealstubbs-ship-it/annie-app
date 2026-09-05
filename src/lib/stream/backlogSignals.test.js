@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildBacklogSignals, isBacklogSignal, BACKLOG_SIGNAL_TYPE } from './backlogSignals'
+import { buildBacklogSignals, backlogQueue, isBacklogSignal, BACKLOG_SIGNAL_TYPE } from './backlogSignals'
 import { buildStream } from './buildStream'
 
 const FUNCTIONS = ['Strategy & Corporate Development']
@@ -239,6 +239,72 @@ describe('the network gate', () => {
       contacts: [],
     })
     expect(items).toHaveLength(1)
+  })
+})
+
+describe('a backlog lead the recruiter is working', () => {
+  // Before contacts.backlog_working_at existed, the New / Working / Park
+  // buttons on a backlog card wrote to intelligence_signals by an id —
+  // 'backlog:<contact uuid>' — that matches no row in that table. They were
+  // dead controls: nothing saved, and nothing survived a reload.
+  it('carries the recruiter own state onto the synthesised row', () => {
+    const [row] = buildBacklogSignals({
+      contacts: [contact()],
+      functions: FUNCTIONS,
+      working: new Set(['c1']),
+    })
+    expect(row.status).toBe('working')
+  })
+
+  it('is still built when a signal lands at the same company', () => {
+    // Same-company backlog rows are normally dropped as noise. In-flight work
+    // is the exception: a card vanishing mid-day underneath the person using
+    // it is the one unforgivable bug in a feed.
+    const args = {
+      contacts: [contact()],
+      signals: [{ id: 's1', company_name: 'ADQ', status: 'new' }],
+      functions: FUNCTIONS,
+    }
+    expect(buildBacklogSignals(args)).toHaveLength(0)
+    expect(buildBacklogSignals({ ...args, working: new Set(['c1']) })).toHaveLength(1)
+  })
+
+  it('drops a parked person even while a stale Working flag is set', () => {
+    const out = buildBacklogSignals({
+      contacts: [contact({ backlog_parked_at: '2026-09-05T09:00:00Z' })],
+      functions: FUNCTIONS,
+      working: new Set(['c1']),
+    })
+    expect(out).toHaveLength(0)
+  })
+})
+
+describe('backlogQueue — the rest of the network, counted', () => {
+  // Never hide a lead. What today's set does not reach is deferred to
+  // tomorrow, and the count has to be sayable out loud — "612 more in your
+  // network" — or a short list reads as software holding something back.
+  it('returns everyone eligible, with no cap at all', () => {
+    const contacts = Array.from({ length: 40 }, (_, i) => contact({ id: `c${i}`, company: `Company ${i}` }))
+    expect(backlogQueue({ contacts, functions: FUNCTIONS })).toHaveLength(40)
+  })
+
+  it('counts the same population the feed itself would show', () => {
+    // A second, subtly different eligibility rule here would let the queue
+    // report a number the list could never reach.
+    const contacts = [
+      contact({ id: 'ok', company: 'ADQ' }),
+      contact({ id: 'junior', company: 'Aldar', seniority_band: 'below' }),
+      contact({ id: 'rival', company: 'A Search Firm', is_competitor: true }),
+      contact({ id: 'called', company: 'Mubadala', last_contacted: '2026-09-01T00:00:00Z' }),
+      contact({ id: 'parked', company: 'NEOM', backlog_parked_at: '2026-09-01T00:00:00Z' }),
+    ]
+    expect(backlogQueue({ contacts, functions: FUNCTIONS }).map(e => e.contact.id)).toEqual(['ok'])
+  })
+
+  it('leaves out anyone already on screen', () => {
+    const contacts = [contact({ id: 'shown' }), contact({ id: 'waiting', company: 'Aldar' })]
+    const out = backlogQueue({ contacts, functions: FUNCTIONS, exclude: new Set(['shown']) })
+    expect(out.map(e => e.contact.id)).toEqual(['waiting'])
   })
 })
 

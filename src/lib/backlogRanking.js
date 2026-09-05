@@ -150,7 +150,13 @@ export function scoreContact(contact, { functions = [], depthByCompany = new Map
 // The cap matters more than it looks. Six hundred qualifying contacts poured
 // into the feed at once is not a call list, it is the same undifferentiated
 // wall the CRM already was. A recruiter works a handful of BD calls a day, so
-// the feed holds a small live set and replenishes as they are actioned.
+// the feed holds a small live set.
+//
+// 2026-09-05: what the cap does NOT do any more is refill. It used to hold
+// exactly eight names and hand up a replacement the moment one was worked, so
+// the list never emptied and the day never ended — see stream/dailySet.js. The
+// cap is now the size of the POOL the day's set is drawn from once; the day's
+// set itself is recorded and does not top up.
 export const DEFAULT_BACKLOG_LIMIT = 8
 
 export function buildCompanyDepth(contacts = []) {
@@ -163,7 +169,23 @@ export function buildCompanyDepth(contacts = []) {
   return depth
 }
 
-export function rankBacklog(contacts = [], { functions = [], limit = DEFAULT_BACKLOG_LIMIT, now = new Date(), exclude = new Set() } = {}) {
+// pin: contact ids that must be returned whether or not they make the cap.
+//
+// Two things need this, and both are the same rule — once a person has been
+// PUT somewhere by the recruiter or by today's set, the ranking no longer gets
+// a vote on whether they exist:
+//
+//   * someone the recruiter marked Working. Losing in-flight work because a
+//     score drifted is the one unforgivable bug in a feed.
+//   * someone in today's recorded set. Scores move during a day (freshness
+//     decays, a colleague imports contacts, the scan writes new signals); a
+//     name chosen at 9am has to still be there at 4pm.
+//
+// Pinning affects the CAP only, never eligibility: a pinned contact who has
+// since been contacted or parked still drops out through exclusionReason,
+// because that is a real change in the underlying fact rather than a wobble in
+// the ranking.
+export function rankBacklog(contacts = [], { functions = [], limit = DEFAULT_BACKLOG_LIMIT, now = new Date(), exclude = new Set(), pin = new Set() } = {}) {
   const depthByCompany = buildCompanyDepth(contacts)
   const scored = []
 
@@ -174,14 +196,22 @@ export function rankBacklog(contacts = [], { functions = [], limit = DEFAULT_BAC
     scored.push({ contact, ...result })
   }
 
-  scored.sort((a, b) => {
+  const byScore = (a, b) => {
     if (b.score !== a.score) return b.score - a.score
     // Stable, name-ordered tie-break so the same CRM always produces the same
     // list. A backlog that reshuffles between page loads reads as broken.
     return String(a.contact.name || '').localeCompare(String(b.contact.name || ''))
-  })
+  }
+  scored.sort(byScore)
 
-  return scored.slice(0, limit)
+  if (!pin.size) return scored.slice(0, limit)
+
+  // The pinned are taken out before the cap is applied, so they cost the day
+  // no slots: a recruiter with six things in progress still gets a full pool
+  // of new names underneath them.
+  const pinned = scored.filter(e => pin.has(e.contact.id))
+  const rest = scored.filter(e => !pin.has(e.contact.id)).slice(0, limit)
+  return [...pinned, ...rest].sort(byScore)
 }
 
 // Why this person, in the recruiter's own terms.

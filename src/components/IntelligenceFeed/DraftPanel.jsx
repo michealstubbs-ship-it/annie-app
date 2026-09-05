@@ -64,7 +64,15 @@ export default function DraftPanel({ item, profile, onboarding, emailReady = fal
   async function send() {
     setSending(true)
     setError(null)
-    const res = await sendFromAnnie({ to: to.trim(), subject: subject.trim(), body: text })
+    // The signal id travels with the send so the approach is recorded against
+    // the lead, not just against an email address. A reply that arrives three
+    // weeks from now is attributed back to this card because of this line.
+    const res = await sendFromAnnie({
+      to: to.trim(),
+      subject: subject.trim(),
+      body: text,
+      signalId: item?.signal?.id || null,
+    })
     setSending(false)
     if (!res.sent) {
       setError(res.error || 'The message could not be sent.')
@@ -99,8 +107,8 @@ export default function DraftPanel({ item, profile, onboarding, emailReady = fal
         <div className="border border-emerald-200 bg-emerald-50 rounded-lg px-3.5 py-3">
           <p className="text-[13px] font-semibold text-emerald-800">Sent to {to}</p>
           <p className="text-[12px] text-gray-600 mt-0.5">
-            It’s in your sent items, and Annie has logged it against the contact. A reply comes
-            straight back to your inbox.
+            It’s in your sent items and logged against the contact. If they reply, Annie records
+            that against this lead.
           </p>
         </div>
       </div>

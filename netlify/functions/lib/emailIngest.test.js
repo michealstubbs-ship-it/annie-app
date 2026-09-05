@@ -3,12 +3,13 @@ import { ingestMessage, ingestBatch, ownIdentity } from './emailIngest.js'
 
 // A fake supabase with just enough behaviour to be worth trusting: a real
 // unique constraint on the ledger, filtered selects, and recorded writes.
-function makeDb({ contacts = [], companies = [], enrichment = [] } = {}) {
+function makeDb({ contacts = [], companies = [], enrichment = [], approaches = [] } = {}) {
   const db = {
     email_messages: [],
     contacts: contacts.map(c => ({ ...c })),
     companies: companies.map(c => ({ ...c })),
     company_enrichment: enrichment.map(c => ({ ...c })),
+    outreach_approaches: approaches.map(c => ({ replied_at: null, ...c })),
     team_members: [],
   }
   let seq = 0
@@ -17,6 +18,10 @@ function makeDb({ contacts = [], companies = [], enrichment = [] } = {}) {
     const q = { rows: db[table] ? db[table].slice() : [], table }
     q.select = () => q
     q.eq = (col, val) => { q.rows = q.rows.filter(r => r[col] === val); return q }
+    q.is = (col, val) => {
+      q.rows = q.rows.filter(r => (val === null ? r[col] == null : r[col] === val))
+      return q
+    }
     q.ilike = (col, val) => {
       const n = String(val).toLowerCase()
       q.rows = q.rows.filter(r => String(r[col] ?? '').toLowerCase() === n)
@@ -211,6 +216,157 @@ describe('ingestMessage', () => {
     const got = await ingestBatch(supabase, { ...CTX, messages: [{ id: 'x', from_attendee: null }] })
     expect(got.skipped).toBe(1)
     expect(got.reasons.no_counterparty).toBe(1)
+  })
+})
+
+// The whole point of the outreach loop, exercised through the real ingest path
+// rather than against markApproachReplied directly: what a customer is told
+// about which approaches worked depends on these three cases being told apart,
+// and they are only told apart correctly if the gates in ingestMessage fire in
+// the right order.
+describe('ingestMessage — closing the loop on an approach', () => {
+  const APPROACH = {
+    id: 'ap-1',
+    user_id: 'u1',
+    to_email: 'balkhalaf@al-akaria.com',
+    sent_at: '2026-09-02T09:12:37.000Z',
+    thread_id: 'thr-1',
+    contact_id: 'k-bayan',
+    signal_id: 'sig-1',
+    replied_at: null,
+  }
+  const BAYAN = {
+    id: 'k-bayan', user_id: 'u1', name: 'Bayan AlKhalaf',
+    email: 'balkhalaf@al-akaria.com', company: 'Al Akaria',
+  }
+
+  it('records a real reply against the approach it answers', async () => {
+    const { supabase, db } = makeDb({ contacts: [BAYAN], approaches: [APPROACH] })
+    const got = await ingestMessage(supabase, {
+      ...CTX,
+      message: inbound('r1', 'balkhalaf@al-akaria.com', 'Bayan AlKhalaf', 'Re: Al Akaria — hiring',
+        'Hi Michael\n\nSunday 1 pm is suitable\n\nThank you\n\nBayan AlKhalaf', { thread_id: 'thr-1' }),
+    })
+
+    expect(got.answeredApproach).toBe(true)
+    expect(db.outreach_approaches[0].replied_at).toBe('2026-09-02T09:20:19.000Z')
+    expect(db.outreach_approaches[0].reply_message_id).toBe(db.email_messages[0].id)
+    // and it counts as contact on the record too
+    expect(db.contacts[0].last_contacted).toBe('2026-09-02T09:20:19.000Z')
+  })
+
+  it('does NOT let an out-of-office answer an approach', async () => {
+    // Hannah Wild's out-of-office arrived 40 seconds after Michael's mail.
+    // Counting it would tell the customer that approach worked, and stop the
+    // chase on the one lead most likely still to be live.
+    const { supabase, db } = makeDb({
+      contacts: [BAYAN],
+      approaches: [APPROACH],
+    })
+    const got = await ingestMessage(supabase, {
+      ...CTX,
+      message: inbound('r2', 'balkhalaf@al-akaria.com', 'Bayan AlKhalaf', 'Automatic reply: Al Akaria — hiring',
+        'I am out of office until Monday 21st September.', { thread_id: 'thr-1' }),
+    })
+
+    expect(got.isAutoReply).toBe(true)
+    expect(got.answeredApproach).toBe(false)
+    expect(db.outreach_approaches[0].replied_at).toBeNull()
+    expect(db.contacts[0].last_contacted).toBeUndefined()
+  })
+
+  it('does NOT let a bounce answer an approach', async () => {
+    // The worse failure of the two. A bounce means the message never arrived;
+    // recording it as a reply would be reporting a result that is false rather
+    // than merely unproven.
+    const { supabase, db } = makeDb({ contacts: [BAYAN], approaches: [APPROACH] })
+    const got = await ingestMessage(supabase, {
+      ...CTX,
+      message: inbound('r3', 'balkhalaf@al-akaria.com', 'Bayan AlKhalaf', 'Undeliverable: Al Akaria — hiring',
+        'Your message could not be delivered.', { thread_id: 'thr-1' }),
+    })
+
+    expect(got.isBounce).toBe(true)
+    expect(got.answeredApproach).toBe(false)
+    expect(db.outreach_approaches[0].replied_at).toBeNull()
+    expect(db.email_messages[0].is_bounce).toBe(true)
+    // Recorded on the contact, because it is worth knowing — but never as contact.
+    expect(db.contacts[0].notes).toContain('Email could not be delivered')
+    expect(db.contacts[0].last_contacted).toBeUndefined()
+  })
+
+  it('never spends an Anthropic call summarising a delivery report', async () => {
+    // A bounce has a fixed note, so the note writer is not reached. Same
+    // reasoning as the auto-reply path: nothing a machine wrote is worth
+    // paying a model to read.
+    const { supabase, db } = makeDb({ contacts: [BAYAN], approaches: [APPROACH] })
+    await ingestMessage(supabase, {
+      ...CTX,
+      anthropicKey: 'key',
+      message: inbound('r4', 'balkhalaf@al-akaria.com', 'Bayan AlKhalaf', 'Delivery Status Notification (Failure)', 'x'),
+    })
+    expect(db.email_messages[0].note_model).toBeNull()
+  })
+
+  it('does not treat the recruiter writing again as a reply', async () => {
+    // Outbound mail on the same thread. Obvious, and worth pinning: the
+    // direction check is the only thing between "I chased them twice" and
+    // "they answered".
+    const { supabase, db } = makeDb({ contacts: [BAYAN], approaches: [APPROACH] })
+    const got = await ingestMessage(supabase, {
+      ...CTX,
+      message: out('r5', 'balkhalaf@al-akaria.com', 'Bayan AlKhalaf', 'Re: Al Akaria — hiring', { thread_id: 'thr-1' }),
+    })
+    expect(got.answeredApproach).toBe(false)
+    expect(db.outreach_approaches[0].replied_at).toBeNull()
+  })
+
+  it('counts a reply from someone with no contact record', async () => {
+    // A recruiter who approached a personal address gets no CRM row for it
+    // (matchContact tier three). The reply is still a reply, and dropping it
+    // would under-report the one number this feature exists to produce.
+    const { supabase, db } = makeDb({
+      approaches: [{ ...APPROACH, id: 'ap-2', to_email: 'shuaa.ms@gmail.com', contact_id: null, thread_id: null }],
+    })
+    const got = await ingestMessage(supabase, {
+      ...CTX,
+      message: inbound('r6', 'shuaa.ms@gmail.com', 'Shuaa Al Harbi', 'Re: Interview confirmation', 'Yes, Tuesday works.'),
+    })
+    expect(got.outcome).toBe('skipped_personal')
+    expect(got.answeredApproach).toBe(true)
+    expect(db.outreach_approaches[0].replied_at).toBe('2026-09-02T09:20:19.000Z')
+  })
+
+  it('leaves an unrelated inbound message alone', async () => {
+    const { supabase, db } = makeDb({
+      contacts: [BAYAN],
+      approaches: [{ ...APPROACH, to_email: 'someone.else@limad.com' }],
+    })
+    const got = await ingestMessage(supabase, {
+      ...CTX,
+      message: inbound('r7', 'balkhalaf@al-akaria.com', 'Bayan AlKhalaf', 'Re: something', 'Hello again.'),
+    })
+    expect(got.answeredApproach).toBe(false)
+    expect(db.outreach_approaches[0].replied_at).toBeNull()
+  })
+
+  it('files the message even if the approach bookkeeping blows up', async () => {
+    // The note and the contact record are the customer's own data; the
+    // approach ledger is Annie's reporting. The first must never be lost to a
+    // failure in the second.
+    const { supabase, db } = makeDb({ contacts: [BAYAN], approaches: [APPROACH] })
+    const guarded = {
+      from: (table) => (table === 'outreach_approaches'
+        ? { select: () => { throw new Error('outreach_approaches does not exist') } }
+        : supabase.from(table)),
+    }
+    const got = await ingestMessage(guarded, {
+      ...CTX,
+      message: inbound('r8', 'balkhalaf@al-akaria.com', 'Bayan AlKhalaf', 'Re: Al Akaria — hiring', 'Sunday works.'),
+    })
+    expect(got.ingested).toBe(true)
+    expect(got.answeredApproach).toBe(false)
+    expect(db.contacts[0].last_contacted).toBe('2026-09-02T09:20:19.000Z')
   })
 })
 

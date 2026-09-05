@@ -22,6 +22,8 @@ import {
   writeToSignalPool, fetchSignalPoolMatches, personalizePoolHits,
   logMarketCoverage, getMarketCoverageReport,
   getCustomerWatchlistCompanies, buildCustomerWatchlistHint,
+  selectWatchlistRotation, fetchWatchlistScanTimes, recordWatchlistScan,
+  WATCHLIST_COMPANY_LIMIT, WATCHLIST_CORE_SIZE, WATCHLIST_ROTATION_PERIOD_MS,
   buildLiveJobBoardHint, buildTargetFirmHint,
   verifySourceUrl,
 } from './scanShared.js'
@@ -3591,9 +3593,27 @@ describe('getMarketCoverageReport (aggregating scan history into a per sector+lo
 // to analyze the companies either they are adding, or that have come from
 // their CSV, start monitoring those companies and their competitors").
 describe('getCustomerWatchlistCompanies (personal, per-account company watchlist fed from the CRM)', () => {
-  function makeWatchlistSupabase({ teamId = null, companiesByUser = [], candidatesByUser = [], companiesByTeam = [], candidatesByTeam = [], contacts = [], errorTable = null } = {}) {
+  function makeWatchlistSupabase({ teamId = null, companiesByUser = [], candidatesByUser = [], companiesByTeam = [], candidatesByTeam = [], contacts = [], errorTable = null, scanTimes = [], rpc = null } = {}) {
     return {
+      // record_watchlist_scan is what advances the rotation between runs. It is
+      // fire-and-forget in production, so the default here just succeeds
+      // quietly; tests that care pass their own spy.
+      rpc: rpc || (async () => ({ data: 0, error: null })),
       from: (table) => {
+        // The rotation's stored state: when each company was last searched.
+        // Missing rows mean "never", which is how a brand-new account and an
+        // unapplied migration both look.
+        if (table === 'watchlist_scans') {
+          return {
+            select: () => ({
+              eq: () => ({
+                limit: async () => (errorTable === 'watchlist_scans'
+                  ? { data: null, error: { message: 'db down' } }
+                  : { data: scanTimes, error: null }),
+              }),
+            }),
+          }
+        }
         // Contacts now decide the ORDER of the watchlist, not just its
         // membership: a company where the recruiter knows four C-suite people
         // outranks one where they know a single manager. Recency stopped being
@@ -3749,6 +3769,354 @@ describe('getCustomerWatchlistCompanies (personal, per-account company watchlist
     const result = await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })
     expect(result).toEqual([])
     expect(consoleSpy).toHaveBeenCalledWith('[scanShared] failed to read customer watchlist companies:', 'kaboom')
+    consoleSpy.mockRestore()
+  })
+
+  // The two rotation behaviours that only show up once the CRM is bigger than
+  // one run's worth of slots — which on the measured account it is by a factor
+  // of fifteen (615 companies, 40 slots).
+  describe('with more companies than a single run can search', () => {
+    // 60 companies, all added by hand and so all equally deep (weight 1 each),
+    // which leaves the name as the tie-break and makes the depth order
+    // predictable. Their recorded scan history runs the other way: Firm 059 was
+    // searched longest ago, Firm 000 most recently.
+    const BIG_CRM = Array.from({ length: 60 }, (_, i) => ({ name: `Firm ${String(i).padStart(3, '0')}` }))
+    const SCAN_HISTORY = BIG_CRM.map((c, i) => ({
+      company_key: c.name.toLowerCase(),
+      last_scanned_at: new Date(Date.parse('2026-09-04T00:00:00Z') - i * 60_000).toISOString(),
+    }))
+
+    it('holds the deepest 16 and spends the other 24 slots on whatever has gone longest unwatched', async () => {
+      const supabase = makeWatchlistSupabase({ companiesByUser: BIG_CRM, scanTimes: SCAN_HISTORY })
+      const result = await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })
+
+      expect(result).toHaveLength(WATCHLIST_COMPANY_LIMIT)
+      // The core: the top of the depth order, held regardless of staleness.
+      expect(result.slice(0, WATCHLIST_CORE_SIZE)).toEqual(BIG_CRM.slice(0, WATCHLIST_CORE_SIZE).map(c => c.name))
+      // The tail: the 24 stalest, which here are the BOTTOM of the depth order.
+      // Under the old fixed head these were exactly the companies that could
+      // never be reached, so seeing Firm 059 come back is the whole fix.
+      expect(result).toContain('Firm 059')
+      expect(result).toContain('Firm 036')
+      // ...and the ones searched most recently correctly stand down this run.
+      expect(result).not.toContain('Firm 016')
+      expect(result).not.toContain('Firm 035')
+    })
+
+    it('records this run\'s 40 companies, because nothing else makes the next run pick differently', async () => {
+      // Recording lives inside getCustomerWatchlistCompanies rather than at the
+      // three scan call sites on purpose: a new caller that forgot to record
+      // would silently freeze the rotation for its customers, and a frozen
+      // rotation looks exactly like a working one from the outside.
+      const rpc = vi.fn(async () => ({ data: 40, error: null }))
+      const supabase = makeWatchlistSupabase({ companiesByUser: BIG_CRM, scanTimes: SCAN_HISTORY, rpc })
+      await getCustomerWatchlistCompanies(supabase, { user_id: 'u1' })
+
+      expect(rpc).toHaveBeenCalledTimes(1)
+      const [fn, args] = rpc.mock.calls[0]
+      expect(fn).toBe('record_watchlist_scan')
+      expect(args.p_user_id).toBe('u1')
+      expect(args.p_company_keys).toHaveLength(WATCHLIST_COMPANY_LIMIT)
+      expect(args.p_company_keys).toContain('firm 059')
+      // Keys are normalised so "Acme Ltd" and "Acme Limited" share one rotation
+      // row rather than each claiming a tail slot.
+      expect(args.p_company_keys).toContain('firm 000')
+    })
+  })
+})
+
+// 2026-09-05, the coverage measurement that produced selectWatchlistRotation.
+//
+// On the production account the network-first release shipped for there are 615
+// companies in the CRM and WATCHLIST_COMPANY_LIMIT = 40 slots per run. Because
+// the selection above ranked on relationship depth alone, and depth does not
+// change between two runs twelve hours apart, the SAME 40 companies were
+// searched every run forever: 575 companies — 94% of the network — were never
+// searched once, and a company where the recruiter knew four people but which
+// ranked 41st was permanently invisible rather than merely deprioritised.
+//
+// These tests exist to hold the three properties that fix has to have, and they
+// are written against the pure selector precisely so they can hold them without
+// a database, without a mocked clock and without Math.random(): the deepest
+// relationships never rotate out, the rotating slots go to whatever has gone
+// longest unwatched, and the whole network is covered in bounded time.
+describe('selectWatchlistRotation (which 40 of the customer\'s companies this run looks at)', () => {
+  const HOUR = 60 * 60 * 1000
+  const DAY = 24 * HOUR
+
+  // Depth-ordered by construction: Firm 000 is the deepest relationship, Firm
+  // 614 the shallowest. Real scores come from WATCHLIST_BAND_WEIGHT summed over
+  // the customer's contacts; all this needs is a total, unambiguous order so a
+  // failure points at the rotation rather than at a tie-break.
+  function network(size) {
+    return Array.from({ length: size }, (_, i) => {
+      const name = `Firm ${String(i).padStart(3, '0')}`
+      return { name, key: name.toLowerCase(), score: size - i }
+    })
+  }
+
+  it('returns the whole network untouched when it is smaller than one run\'s slots', () => {
+    // Most accounts are not the measured one. A customer with 12 companies has
+    // no coverage problem to solve, and rotating a list that already fits would
+    // only make their feed jitter for no gain.
+    const picked = selectWatchlistRotation(network(12), new Map(), { limit: 40 })
+    expect(picked).toHaveLength(12)
+    expect(picked[0].name).toBe('Firm 000')
+  })
+
+  it('keeps the deepest WATCHLIST_CORE_SIZE relationships on every single run, however recently they were scanned', () => {
+    // The non-negotiable half of the split. A sovereign fund the recruiter
+    // knows four C-suite people at does not stop being watched because it is
+    // Tuesday, so a core company scanned one minute ago still outranks a tail
+    // company nobody has touched in a year.
+    const now = Date.parse('2026-09-05T00:00:00Z')
+    const scanned = new Map()
+    for (const c of network(615)) scanned.set(c.key, now - 1000) // everything freshly scanned
+    for (const c of network(615).slice(WATCHLIST_CORE_SIZE)) scanned.set(c.key, now - 365 * DAY)
+
+    const picked = selectWatchlistRotation(network(615), scanned, { limit: 40, now })
+    const names = picked.map(p => p.name)
+    for (let i = 0; i < WATCHLIST_CORE_SIZE; i++) {
+      expect(names).toContain(`Firm ${String(i).padStart(3, '0')}`)
+    }
+  })
+
+  it('gives the rotating slots to the least recently scanned, so 30 days unwatched beats scanned yesterday', () => {
+    // The literal requirement, at the smallest size that can express it: two
+    // tail slots, one stale company, one fresh one, and depth pointing the
+    // wrong way on purpose — the fresher company is the DEEPER of the two, so
+    // only staleness can produce the right answer.
+    const now = Date.parse('2026-09-05T00:00:00Z')
+    const candidates = [
+      { name: 'Core A', key: 'core a', score: 100 },
+      { name: 'Core B', key: 'core b', score: 90 },
+      { name: 'Scanned Yesterday', key: 'scanned yesterday', score: 50 },
+      { name: 'Unwatched For A Month', key: 'unwatched for a month', score: 10 },
+    ]
+    const scanned = new Map([
+      ['scanned yesterday', now - 1 * DAY],
+      ['unwatched for a month', now - 30 * DAY],
+    ])
+    const picked = selectWatchlistRotation(candidates, scanned, { limit: 3, coreSize: 2, now })
+    expect(picked.map(p => p.name)).toEqual(['Core A', 'Core B', 'Unwatched For A Month'])
+  })
+
+  it('treats a company that has never been scanned as the stalest thing there is', () => {
+    // A company added to the CRM this morning has no row in watchlist_scans,
+    // and "no row" has to mean maximally overdue rather than unknown — this is
+    // the case that made 575 companies invisible, so it is the case that has to
+    // win outright.
+    const now = Date.parse('2026-09-05T00:00:00Z')
+    const candidates = [
+      { name: 'Core', key: 'core', score: 100 },
+      { name: 'Scanned A Year Ago', key: 'scanned a year ago', score: 50 },
+      { name: 'Never Scanned', key: 'never scanned', score: 1 },
+    ]
+    const scanned = new Map([['scanned a year ago', now - 365 * DAY]])
+    const picked = selectWatchlistRotation(candidates, scanned, { limit: 2, coreSize: 1, now })
+    expect(picked.map(p => p.name)).toEqual(['Core', 'Never Scanned'])
+  })
+
+  it('never returns the same company twice, and never returns more than the limit', () => {
+    // The core is sliced off the front of the depth order and the tail pool is
+    // everything after it, so a core company can never also win a tail slot.
+    const now = Date.parse('2026-09-05T00:00:00Z')
+    const picked = selectWatchlistRotation(network(615), new Map(), { limit: 40, now })
+    expect(picked).toHaveLength(40)
+    expect(new Set(picked.map(p => p.key)).size).toBe(40)
+  })
+
+  it('honours a limit smaller than the core rather than over-filling it', () => {
+    // getCustomerWatchlistCompanies takes a limit from its callers, and a
+    // caller asking for 2 must get 2 — an unclamped core would have returned 16.
+    const picked = selectWatchlistRotation(network(50), new Map(), { limit: 2 })
+    expect(picked.map(p => p.name)).toEqual(['Firm 000', 'Firm 001'])
+  })
+
+  it('is a pure function: the same stored state and the same clock give the same 40, every time', () => {
+    // The whole mechanism is only trustworthy if it is reproducible. No
+    // Math.random() anywhere in the path, and nothing read from Date.now()
+    // unless the caller declines to supply a clock.
+    const now = Date.parse('2026-09-05T00:00:00Z')
+    const scanned = new Map(network(615).map((c, i) => [c.key, now - i * HOUR]))
+    const first = selectWatchlistRotation(network(615), scanned, { limit: 40, now })
+    const second = selectWatchlistRotation(network(615), scanned, { limit: 40, now })
+    expect(second.map(p => p.name)).toEqual(first.map(p => p.name))
+  })
+
+  // The coverage claim itself, simulated end to end on the real numbers: 615
+  // companies, 40 slots, 16 held by the core, 24 rotating, two runs a day.
+  //
+  // Seeded with a known history rather than an empty one so the pool is ordered
+  // by staleness alone — the empty-history case is the clock guard, tested
+  // separately below. Seeding oldest-first in depth order is also what the
+  // account genuinely looks like one run after this ships.
+  describe('sweeping the whole 615-company network', () => {
+    const RUN_ZERO = Date.parse('2026-09-05T00:00:00Z')
+    const SEED = Date.parse('2026-08-01T00:00:00Z')
+
+    function sweep(runs) {
+      const companies = network(615)
+      // Firm 016 is the stalest of the tail, Firm 614 the freshest, so the very
+      // first rotation starts at the top of the tail and works down.
+      const scanned = new Map(companies.map((c, i) => [c.key, SEED + i * 1000]))
+      const perRun = []
+      for (let run = 1; run <= runs; run++) {
+        const now = RUN_ZERO + (run - 1) * WATCHLIST_ROTATION_PERIOD_MS
+        const picked = selectWatchlistRotation(companies, scanned, { limit: WATCHLIST_COMPANY_LIMIT, now })
+        for (const entry of picked) scanned.set(entry.key, now)
+        perRun.push(picked.map(p => p.name))
+      }
+      return perRun
+    }
+
+    it('picks a named company on a specific, predictable run — Firm 040 on run 2, never on run 1', () => {
+      // 16 core + 24 rotating: run 1 takes tail positions 1-24 (Firm 016 to
+      // Firm 039) and run 2 takes 25-48 (Firm 040 to Firm 063). Nothing about
+      // that depends on the wall clock, only on what the previous run recorded.
+      const perRun = sweep(2)
+      expect(perRun[0]).not.toContain('Firm 040')
+      expect(perRun[0]).toContain('Firm 016')
+      expect(perRun[1]).toContain('Firm 040')
+      expect(perRun[1]).not.toContain('Firm 016')
+    })
+
+    it('reaches the very last company in the network — Firm 614 — on run 25, and not before', () => {
+      // 599 companies below the core, 24 slots a run: ceil(599 / 24) = 25 runs,
+      // which at the 12-hourly cadence is 12.5 days. Under the old fixed head
+      // this company was never reached on any run, at any point, ever.
+      const perRun = sweep(25)
+      const firstSeen = perRun.findIndex(names => names.includes('Firm 614'))
+      expect(firstSeen).toBe(24) // zero-indexed: the 25th run
+    })
+
+    it('covers all 615 companies within 25 runs — 12.5 days, against never', () => {
+      const seen = new Set(sweep(25).flat())
+      expect(seen.size).toBe(615)
+    })
+
+    it('still watches the 16 deepest relationships on all 25 of those runs', () => {
+      // Coverage must not be bought by letting the best accounts go dark. This
+      // is the other half of the split, asserted across the whole sweep rather
+      // than on a single run.
+      const perRun = sweep(25)
+      const core = network(615).slice(0, WATCHLIST_CORE_SIZE).map(c => c.name)
+      for (const names of perRun) {
+        for (const coreName of core) expect(names).toContain(coreName)
+      }
+    })
+
+    it('rolls straight into the second sweep instead of restarting at the top of the tail', () => {
+      // 599 does not divide by 24, so run 25 finishes the network with 23 slots
+      // and spends its last one on Firm 016 — the company scanned earliest in
+      // sweep one. Run 26 therefore opens on Firm 017, not on Firm 016 and not
+      // on the deepest tail company: the queue is continuous, and the second
+      // sweep costs the same 12.5 days as the first with no reset and no
+      // company skipped at the seam.
+      const perRun = sweep(26)
+      expect(perRun[24]).toContain('Firm 016')
+      expect(perRun[25]).toContain('Firm 017')
+      expect(perRun[25]).not.toContain('Firm 016') // just scanned, now the freshest of the tail
+      expect(perRun[25]).not.toContain('Firm 614') // covered on run 25
+    })
+  })
+
+  // The guard that makes this safe to ship before its migration is applied.
+  describe('when nothing has ever been recorded (no table, failed writes, first ever run)', () => {
+    it('still advances one block per cycle on the clock alone', () => {
+      // If the recorder is silently broken — the migration has not run, RLS is
+      // wrong, the RPC 404s — every company is equally stale and staleness can
+      // no longer order anything. Falling back to the depth order there would
+      // rebuild the exact frozen head this feature replaced, and would do it
+      // invisibly, because recordWatchlistScan fails open by design. So the
+      // starting position comes from the clock instead.
+      const candidates = network(6)
+      const at = period => selectWatchlistRotation(candidates, new Map(), {
+        limit: 4, coreSize: 2, now: period * WATCHLIST_ROTATION_PERIOD_MS,
+      }).map(p => p.name)
+
+      expect(at(0)).toEqual(['Firm 000', 'Firm 001', 'Firm 002', 'Firm 003'])
+      expect(at(1)).toEqual(['Firm 000', 'Firm 001', 'Firm 004', 'Firm 005'])
+      expect(at(2)).toEqual(['Firm 000', 'Firm 001', 'Firm 002', 'Firm 003']) // wrapped
+    })
+
+    it('does not consult the clock once real timestamps exist', () => {
+      // The clock is the fallback, not the rule. Least-recently-scanned is the
+      // better answer wherever it can be applied, so a single recorded
+      // timestamp is enough to take the offset back out of play.
+      const candidates = network(6)
+      const scanned = new Map([['firm 002', Date.parse('2026-09-04T00:00:00Z')]])
+      const opts = { limit: 4, coreSize: 2, now: 1 * WATCHLIST_ROTATION_PERIOD_MS }
+      const picked = selectWatchlistRotation(candidates, scanned, opts).map(p => p.name)
+      // Firm 003/004/005 are never-scanned and therefore staler than Firm 002.
+      expect(picked).toEqual(['Firm 000', 'Firm 001', 'Firm 003', 'Firm 004'])
+    })
+  })
+})
+
+describe('fetchWatchlistScanTimes / recordWatchlistScan (the rotation\'s stored state)', () => {
+  it('reads last_scanned_at back as epoch milliseconds, keyed by normalised company name', async () => {
+    const supabase = {
+      from: () => ({ select: () => ({ eq: () => ({ limit: async () => ({
+        data: [{ company_key: 'khazna data centers', last_scanned_at: '2026-09-04T09:00:00Z' }],
+        error: null,
+      }) }) }) }),
+    }
+    const times = await fetchWatchlistScanTimes(supabase, 'u1')
+    expect(times.get('khazna data centers')).toBe(Date.parse('2026-09-04T09:00:00Z'))
+  })
+
+  it('returns an empty map rather than throwing when the table is not there yet', async () => {
+    // This migration is deliberately shippable ahead of being applied. A
+    // missing table has to degrade to "no rotation history", which the selector
+    // handles with its clock guard — never to a failed scan.
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const supabase = {
+      from: () => ({ select: () => ({ eq: () => ({ limit: async () => ({
+        data: null, error: { message: 'relation "public.watchlist_scans" does not exist' },
+      }) }) }) }),
+    }
+    expect((await fetchWatchlistScanTimes(supabase, 'u1')).size).toBe(0)
+    expect((await fetchWatchlistScanTimes(null, 'u1')).size).toBe(0)
+    expect((await fetchWatchlistScanTimes({}, null)).size).toBe(0)
+    consoleSpy.mockRestore()
+  })
+
+  it('skips a row whose timestamp cannot be parsed instead of poisoning the ordering with NaN', async () => {
+    // A NaN staleness would make the comparator return NaN and hand the sort
+    // order to the engine — the one thing this mechanism must never do.
+    const supabase = {
+      from: () => ({ select: () => ({ eq: () => ({ limit: async () => ({
+        data: [{ company_key: 'good', last_scanned_at: '2026-09-04T09:00:00Z' }, { company_key: 'bad', last_scanned_at: 'not a date' }],
+        error: null,
+      }) }) }) }),
+    }
+    const times = await fetchWatchlistScanTimes(supabase, 'u1')
+    expect([...times.keys()]).toEqual(['good'])
+  })
+
+  it('records a whole run\'s companies in one RPC, as parallel key and name arrays', async () => {
+    // One statement for all 40, so scan_count increments atomically even when
+    // the onboarding scan and the 12-hourly cron overlap on the same account.
+    const rpc = vi.fn(async () => ({ data: 2, error: null }))
+    const written = await recordWatchlistScan({ rpc }, 'u1', [
+      { name: 'Khazna Data Centers', key: 'khazna data centers' },
+      { name: 'ADQ', key: 'adq' },
+    ])
+    expect(written).toBe(2)
+    expect(rpc).toHaveBeenCalledWith('record_watchlist_scan', {
+      p_user_id: 'u1',
+      p_company_keys: ['khazna data centers', 'adq'],
+      p_company_names: ['Khazna Data Centers', 'ADQ'],
+    })
+  })
+
+  it('logs and returns 0 when the write fails, so a bookkeeping error can never fail a scan', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(await recordWatchlistScan({ rpc: async () => ({ data: null, error: { message: 'nope' } }) }, 'u1', [{ name: 'A', key: 'a' }])).toBe(0)
+    expect(await recordWatchlistScan({ rpc: () => { throw new Error('kaboom') } }, 'u1', [{ name: 'A', key: 'a' }])).toBe(0)
+    expect(await recordWatchlistScan(null, 'u1', [{ name: 'A', key: 'a' }])).toBe(0)
+    expect(await recordWatchlistScan({ rpc: async () => ({}) }, 'u1', [])).toBe(0)
     consoleSpy.mockRestore()
   })
 })

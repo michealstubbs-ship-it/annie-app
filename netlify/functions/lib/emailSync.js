@@ -192,6 +192,55 @@ export function detectAutoReply({ subject = '', bodyPlain = '', headers = [], da
 }
 
 // ---------------------------------------------------------------------------
+// Bounces
+//
+// The opposite failure to the out-of-office above, and a worse one. An
+// out-of-office wrongly counted as an answer stops a chase. A BOUNCE wrongly
+// counted as an answer says the approach landed and was replied to, when in
+// fact it never arrived at all — the product would be reporting a result that
+// is not merely unproven but false.
+//
+// classifyAddress already rejects the usual senders (mailer-daemon, postmaster,
+// bounce*, no-reply), so almost every delivery failure is filtered before it
+// reaches the ledger. This is the second gate, and it exists because the first
+// one is an address list: Exchange and some appliances send an NDR from a
+// perfectly ordinary-looking address, and an address list cannot catch that.
+// Two independent checks, so neither has to be complete on its own.
+//
+// Every rule below is structural rather than a phrase in the prose. A DSN is a
+// machine-generated document with a defined shape (RFC 3464), and matching that
+// shape is what makes this safe to apply to mail from real people: a person
+// writing "sorry, your last message failed to reach me" trips none of it.
+
+const BOUNCE_SUBJECT = /^\s*(undeliverable|undelivered mail returned to sender|delivery status notification\s*\(failure\)|mail delivery fail(ed|ure)|delivery has failed|delivery failure|returned mail|failure notice|message not delivered|delivery incomplete|couldn'?t be delivered)/i
+
+// The machine-readable body parts of a DSN (RFC 3464 §2.3). These field names
+// appear nowhere in ordinary prose, which is exactly why they are the check.
+const DSN_BODY_FIELD = /^(final-recipient|original-recipient|diagnostic-code|action)\s*:/im
+
+export function detectBounce({ subject = '', bodyPlain = '', headers = [] } = {}) {
+  const hdr = {}
+  for (const h of headers || []) {
+    if (h && h.name) hdr[String(h.name).toLowerCase()] = String(h.value == null ? '' : h.value)
+  }
+
+  // The canonical marker. A delivery status notification is a multipart/report
+  // whose report-type says so, and nothing else is.
+  const contentType = (hdr['content-type'] || '').toLowerCase()
+  if (contentType.includes('multipart/report') && contentType.includes('delivery-status')) {
+    return { isBounce: true, reason: 'dsn_content_type' }
+  }
+
+  // Postfix and Exchange both set this, and only on a failure.
+  if ('x-failed-recipients' in hdr) return { isBounce: true, reason: 'failed_recipients_header' }
+
+  if (BOUNCE_SUBJECT.test(subject || '')) return { isBounce: true, reason: 'subject' }
+  if (DSN_BODY_FIELD.test(String(bodyPlain || ''))) return { isBounce: true, reason: 'dsn_body' }
+
+  return { isBounce: false, reason: null }
+}
+
+// ---------------------------------------------------------------------------
 // Signature blocks
 //
 // Bayan AlKhalaf's replies carry "Organization Development Senior Manager" and

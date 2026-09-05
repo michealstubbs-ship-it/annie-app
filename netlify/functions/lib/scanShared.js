@@ -3937,7 +3937,18 @@ export async function getMarketCoverageReport(supabase, { sinceDays = 30, minSca
 // worth watching are the ones the customer can actually get into. 40 names cost
 // roughly 200 prompt tokens, which is nothing against what a scan already
 // spends, so the cap is set by usefulness rather than by budget.
-const WATCHLIST_COMPANY_LIMIT = 40
+//
+// 2026-09-05, later the same day: this is now a PER-RUN cap, not the set of
+// companies the customer has watched. It stayed at 40 deliberately — see the
+// rotation block below for why raising it is the wrong lever. Prompt tokens are
+// not the binding constraint; attention is. The scan asks the model to search
+// each named company against a fixed web-search budget
+// (PRIORITY_DISCOVERY_MAX_USES, SCAN_TIER_CONFIG.anthropicMaxUses), so doubling
+// the list to 80 does not double the searching, it halves the searching per
+// company — and it doubles the Apollo/enrichment spend on the rows that come
+// back. Rotation buys full coverage of a 615-company network for nothing; a
+// bigger list buys partial coverage for double.
+export const WATCHLIST_COMPANY_LIMIT = 40
 
 // Weight per contact, by seniority band. A company where the recruiter knows
 // three C-suite people is a different proposition from one where they know
@@ -3946,6 +3957,219 @@ const WATCHLIST_BAND_WEIGHT = {
   c_suite: 5,
   director_vp: 3,
   manager_plus: 1,
+}
+
+// ---------------------------------------------------------------------------
+// Rotation: the same 40 forever was the whole of the coverage problem
+// ---------------------------------------------------------------------------
+// 2026-09-05, second look at the block above, on the same account the
+// network-first release was measured on. The depth ranking is right about WHICH
+// companies matter most and wrong about the fact that it returns the identical
+// answer on every run for the rest of time.
+//
+// The measurement: that account has 615 companies in its CRM. 40 of them were
+// searched, and — because nothing in the selection depended on time or on
+// anything that changes between runs — the SAME 40 were re-searched every 12
+// hours (see intelligence-scan-background.js's header for the cadence). 94% of
+// the network was never looked at once. A company where the recruiter knows
+// four people but which happened to rank 41st on depth was not deprioritised
+// and not scanned less often: it was invisible permanently, and no amount of
+// waiting would ever have changed that.
+//
+// That is a worse failure than it first looks, because the whole point of the
+// network-first pivot is that the recruiter's own list IS the employer-quality
+// filter (see buildCustomerWatchlistHint). Company #41 passed that filter. It
+// was excluded by an arbitrary cutoff in a ranking, not by a judgment that it
+// was a bad lead.
+//
+// THE RULE, in one sentence: the deepest WATCHLIST_CORE_SIZE relationships are
+// watched on every single run, and the remaining slots go to whichever of the
+// other companies have gone longest without being looked at.
+//
+// Everything about that is a pure function of stored state — the depth scores
+// the block above already computes, plus one timestamp per company written
+// after each run — so a test can drive N runs forward and assert exactly which
+// companies come back on run N, with no Math.random() and no mocked clock. See
+// selectWatchlistRotation below, and its tests in scanShared.test.js.
+//
+// Cost is unchanged by construction: still WATCHLIST_COMPANY_LIMIT names in
+// still one prompt. This changes which 40, not how many.
+
+// The stable head. Companies that never lose their slot to the rotation.
+//
+// WHY 16 AND NOT SOME OTHER NUMBER. The core is pure cost to coverage — every
+// slot spent holding a company still costs a slot that could have been sweeping
+// the tail — so the split has to be argued from the sweep arithmetic, on the
+// real 615-company account:
+//
+//   core   tail slots   pool to sweep   runs to cover it   at 2 runs/day
+//      8           32             607                 19       9.5 days
+//     16           24             599                 25      12.5 days
+//     24           16             591                 37      18.5 days
+//     32            8             583                 73      36.5 days
+//
+// The curve is flat below 16 and turns sharply above it: dropping the core from
+// 16 to 8 buys three days and gives up half the protected head, while raising
+// it from 16 to 24 costs six days to protect eight more. 16 is where those two
+// regrets are smallest — a fortnightly sweep of the entire network, with the
+// sixteen deepest relationships still checked twice a day, every day.
+//
+// This is a tuning constant with the arithmetic written down, not a law. If the
+// cadence changes, redo the fourth column.
+export const WATCHLIST_CORE_SIZE = 16
+
+// One rotation block per scan cycle. Matches intelligence-scan-background.js's
+// 12-hourly schedule, and is used ONLY by the deadlock guard in
+// selectWatchlistRotation — see that function for the failure it exists for.
+export const WATCHLIST_ROTATION_PERIOD_MS = 12 * 60 * 60 * 1000
+
+// "Never scanned" is stored as epoch 0 rather than -Infinity or null on
+// purpose: the comparator below subtracts two staleness values, and
+// (-Infinity) - (-Infinity) is NaN, which makes Array.prototype.sort's result
+// implementation-defined — the exact kind of non-determinism this whole
+// mechanism is supposed to not have. Zero sorts before every real timestamp and
+// subtracts cleanly.
+const NEVER_SCANNED = 0
+
+// Chooses this run's WATCHLIST_COMPANY_LIMIT companies. Pure: same inputs, same
+// output, always, so the tests can assert run-by-run behaviour directly.
+//
+// `candidates` are {name, key, score} in any order (getCustomerWatchlistCompanies
+// builds them); `lastScannedByKey` maps a company key to the epoch-ms of the
+// last run that searched it, missing entries meaning never.
+//
+// Ordering, in full:
+//   1. Sort everything by relationship depth, ties broken by name. The top
+//      coreSize are the core and are always returned. Depth is what the
+//      customer's own CRM says about who they can actually get into, so the
+//      strongest relationships are never rotated out — a sovereign fund the
+//      recruiter knows four C-suite people at does not stop being watched
+//      because it is Tuesday.
+//   2. Everything below the core is the tail pool, ordered by last-scanned
+//      ascending: never-scanned first, then longest-ago, so a company nobody
+//      has looked at in 30 days beats one scanned yesterday. Depth breaks
+//      staleness ties, and the name breaks depth ties — every comparison is
+//      total, so there is no branch where the platform's sort stability decides
+//      the answer.
+//
+// THE DEADLOCK GUARD, and why time is a parameter at all. Staleness can only
+// order the pool if something is actually writing those timestamps. If nothing
+// is — the migration has not been applied yet, the RPC is failing, RLS is
+// misconfigured — then every candidate is equally stale, step 2 degenerates to
+// the depth order, and the rotation silently becomes exactly the frozen head it
+// replaced. That is not a hypothetical: recordWatchlistScan is best-effort and
+// fails open like every other bookkeeping call in this file (see
+// releaseApolloCredits), so a broken recorder produces no error a customer or a
+// log reader would ever notice.
+//
+// So when the pool is genuinely indistinguishable by staleness, the starting
+// position comes from the clock instead: block `now / WATCHLIST_ROTATION_PERIOD_MS`,
+// wrapped around the pool. Coverage then still advances one block per cycle on
+// the clock alone, with the pool sweeping in bounded time whether or not a
+// single timestamp is ever written. It is deliberately scoped to the all-equal
+// case only — the moment real timestamps exist they order the pool, and the
+// clock stops being consulted, because least-recently-scanned is the better
+// rule wherever it can actually be applied.
+export function selectWatchlistRotation(candidates, lastScannedByKey, opts = {}) {
+  const limit = opts.limit ?? WATCHLIST_COMPANY_LIMIT
+  // Clamped, not trusted: a caller asking for 2 companies with a core of 16
+  // must get 2, not 16. (getCustomerWatchlistCompanies takes a `limit` from its
+  // own callers, and the tests exercise small ones.)
+  const coreSize = Math.max(0, Math.min(opts.coreSize ?? WATCHLIST_CORE_SIZE, limit))
+  const now = opts.now ?? Date.now()
+  const scanned = lastScannedByKey || new Map()
+
+  const byDepth = [...(candidates || [])]
+    .filter(c => c?.name)
+    .sort((a, b) => (b.score - a.score) || a.name.localeCompare(b.name))
+  if (byDepth.length <= limit) return byDepth
+
+  const core = byDepth.slice(0, coreSize)
+  const tailSlots = limit - core.length
+  const pool = byDepth.slice(coreSize)
+  if (tailSlots <= 0 || !pool.length) return core.slice(0, limit)
+
+  const staleness = entry => {
+    const at = scanned.get(entry.key)
+    return typeof at === 'number' && Number.isFinite(at) ? at : NEVER_SCANNED
+  }
+  const ordered = [...pool].sort((a, b) =>
+    (staleness(a) - staleness(b)) || (b.score - a.score) || a.name.localeCompare(b.name))
+
+  const oldest = staleness(ordered[0])
+  const indistinguishable = ordered.every(entry => staleness(entry) === oldest)
+  const start = indistinguishable
+    ? (Math.floor(now / WATCHLIST_ROTATION_PERIOD_MS) * tailSlots) % ordered.length
+    : 0
+
+  const tail = []
+  for (let i = 0; i < tailSlots && i < ordered.length; i++) {
+    tail.push(ordered[(start + i) % ordered.length])
+  }
+  return [...core, ...tail]
+}
+
+// When each of this customer's companies was last actually searched. Keyed by
+// normalizeCompanyKey, so "Acme Ltd" and "Acme Limited" share one rotation row
+// rather than each claiming a tail slot and being scanned twice as often as
+// their neighbours — the same normalization the signal dedup already uses.
+//
+// Its own try/catch, separate from getCustomerWatchlistCompanies', and returns
+// an empty Map on any failure rather than propagating. That is what makes this
+// change safe to ship ahead of its migration: with no table and no rows the
+// selection above falls back to depth order plus the clock-driven guard, which
+// is at worst today's behaviour and at best a rotation that works before the
+// schema exists.
+export async function fetchWatchlistScanTimes(supabase, userId) {
+  const times = new Map()
+  if (!supabase || !userId) return times
+  try {
+    const { data, error } = await supabase
+      .from('watchlist_scans')
+      .select('company_key, last_scanned_at')
+      .eq('user_id', userId)
+      .limit(5000)
+    if (error) {
+      console.error('[scanShared] watchlist_scans read failed, rotating on the clock instead:', error.message)
+      return times
+    }
+    for (const row of data || []) {
+      const at = Date.parse(row?.last_scanned_at || '')
+      if (row?.company_key && Number.isFinite(at)) times.set(row.company_key, at)
+    }
+  } catch (err) {
+    console.error('[scanShared] watchlist_scans read failed, rotating on the clock instead:', err.message)
+  }
+  return times
+}
+
+// Marks this run's companies as looked at, which is the only thing that makes
+// the next run pick different ones. One RPC for all 40 rather than 40 upserts,
+// and the increment of scan_count happens inside that statement so two
+// overlapping scans of the same account cannot both read a stale count — the
+// same reasoning as apollo_reserve_credits' own atomic reservation.
+//
+// Best-effort by design, and never awaited on the scan's critical path: a
+// failed write costs coverage speed (the same block comes up again next run, or
+// the clock guard takes over) and must never cost the customer a scan.
+export async function recordWatchlistScan(supabase, userId, entries) {
+  const rows = (entries || []).filter(e => e?.key && e?.name)
+  if (!supabase || !userId || !rows.length) return 0
+  try {
+    const { data, error } = await supabase.rpc('record_watchlist_scan', {
+      p_user_id: userId,
+      p_company_keys: rows.map(e => e.key),
+      p_company_names: rows.map(e => e.name),
+    })
+    if (error) {
+      console.error('[scanShared] record_watchlist_scan RPC failed, rotation will not advance from this run:', error.message)
+      return 0
+    }
+    return typeof data === 'number' ? data : rows.length
+  } catch (err) {
+    console.error('[scanShared] record_watchlist_scan RPC threw, rotation will not advance from this run:', err.message)
+    return 0
+  }
 }
 
 export async function getCustomerWatchlistCompanies(supabase, ob, limit = WATCHLIST_COMPANY_LIMIT) {
@@ -4012,10 +4236,38 @@ export async function getCustomerWatchlistCompanies(supabase, ob, limit = WATCHL
       for (const row of data || []) bump(row.name || row.company, 1)
     }
 
-    return [...scored.values()]
-      .sort((a, b) => (b.score - a.score) || a.name.localeCompare(b.name))
-      .slice(0, limit)
-      .map(entry => entry.name)
+    // Everything above builds the full candidate set — all 615 of them on the
+    // measured account, not a pre-truncated head. The cut to `limit` happens
+    // once, in selectWatchlistRotation, because that is the only place that can
+    // see both how deep each relationship is and how long each company has gone
+    // unwatched. Truncating earlier is precisely what made 94% of the network
+    // permanently invisible.
+    const candidates = [...scored.values()].map(entry => ({
+      ...entry,
+      key: normalizeCompanyKey(entry.name),
+    }))
+    const lastScannedByKey = await fetchWatchlistScanTimes(supabase, ob.user_id)
+    const selected = selectWatchlistRotation(candidates, lastScannedByKey, { limit })
+
+    // Fire-and-forget, same convention as recordLearnedDiscoveries at the scan
+    // call sites: this is the write that advances the rotation, and every scan
+    // entry point that resolves a watchlist has, by definition, just searched
+    // exactly these companies. Recording here rather than at each call site
+    // means a new caller cannot forget to do it and quietly freeze the
+    // rotation for its customers.
+    recordWatchlistScan(supabase, ob.user_id, selected).catch(() => {})
+
+    // The line that will actually settle whether this worked, months from now,
+    // from production logs alone: how big the network is, how much of it this
+    // run looked at, and how much of it has still never been looked at once.
+    // On the account this was measured on that last number started at 615 and
+    // should reach 0 in 25 runs; under the fixed head it would have stopped at
+    // 575 and stayed there for good.
+    console.info('[scanShared] watchlist rotation:',
+      `${selected.length} of ${candidates.length} companies searched this run`,
+      `| never searched yet: ${candidates.filter(c => !lastScannedByKey.has(c.key)).length}`)
+
+    return selected.map(entry => entry.name)
   } catch (err) {
     console.error('[scanShared] failed to read customer watchlist companies:', err.message)
     return []

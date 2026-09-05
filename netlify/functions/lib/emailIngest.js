@@ -2,7 +2,14 @@
 //
 // This is the orchestrator: it decides nothing itself, it sequences the
 // decisions made in emailSync.js (is this a person?), emailMatch.js (who are
-// they?) and emailNote.js (what happened?).
+// they?), emailNote.js (what happened?) and outreachApproach.js (did this
+// answer something we sent?).
+//
+// That last one is why the auto-reply and bounce gates below are computed in
+// one place and read three times — by the note, by last_contacted, and by the
+// approach ledger. Three separate judgements about what counts as an answer is
+// three chances for the product to tell a customer their approach worked when
+// what actually came back was an out-of-office or an undeliverable notice.
 //
 // The ordering below is not arbitrary. The ledger row is CLAIMED before any
 // expensive work happens, because webhooks retry and backfills get re-run. The
@@ -10,9 +17,10 @@
 // duplicate delivery cost nothing instead of writing the same note twice and
 // paying Anthropic twice for the privilege.
 
-import { classifyAddress, pickCounterparty, detectAutoReply, parseSignature } from './emailSync.js'
+import { classifyAddress, pickCounterparty, detectAutoReply, detectBounce, parseSignature } from './emailSync.js'
 import { resolveCompanyName, ensureCompany, matchContact, applySignature, appendContactNote } from './emailMatch.js'
 import { writeNote, autoReplyNote } from './emailNote.js'
+import { markApproachReplied } from './outreachApproach.js'
 
 const SKIP = (reason, extra = {}) => ({ ingested: false, reason, ...extra })
 
@@ -88,6 +96,23 @@ export async function ingestMessage(supabase, {
     date: sentAt,
   })
 
+  // --- and a bounce is not even a message ----------------------------------
+  // Kept separate from the auto-reply flag rather than folded into it: an
+  // out-of-office proves the address works and tells you when to come back, a
+  // bounce proves the opposite. Reading them as one state would let "away
+  // until 21 Sep" and "no such mailbox" produce the same record.
+  const bounce = detectBounce({
+    subject: message.subject,
+    bodyPlain: message.body_plain,
+    headers: message.headers,
+  })
+
+  // The one definition of an answer, used by the note, by last_contacted and
+  // by the approach ledger, so the three can never disagree about what
+  // happened. Outbound mail is excluded here for the obvious reason: writing
+  // to someone again is not them replying.
+  const isHumanReply = who.direction === 'in' && !auto.isAutoReply && !bounce.isBounce
+
   // --- which company, and does the contact exist? --------------------------
   let companyName = null
   let companyId = null
@@ -111,8 +136,24 @@ export async function ingestMessage(supabase, {
   })
 
   if (!match.contactId) {
-    await finish({ is_auto_reply: auto.isAutoReply, away_until: auto.awayUntil })
-    return { ingested: true, ledgerId, outcome: match.outcome, contactId: null, noted: false }
+    await finish({ is_auto_reply: auto.isAutoReply, away_until: auto.awayUntil, is_bounce: bounce.isBounce })
+    // An approach is still answered when the replier has no contact record —
+    // a recruiter who mailed a personal address gets no CRM row for it (see
+    // matchContact's tier three), and refusing to count that reply would
+    // under-report the very thing this feature measures.
+    const orphanReply = isHumanReply
+      ? await recordReply(supabase, { userId, who, sentAt, ledgerId, message })
+      : { matched: false }
+    return {
+      ingested: true,
+      ledgerId,
+      outcome: match.outcome,
+      contactId: null,
+      noted: false,
+      isAutoReply: auto.isAutoReply,
+      isBounce: bounce.isBounce,
+      answeredApproach: orphanReply.matched === true,
+    }
   }
 
   // --- what their signature gave us for free -------------------------------
@@ -127,7 +168,11 @@ export async function ingestMessage(supabase, {
   // --- the note ------------------------------------------------------------
   let note
   let noteModel = null
-  if (auto.isAutoReply) {
+  if (bounce.isBounce) {
+    // Worth recording and worth paying nothing for. The note writer would
+    // summarise a delivery report; this says the one thing that matters.
+    note = 'Email could not be delivered'
+  } else if (auto.isAutoReply) {
     note = autoReplyNote({ awayUntil: auto.awayUntil })
   } else {
     const written = await writeNote(anthropicKey, {
@@ -147,8 +192,9 @@ export async function ingestMessage(supabase, {
     note,
     sentAt,
     // An auto-reply must never mark an approach answered — that is how a real
-    // follow-up gets silently dropped.
-    countsAsContact: !auto.isAutoReply,
+    // follow-up gets silently dropped. A bounce is excluded for the stronger
+    // reason that the message never arrived, so there was no contact at all.
+    countsAsContact: !auto.isAutoReply && !bounce.isBounce,
   })
 
   await finish({
@@ -157,7 +203,16 @@ export async function ingestMessage(supabase, {
     note_model: noteModel,
     is_auto_reply: auto.isAutoReply,
     away_until: auto.awayUntil,
+    is_bounce: bounce.isBounce,
   })
+
+  // --- did this answer an approach? ----------------------------------------
+  // Last, and after the note, because it is the only write here that changes
+  // what the customer is TOLD rather than what they can read for themselves.
+  // If it fails, the note and the contact record are already correct.
+  const replied = isHumanReply
+    ? await recordReply(supabase, { userId, who, sentAt, ledgerId, message })
+    : { matched: false }
 
   return {
     ingested: true,
@@ -168,7 +223,25 @@ export async function ingestMessage(supabase, {
     companyName,
     noted: true,
     isAutoReply: auto.isAutoReply,
+    isBounce: bounce.isBounce,
+    answeredApproach: replied.matched === true,
     enrichedFields: enriched.fields,
+  }
+}
+
+// Never allowed to fail the ingest it is part of: a message is filed whether
+// or not the loop-closing bookkeeping succeeds, exactly as the note is.
+async function recordReply(supabase, { userId, who, sentAt, ledgerId, message }) {
+  try {
+    return await markApproachReplied(supabase, {
+      userId,
+      fromEmail: who.email,
+      repliedAt: sentAt,
+      emailMessageId: ledgerId,
+      threadId: message?.thread_id || null,
+    })
+  } catch {
+    return { matched: false, reason: 'threw' }
   }
 }
 
@@ -185,6 +258,11 @@ export async function ingestBatch(supabase, { messages = [], ...ctx }) {
     // say what it chose not to do, rather than silently dropping them.
     heldPersonal: 0, heldRole: 0,
     skipped: 0, noted: 0, enriched: 0, autoReplies: 0,
+    // Delivery failures and answered approaches. Both are counted here so a
+    // sweep can be read back as "what did this actually find" without a second
+    // query — and so a sudden run of bounces is visible in the report rather
+    // than only in the ledger.
+    bounces: 0, repliesToApproaches: 0,
     companies: new Set(), reasons: {},
   }
 
@@ -209,6 +287,8 @@ export async function ingestBatch(supabase, { messages = [], ...ctx }) {
     if (result.outcome === 'skipped_role') summary.heldRole += 1
     if (result.noted) summary.noted += 1
     if (result.isAutoReply) summary.autoReplies += 1
+    if (result.isBounce) summary.bounces += 1
+    if (result.answeredApproach) summary.repliesToApproaches += 1
     if (result.enrichedFields?.length) summary.enriched += 1
     if (result.companyName) summary.companies.add(result.companyName)
   }

@@ -89,4 +89,23 @@ describe('attachCompanyContext', () => {
       expect(Array.isArray(i.happening)).toBe(true)
     }
   })
+
+  // Today's set records the ids it chose this morning and reads them back all
+  // day (see stream/dailySet.js). Merging happens at 11am as readily as at
+  // 9am — the scan writes a funding signal at a company whose backlog card is
+  // already on the list — and without this the recorded id would simply stop
+  // existing, which the day would read as "dealt with" and quietly shrink.
+  it('records which rows a merged card now speaks for', () => {
+    const out = attachCompanyContext([
+      item({ signal: { id: 'person', signal_type: BACKLOG_SIGNAL_TYPE, linked_contact_id: 'c1' }, score: 30 }),
+      item({ signal: { id: 'funding', signal_type: 'funding', headline: 'Raised $1bn' }, score: 18 }),
+    ])
+    expect(out).toHaveLength(1)
+    expect(out[0].absorbed).toEqual(['funding'])
+  })
+
+  it('leaves absorbed empty on a card that swallowed nothing', () => {
+    const out = attachCompanyContext([item({ signal: { id: 'solo' } })])
+    expect(out[0].absorbed).toEqual([])
+  })
 })

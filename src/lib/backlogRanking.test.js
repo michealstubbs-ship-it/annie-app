@@ -177,6 +177,39 @@ describe('rankBacklog', () => {
     expect(out.map(e => e.contact.id)).toEqual(['b'])
   })
 
+  // PINNING. Once a person has been PUT somewhere — marked Working by the
+  // recruiter, or chosen into today's set this morning — the ranking no longer
+  // gets a vote on whether they exist. Scores move during a day; a name on the
+  // list at 9am has to still be there at 4pm, and losing in-flight work
+  // because a score drifted is the one unforgivable bug in a feed.
+  it('returns a pinned contact that the cap would otherwise have cut', () => {
+    const lots = Array.from({ length: 50 }, (_, i) => contact({
+      id: `x${i}`, name: `P${i}`, seniority_band: 'c_suite',
+    }))
+    const weak = contact({ id: 'pinned', name: 'Zed Weak', seniority_band: 'manager_plus' })
+    const out = rankBacklog([...lots, weak], { functions: FUNCTIONS, limit: 8, pin: new Set(['pinned']) })
+    expect(out.map(e => e.contact.id)).toContain('pinned')
+  })
+
+  it('costs the day no slots to pin somebody', () => {
+    // A recruiter with six things in progress still gets a full pool of new
+    // names underneath them, rather than two.
+    const lots = Array.from({ length: 50 }, (_, i) => contact({ id: `x${i}`, name: `P${i}` }))
+    const out = rankBacklog(lots, { functions: FUNCTIONS, limit: 8, pin: new Set(['x0', 'x1']) })
+    expect(out).toHaveLength(10)
+  })
+
+  it('still drops a pinned contact who has since been contacted', () => {
+    // Pinning holds a name against a wobble in the ranking, never against a
+    // real change in the underlying fact. Logging a note is what removes
+    // someone from the backlog, and it still does.
+    const out = rankBacklog(
+      [contact({ id: 'pinned', last_contacted: '2026-09-05T09:00:00Z' })],
+      { functions: FUNCTIONS, pin: new Set(['pinned']) },
+    )
+    expect(out).toEqual([])
+  })
+
   it('survives an empty CRM', () => {
     expect(rankBacklog([], { functions: FUNCTIONS })).toEqual([])
     expect(rankBacklog(undefined, { functions: FUNCTIONS })).toEqual([])

@@ -46,16 +46,34 @@ function companiesWithLiveSignals(signals = []) {
  * the LinkedIn route builder and the draft panel all work on them unchanged —
  * the point is that this is one feed, not two.
  */
-export function buildBacklogSignals({ contacts = [], signals = [], functions = [], limit, now = new Date() } = {}) {
+// The people this CRM could produce a backlog lead from, before ranking and
+// before any cap. Split out because two callers need exactly this population:
+// the feed, which shows a few of them today, and the queue, which has to be
+// able to say how many are behind those few. A second, subtly different
+// eligibility rule in the queue would let it report a number the list could
+// never reach.
+export function eligibleBacklogContacts({ contacts = [], signals = [], keep = new Set() } = {}) {
   const taken = companiesWithLiveSignals(signals)
-
-  const eligible = contacts.filter(c => {
+  return contacts.filter(c => {
     if (!c || c.backlog_parked_at) return false
+    // Someone the recruiter is working, or someone in today's set, is kept
+    // even if a signal has since landed at their company. The alternative is a
+    // card disappearing mid-day underneath the person using it.
+    if (keep.has(c.id)) return true
     const key = normalizeCompanyName(c.company || '')
     return key ? !taken.has(key) : false
   })
+}
 
-  return rankBacklog(eligible, { functions, limit, now }).map(entry => {
+// working: contact ids the recruiter has marked Working on a backlog card
+//          (contacts.backlog_working_at — a synthetic row has nowhere of its
+//          own to put that, same reasoning as backlog_parked_at).
+// pin:     contact ids that must survive the cap — today's recorded set.
+export function buildBacklogSignals({ contacts = [], signals = [], functions = [], limit, now = new Date(), working = new Set(), pin = new Set() } = {}) {
+  const held = new Set([...working, ...pin])
+  const eligible = eligibleBacklogContacts({ contacts, signals, keep: held })
+
+  return rankBacklog(eligible, { functions, limit, now, pin: held }).map(entry => {
     const { contact } = entry
     return {
       // Namespaced so it can never collide with a real signal UUID, and so
@@ -95,7 +113,11 @@ export function buildBacklogSignals({ contacts = [], signals = [], functions = [
       event_at: null,
       found_at: contact.created_at || null,
 
-      status: 'new',
+      // A synthetic row still carries the recruiter's own judgement about it.
+      // Without this, Working on a backlog card was a button that did nothing:
+      // the state lives in intelligence_signals for real rows, and these rows
+      // are not in that table.
+      status: working.has(contact.id) ? 'working' : 'new',
       who_to_approach: null,
       likely_roles: null,
       candidate_angle: null,
@@ -115,4 +137,26 @@ export function buildBacklogSignals({ contacts = [], signals = [], functions = [
 
 export function isBacklogSignal(signal) {
   return signal?.signal_type === BACKLOG_SIGNAL_TYPE
+}
+
+/**
+ * Everyone the feed has NOT shown yet, in the order it would show them.
+ *
+ * The feed holds a day's work. This is what is behind it, and it exists so the
+ * product can say the true number out loud — "612 more in your network" —
+ * instead of leaving the recruiter to guess whether a short list means the
+ * network is thin or the software is holding something back.
+ *
+ * Deliberately returns ranking entries, not stream items. Building 600 full
+ * cards costs about 2.5 seconds on a 900-contact CRM (measured on this
+ * machine, 2026-09-05) because every card scans the whole CRM for its way in,
+ * its company panel and its why-this-person line. The queue needs a name, a
+ * title and an order, and pays a few milliseconds for them.
+ *
+ * exclude: contact ids already represented in the stream, so nobody is
+ * counted both as today's work and as waiting behind it.
+ */
+export function backlogQueue({ contacts = [], signals = [], functions = [], exclude = new Set(), now = new Date() } = {}) {
+  const eligible = eligibleBacklogContacts({ contacts, signals })
+  return rankBacklog(eligible, { functions, limit: Infinity, now, exclude })
 }

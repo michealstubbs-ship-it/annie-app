@@ -11,7 +11,9 @@
 // What this module does NOT do, deliberately: no eligibility filter that can
 // hide a lead. The only things dropped are rows that are not leads at all
 // (already actioned, or a "live job" at a body that does not employ anyone).
-// Everything else is ranked, never suppressed.
+// Everything else is ranked, never suppressed. That holds for the pooled
+// employer weight added on 2026-09-05 too: it subtracts a capped amount from a
+// score and can never remove a card or take one below a weaker way-in.
 
 import { computeWayIn, RUNG_SPOKEN, RUNG_CANDIDATE, RUNG_CONTACT, RUNG_COLD } from './wayIn.js'
 import { buildLinkedinRoute } from './linkedinRoute.js'
@@ -20,6 +22,7 @@ import { NEWS_SIGNAL_TYPES } from '../signalTypes.js'
 
 import { buildBacklogSignals, BACKLOG_TYPE_WEIGHT, BACKLOG_SIGNAL_TYPE } from './backlogSignals'
 import { isPlaceholderCompany } from '../backlogRanking'
+import { employerKey, employerPenalty, describeEmployerSignal } from '../employerSignal'
 import { normalizeCompanyName } from '../companyMatch'
 import { attachCompanyContext } from './companyContext'
 import { buildCompanyPanel } from './companyPanel'
@@ -84,10 +87,28 @@ function freshnessScore(signal) {
   return 0
 }
 
-export function scoreStreamItem({ signal, wayIn }) {
-  return (RUNG_WEIGHT[wayIn.rung] || 0)
+// parkedEmployers: Map<companyKey, { parkedVoters, workedVoters } | null>, the
+// pooled verdict on the employers on screen. Optional, and absent everywhere
+// except the live stream — the weight is a refinement of this ranking, not a
+// second ranking, and everything scores identically without it.
+//
+// THE SUBTRACTION IS CAPPED AND FLOORED, and both bounds are the point. Capped
+// at MAX_EMPLOYER_PENALTY (10), which is less than the smallest gap between
+// two rungs of the way-in ladder (12), so no amount of pooled parking can push
+// a lead you have a route into below one you do not. Floored at zero, so the
+// weight can only ever reorder — nothing here removes an item from the stream,
+// and buildStream keeps every score-zero item exactly as it always did.
+//
+// Michael, on this: it is a weight, not a ban. A firm that is wrong for one
+// recruiter may be right for a contingency recruiter on smaller roles.
+export function scoreStreamItem({ signal, wayIn }, { parkedEmployers = null } = {}) {
+  const base = (RUNG_WEIGHT[wayIn.rung] || 0)
     + (TYPE_WEIGHT[signal.signal_type] || 1) * 3
     + freshnessScore(signal)
+
+  const key = parkedEmployers ? employerKey(signal.company_name) : null
+  const penalty = key ? employerPenalty(parkedEmployers.get(key)) : 0
+  return Math.max(0, base - penalty)
 }
 
 /**
@@ -131,7 +152,15 @@ export function isWithinNetwork(signal, knownCompanies) {
   return false
 }
 
-export function buildStream({ signals = [], contacts = [], candidates = [], functions = [], backlogLimit } = {}) {
+// backlogWorking / backlogPin are contact ids: the people the recruiter has
+// marked Working on a backlog card, and the people in today's recorded set.
+// Both must reach the stream whatever the ranking says today — see
+// backlogRanking.js's `pin` and stream/dailySet.js.
+//
+// parkedEmployers is the pooled, desk-scoped verdict on employers, keyed by
+// normalised company name — a weight on the score, never a filter. See
+// employerSignal.js.
+export function buildStream({ signals = [], contacts = [], candidates = [], functions = [], backlogLimit, parkedEmployers = null, backlogWorking = new Set(), backlogPin = new Set() } = {}) {
   const knownCompanies = buildKnownCompanies(contacts)
   // The measurement that put this here: on a real account, 600 of 753 contacts
   // were C-suite or Director/VP/Head and not one had ever been contacted, while
@@ -139,7 +168,7 @@ export function buildStream({ signals = [], contacts = [], candidates = [], func
   // offices. The best leads were already in the CRM. These are merged into the
   // same stream rather than shown in a separate tab, because a recruiter wants
   // one ranked list of who to call, not two lists to reconcile.
-  const backlog = buildBacklogSignals({ contacts, signals, functions, limit: backlogLimit })
+  const backlog = buildBacklogSignals({ contacts, signals, functions, limit: backlogLimit, working: backlogWorking, pin: backlogPin })
   const items = []
   for (const signal of [...signals, ...backlog]) {
     if (!signal || signal.status === 'actioned') continue
@@ -210,7 +239,15 @@ export function buildStream({ signals = [], contacts = [], candidates = [], func
     })
   }
 
-  for (const item of items) item.score = scoreStreamItem(item)
+  for (const item of items) {
+    item.score = scoreStreamItem(item, { parkedEmployers })
+    // Carried on the item so the weight is inspectable rather than a silent
+    // reshuffle — same reason exclusionReason returns its reason instead of
+    // just dropping a contact. Null whenever the weight is doing nothing,
+    // which is almost always.
+    const key = parkedEmployers ? employerKey(item.signal.company_name) : null
+    item.employerSignal = key ? describeEmployerSignal(parkedEmployers.get(key)) : null
+  }
 
   // Work in progress sits at the top regardless of score — a recruiter who
   // told Annie they are on something should not have to hunt for it. Parked

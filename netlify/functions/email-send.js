@@ -14,10 +14,33 @@ import { jsonError } from './lib/httpError.js'
 import { reportServerError } from './lib/reportError.js'
 import { unipileConfig, sendEmail, listEmails } from './lib/unipile.js'
 import { ingestMessage } from './lib/emailIngest.js'
+import { recordApproach } from './lib/outreachApproach.js'
 
 const json = (status, body) => new Response(JSON.stringify(body), {
   status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
 })
+
+/**
+ * The signal this approach came from, or null.
+ *
+ * Scoped to the caller's own rows on purpose: a request body cannot name a
+ * lead it does not own, same rule email-webhook.js applies to the account id.
+ * An unknown or foreign id simply produces an approach with no lead attached,
+ * rather than an error — the mail has already been sent by this point.
+ */
+async function loadOwnSignal(admin, userId, signalId) {
+  try {
+    const { data } = await admin
+      .from('intelligence_signals')
+      .select('id, signal_type, company_name')
+      .eq('id', signalId)
+      .eq('user_id', userId)
+      .maybeSingle()
+    return data || null
+  } catch {
+    return null
+  }
+}
 
 export default async (req) => {
   if (req.method !== 'POST') return jsonError(405, 'Method not allowed')
@@ -36,6 +59,11 @@ export default async (req) => {
   const to = String(payload.to || '').trim()
   const subject = String(payload.subject || '').trim()
   const bodyText = String(payload.body || '').trim()
+  // Which lead this approach came from. Optional — a message sent from
+  // anywhere but a feed card has none, and that is a fine thing for an
+  // approach row to be missing. Never trusted as given: it is looked up
+  // against this user's own signals below before anything is written.
+  const signalId = String(payload.signalId || '').trim() || null
   if (!to || !to.includes('@')) return jsonError(400, 'A recipient address is required')
   if (!subject) return jsonError(400, 'A subject is required')
   if (!bodyText) return jsonError(400, 'The message is empty')
@@ -94,6 +122,31 @@ export default async (req) => {
         account,
         message,
         anthropicKey: process.env.ANTHROPIC_API_KEY || null,
+      })
+
+      // The approach itself, against the lead and the contact — not merely as
+      // a row in the mail ledger. This is what a reply is later matched to;
+      // without it a reply is just another inbound email and the loop stays
+      // open forever.
+      //
+      // Same best-effort contract as the note above, and for the same reason:
+      // the message has gone.
+      const signal = signalId ? await loadOwnSignal(admin, user.id, signalId) : null
+      await recordApproach(admin, {
+        userId: user.id,
+        signalId: signal?.id || null,
+        signalType: signal?.signal_type || null,
+        contactId: logged?.contactId || null,
+        companyId: logged?.companyId || null,
+        // The signal's company name is the one the customer sees on the card;
+        // the ingest's is derived from the recipient's domain. Prefer the one
+        // they would recognise, fall back to the one that is always there.
+        companyName: signal?.company_name || logged?.companyName || null,
+        toEmail: to,
+        subject,
+        sentAt: message.date || new Date().toISOString(),
+        emailMessageId: logged?.ledgerId || null,
+        threadId: message.thread_id || null,
       })
     } catch (err) {
       await reportServerError('email-send-log', err, { userId: user.id })
