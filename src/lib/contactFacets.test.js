@@ -75,6 +75,19 @@ describe('deriveSeniorityBand', () => {
     expect(deriveSeniorityBand('Partner')).toBe('c_suite')
   })
 
+  // Found by running the ranker over a real network rather than by unit test:
+  // "Assistant Manager - CEO Office" came out FIRST on the call list, because
+  // 'ceo' matches inside "CEO Office" as a whole bounded word. An office is a
+  // department, not the person who runs it.
+  it('does not read a department name as the role', () => {
+    expect(deriveSeniorityBand('Assistant Manager - CEO Office')).toBe('manager_plus')
+    expect(deriveSeniorityBand('Strategy Manager - CEO Office')).toBe('manager_plus')
+    expect(deriveSeniorityBand('Transformation Portfolio Lead - Wholesale Chief Operating Office')).not.toBe('c_suite')
+    // ...while a title that is senior on its own terms survives the strip.
+    expect(deriveSeniorityBand("Chief of Staff - CEO's Office")).toBe('c_suite')
+    expect(deriveSeniorityBand('Chief Executive Officer')).toBe('c_suite')
+  })
+
   it('returns below for an unmarked title and null for nothing', () => {
     expect(deriveSeniorityBand('Analyst')).toBe('below')
     expect(deriveSeniorityBand('')).toBeNull()

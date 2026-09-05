@@ -63,9 +63,27 @@ const VP_PHRASES = ['vice president', 'vice-president', 'svp', 'evp']
 //                        call list above real equity partners.
 //   'associate partner'  Consulting grade below partner. Senior, not C-suite.
 //
+//   '<x> office'         a department, not the person who runs it. Caught by
+//                        running this over a real network: "Assistant Manager -
+//                        CEO Office" ranked FIRST on the call list, because
+//                        'ceo' matches inside "CEO Office" as a whole bounded
+//                        word. "Strategy Manager - CEO Office" and
+//                        "Transformation Portfolio Lead - Wholesale Chief
+//                        Operating Office" had the same problem. Stripping the
+//                        office phrase leaves the real title behind, so an
+//                        Assistant Manager lands on 'manager_plus' where they
+//                        belong — while "Chief of Staff - CEO's Office" still
+//                        reads as senior on its own 'chief of staff'.
+//
 // These are stripped before the C-suite test only. A Finance Business Partner
 // still classifies normally on everything else.
-const NOT_C_SUITE_PHRASES = ['business partner', 'associate partner']
+const NOT_C_SUITE_PHRASES = [
+  'business partner', 'associate partner',
+  'ceo office', "ceo's office", 'office of the ceo',
+  'cfo office', 'coo office', 'cto office',
+  'chief operating office', 'chief executive office',
+  'chairman office', "chairman's office",
+]
 
 function textForCSuite(titleText) {
   let t = titleText
