@@ -52,6 +52,18 @@ describe('startEmailConnect', () => {
     expect(await startEmailConnect()).toEqual({ url: 'https://account.unipile.com/x', error: null })
   })
 
+  it('sends where to come back to, so onboarding does not dump them in Settings', async () => {
+    global.fetch.mockResolvedValue(reply(200, { url: 'https://account.unipile.com/x' }))
+    await startEmailConnect({ returnTo: '/dashboard?email=connected' })
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({ returnTo: '/dashboard?email=connected' })
+  })
+
+  it('defaults to Settings when nowhere is named', async () => {
+    global.fetch.mockResolvedValue(reply(200, { url: 'https://account.unipile.com/x' }))
+    await startEmailConnect()
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body).returnTo).toBe('/settings?email=connected')
+  })
+
   it('flags an upgrade rather than looking like a failure', async () => {
     global.fetch.mockResolvedValue(reply(402, { error: 'Email sync is on Growth and Team' }))
     const got = await startEmailConnect()

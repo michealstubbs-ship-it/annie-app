@@ -51,6 +51,16 @@ export default async (req) => {
     }
 
     if (req.method === 'POST') {
+      // Where to land after the consent screen. Same-origin PATHS only —
+      // taking a full URL from the request body would turn this endpoint into
+      // an open redirect that any page could point at its own domain.
+      let returnTo = '/settings?email=connected'
+      try {
+        const body = await req.json()
+        const asked = String(body?.returnTo || '')
+        if (/^\/[A-Za-z0-9/_\-?=&.]*$/.test(asked) && !asked.startsWith('//')) returnTo = asked
+      } catch { /* no body is fine — the default covers Settings */ }
+
       const ent = await getEntitlements(admin, user.id)
       if (!ent?.limits?.emailSync) {
         return json(402, { error: 'Email sync is on Growth and Team', upgrade: true })
@@ -64,8 +74,8 @@ export default async (req) => {
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
       const result = await createHostedAuthLink(cfg, {
         userId: user.id,
-        successUrl: `${appUrl}/settings/email?connected=1`,
-        failureUrl: `${appUrl}/settings/email?failed=1`,
+        successUrl: `${appUrl}${returnTo}`,
+        failureUrl: `${appUrl}${returnTo.includes('?') ? returnTo.split('?')[0] : returnTo}?email=failed`,
         notifyUrl: `${appUrl}/api/email-webhook`,
         expiresAt,
       })

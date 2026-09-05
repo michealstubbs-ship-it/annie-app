@@ -8,6 +8,7 @@ import SectorPicker from '../components/SectorPicker'
 import { withTimeout, TIMEOUT_MESSAGE } from '../lib/withTimeout'
 import { trackEvent } from '../lib/analytics'
 import ErrorBanner from '../components/ErrorBanner'
+import EmailConnectStep from '../components/EmailConnectStep'
 import { SIGNAL_TYPE_META } from '../lib/signalTypes'
 // 2026-09-01: the matching logic itself (keyword matching, function/seniority/
 // sector/market filters) moved to linkedinImportMatch.js so it's directly
@@ -536,6 +537,12 @@ export default function LinkedInImport({ embedded = false }) {
                 says. */}
             {' '}Any BD signal Annie finds in your sectors will now be matched back to these contacts by company.
           </p>
+          {/* Offered here, at the end of the import, because it answers the
+              same question the recruiter has just spent two minutes on:
+              where do Annie's contacts come from? Renders nothing at all on
+              Starter, or once a mailbox is already connected. */}
+          <EmailConnectStep onSkip={() => navigate('/dashboard')} />
+
           <button onClick={() => navigate('/dashboard')} className="btn-primary w-full">Go to my dashboard</button>
         </div>
       </Wrapper>

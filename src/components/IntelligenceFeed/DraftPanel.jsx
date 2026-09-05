@@ -180,9 +180,16 @@ export default function DraftPanel({ item, profile, onboarding, emailReady = fal
             >
               Rewrite
             </button>
-            <span className="text-[11px] text-gray-400 ml-auto">
-              {emailReady ? 'Sends from your own mailbox' : 'Edit it before you send it'}
-            </span>
+            {emailReady ? (
+              <span className="text-[11px] text-gray-400 ml-auto">Sends from your own mailbox</span>
+            ) : (
+              <a
+                href="/settings"
+                className="text-[11px] text-gold-ink ml-auto border-b border-gold/40 hover:border-gold-ink pb-px"
+              >
+                Send this without leaving Annie — connect your email
+              </a>
+            )}
           </div>
         </div>
       )}

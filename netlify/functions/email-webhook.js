@@ -62,7 +62,7 @@ export default async (req) => {
         .eq('user_id', userId)
         .eq('email_address', 'pending')
 
-      await admin.from('email_accounts').upsert({
+      const { data: saved } = await admin.from('email_accounts').upsert({
         user_id: userId,
         unipile_account_id: accountId,
         email_address: String(address).toLowerCase(),
@@ -70,8 +70,24 @@ export default async (req) => {
         status: 'connected',
         connected_at: new Date().toISOString(),
       }, { onConflict: 'unipile_account_id' })
+        .select('id')
+        .single()
 
-      return ok({ received: true, connected: true })
+      // Kick off the first sweep. Without this the mailbox connects and then
+      // nothing happens until the next message arrives — the recruiter has
+      // just granted access and would watch an empty Contacts page, which
+      // reads as broken. Deliberately not awaited: it is a background
+      // function that runs for minutes, and this webhook must answer fast.
+      if (saved?.id) {
+        const base = process.env.APP_URL || 'https://app.meetannie.ai'
+        fetch(`${base}/api/email-sync-background`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accountId: saved.id }),
+        }).catch(() => { /* the scheduled catch-up sweep picks it up anyway */ })
+      }
+
+      return ok({ received: true, connected: true, sweepStarted: Boolean(saved?.id) })
     }
 
     // --- new mail ---------------------------------------------------------

@@ -26,6 +26,7 @@ import { SIGNAL_TYPE_META } from '../../lib/signalTypes'
 import { STATE_WORKING, STATE_PARKED } from '../../lib/stream/buildStream'
 import { RUNG_COLD } from '../../lib/stream/wayIn'
 import TopUpPanel from './TopUpPanel'
+import EmailSyncBanner from './EmailSyncBanner'
 import { getEmailStatus } from '../../lib/email/emailApi'
 
 const VIEWS = [
@@ -174,6 +175,7 @@ export default function IntelligenceFeed() {
         </div>
       ) : (
         <div className="space-y-3">
+          <EmailSyncBanner userId={user?.id} />
           {visible.map(item => (
             <StreamItem
               key={item.id}

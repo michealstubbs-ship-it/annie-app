@@ -85,3 +85,35 @@ describe('email-connect', () => {
     expect(globalThis.__db.__writes).toContainEqual(['delete'])
   })
 })
+
+describe('email-connect returnTo', () => {
+  // The connect link is built server-side from a path the page asks for. A
+  // full URL taken from the body would make this an open redirect any page
+  // could aim at its own domain, so only same-origin paths are honoured.
+  async function linkFor(body) {
+    const { createHostedAuthLink } = await import('../lib/unipile.js')
+    createHostedAuthLink.mockClear()
+    await handler(req('POST', body))
+    return createHostedAuthLink.mock.calls[0]?.[1] || {}
+  }
+
+  it('comes back where the page asked', async () => {
+    const args = await linkFor({ returnTo: '/dashboard?email=connected' })
+    expect(args.successUrl).toBe('https://app.meetannie.ai/dashboard?email=connected')
+  })
+
+  it('refuses an absolute URL', async () => {
+    const args = await linkFor({ returnTo: 'https://evil.example.com/steal' })
+    expect(args.successUrl).toBe('https://app.meetannie.ai/settings?email=connected')
+  })
+
+  it('refuses a protocol-relative URL', async () => {
+    const args = await linkFor({ returnTo: '//evil.example.com' })
+    expect(args.successUrl).toBe('https://app.meetannie.ai/settings?email=connected')
+  })
+
+  it('falls back to Settings when nothing is asked for', async () => {
+    const args = await linkFor({})
+    expect(args.successUrl).toBe('https://app.meetannie.ai/settings?email=connected')
+  })
+})

@@ -42,9 +42,13 @@ export async function getEmailStatus() {
  * Returns the one-time Unipile URL to send the recruiter to. Their password
  * goes to Google or Microsoft, never to Annie.
  */
-export async function startEmailConnect() {
+export async function startEmailConnect({ returnTo = '/settings?email=connected' } = {}) {
   try {
-    const resp = await fetch('/api/email-connect', { method: 'POST', headers: await authHeaders(), body: '{}' })
+    const resp = await fetch('/api/email-connect', {
+      method: 'POST',
+      headers: await authHeaders(),
+      body: JSON.stringify({ returnTo }),
+    })
     const data = await readJson(resp)
     if (resp.status === 402) return { url: null, upgrade: true, error: data?.error || 'Email is on Growth and Team.' }
     if (!resp.ok || !data?.url) return { url: null, error: data?.error || 'Could not start the connection.' }
