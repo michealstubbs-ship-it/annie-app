@@ -39,7 +39,10 @@ export function useStream({ user }) {
       // still a way in. Signals are personal (see data/signals.js's header).
       const [signalRows, contactRes, candidateRows, onboardingRes] = await Promise.all([
         listActiveSignals(user.id),
-        supabase.from('contacts').select('id, name, company, title, email, linkedin_url, notes, last_contacted').limit(1000),
+        // The five columns after last_contacted are what the backlog ranks on.
+        // Without them every contact scores zero and the backlog is silently
+        // empty — a failure that looks exactly like "you have no leads".
+        supabase.from('contacts').select('id, name, company, title, email, linkedin_url, notes, last_contacted, seniority_band, function_area, relationship_tier, is_competitor, connected_on, backlog_parked_at, created_at').limit(1000),
         listCandidatesForMatching(user.id),
         supabase.from('onboarding').select('sectors, functions, locations, tone, writing_style').eq('user_id', user.id).maybeSingle(),
       ])
@@ -67,8 +70,16 @@ export function useStream({ user }) {
 
   const deduped = useMemo(() => collapseFeedDuplicates(signals), [signals])
   const items = useMemo(
-    () => buildStream({ signals: deduped, contacts, candidates }),
-    [deduped, contacts, candidates],
+    // onboarding.functions is the function filter the recruiter chose at
+    // signup. It has existed since onboarding shipped and was enforced nowhere
+    // — FEED-6 was a regulatory/HSE card reaching a recruiter who works in
+    // Strategy, Finance and Technology. Passing it here is the first place it
+    // actually gates anything.
+    () => buildStream({ signals: deduped, contacts, candidates, functions: onboarding?.functions || [] }),
+    // onboarding is in here deliberately: it loads in the same Promise.all as
+    // the signals but lands in its own state, so without it the memo keeps the
+    // first-paint value and the function filter never applies.
+    [deduped, contacts, candidates, onboarding],
   )
   const counts = useMemo(() => streamCounts(items), [items])
 

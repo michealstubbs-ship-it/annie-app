@@ -32,6 +32,16 @@
 // `color` (unrelated, unused by the Feed) is kept only for Pipeline.jsx's
 // stage-count tiles, a different, older consumer of this same taxonomy.
 export const SIGNAL_TYPE_META = {
+  // A relationship the recruiter already owns and has never used. Not a market
+  // event at all, which is exactly why it belongs in the feed: on a real
+  // account, 600 of 753 contacts were C-suite or Director/VP/Head and none had
+  // ever been contacted, while the scan beside them surfaced scaffolding firms.
+  //
+  // racy: false — there is no closing window. A relationship that has sat
+  // untouched for two years is not more urgent today than it was yesterday, and
+  // flagging it as time-sensitive would be a manufactured urgency the recruiter
+  // would learn to ignore.
+  network_backlog: { label: 'In your network', chipLabel: 'Your network', icon: '🤝', color: 'text-sky-700 bg-sky-100', feedTopicColor: 'bg-[#e0f2fe] text-[#0369a1]', racy: false },
   funding: { label: 'Funding', icon: '💰', color: 'text-amber-700 bg-amber-100', feedTopicColor: 'bg-[#fef3e2] text-[#b45309]', racy: false },
   // 2026-08-26 audit fix: racy was false here, meaning the Feed's own
   // "time-sensitive" flag (driven by RACY_SIGNAL_TYPES below) never applied
@@ -55,11 +65,23 @@ export const SIGNAL_TYPE_META = {
   live_job: { label: 'Live role', chipLabel: 'Live roles', icon: '💼', color: 'text-emerald-700 bg-emerald-100', feedTopicColor: 'bg-[#dcfce7] text-[#15803d]', racy: true },
 }
 
-// The subset the AI's own scan prompt is allowed to choose a signalType
-// from. Order matters here — it's interpolated directly into the prompt
-// text as a comma-separated list — so this preserves the exact original
-// ordering rather than re-sorting.
-export const SIGNAL_TYPES = Object.keys(SIGNAL_TYPE_META).filter(id => id !== 'live_job')
+// The subset the AI's own scan prompt is allowed to choose a signalType from.
+// Order matters — it is interpolated directly into the prompt text as a
+// comma-separated list — so this preserves the original ordering rather than
+// re-sorting.
+//
+// Two exclusions, for the same underlying reason — anything in this list is
+// something the model will go looking for in the market:
+//
+//   live_job        forced in code from a separate entryType, never the AI's
+//                   own choice (see this file's header).
+//   network_backlog not a market event at all. It is synthesised in the browser
+//                   from the customer's own CRM, so asking a scan to find one
+//                   is asking it to invent a relationship the customer has.
+//                   The existing ordering test caught this the first time it
+//                   was added, which is the test doing exactly its job.
+const NOT_AI_CHOSEN = new Set(['live_job', 'network_backlog'])
+export const SIGNAL_TYPES = Object.keys(SIGNAL_TYPE_META).filter(id => !NOT_AI_CHOSEN.has(id))
 
 // Which signal types Today's Actions and the Intelligence Feed both treat
 // as time-sensitive (worth a "time-sensitive" flag while still fresh).

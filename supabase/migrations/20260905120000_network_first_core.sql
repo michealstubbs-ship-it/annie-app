@@ -109,6 +109,23 @@ alter table public.contacts
 comment on column public.contacts.is_competitor is
   'True when the title or company looks like another recruiter or search firm. Set by contactFacets.js isLikelyCompetitor(). Excluded from lead ranking, never hidden from the CRM.';
 
+-- ---------------------------------------------------------------------------
+-- 3c. Parking a backlog lead
+-- ---------------------------------------------------------------------------
+-- Backlog leads are synthesised in the browser from contacts rather than
+-- written as intelligence_signals rows (see src/lib/stream/backlogSignals.js
+-- for why). That buys a great deal of simplicity and costs exactly one thing:
+-- a synthetic row has nowhere to persist "not this one".
+--
+-- Actioning needs no column — logging a note sets last_contacted, and the
+-- ranking already excludes anyone with last_contacted. Only an explicit
+-- dismissal needs storing, and this is where it goes.
+alter table public.contacts
+  add column if not exists backlog_parked_at timestamptz;
+
+comment on column public.contacts.backlog_parked_at is
+  'Set when the recruiter explicitly dismisses this person from the backlog list. Contacting them is handled by last_contacted instead.';
+
 -- Ranking the backlog reads (team, tier, seniority) and orders within it, so
 -- the index carries the band and leaves connected_on to the sort.
 create index if not exists contacts_backlog_idx

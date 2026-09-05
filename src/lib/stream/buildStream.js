@@ -18,6 +18,8 @@ import { buildLinkedinRoute } from './linkedinRoute.js'
 import { looksLikeNonEmployerOrg } from '../agencyMatch.js'
 import { NEWS_SIGNAL_TYPES } from '../signalTypes.js'
 
+import { buildBacklogSignals, BACKLOG_TYPE_WEIGHT, BACKLOG_SIGNAL_TYPE } from './backlogSignals'
+
 export const STATE_NEW = 'new'
 export const STATE_WORKING = 'working'
 export const STATE_PARKED = 'parked'
@@ -36,6 +38,10 @@ export function itemStateFromStatus(status) {
 // regulatory note is background.
 const TYPE_WEIGHT = {
   leadership_change: 5,
+  // A relationship the recruiter already owns and has never used. No event
+  // attached, so it must not out-rank a real trigger — level with live_job,
+  // and the way-in rung separates them from there.
+  [BACKLOG_SIGNAL_TYPE]: BACKLOG_TYPE_WEIGHT,
   funding: 5,
   live_job: 4,
   expansion: 4,
@@ -88,9 +94,16 @@ export function scoreStreamItem({ signal, wayIn }) {
  * Every returned item carries its own way in, its source, and its state, so
  * the component renders without going back to the data layer.
  */
-export function buildStream({ signals = [], contacts = [], candidates = [] } = {}) {
+export function buildStream({ signals = [], contacts = [], candidates = [], functions = [], backlogLimit } = {}) {
+  // The measurement that put this here: on a real account, 600 of 753 contacts
+  // were C-suite or Director/VP/Head and not one had ever been contacted, while
+  // the market scan beside them was surfacing scaffolding firms and law
+  // offices. The best leads were already in the CRM. These are merged into the
+  // same stream rather than shown in a separate tab, because a recruiter wants
+  // one ranked list of who to call, not two lists to reconcile.
+  const backlog = buildBacklogSignals({ contacts, signals, functions, limit: backlogLimit })
   const items = []
-  for (const signal of signals) {
+  for (const signal of [...signals, ...backlog]) {
     if (!signal || signal.status === 'actioned') continue
     // Not a lead: a "live job" at a membership body, a meetup group or an
     // agency is not an employer hiring.
