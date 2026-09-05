@@ -10,6 +10,8 @@ import { trackEvent } from '../lib/analytics'
 import ErrorBanner from '../components/ErrorBanner'
 import EmailConnectStep from '../components/EmailConnectStep'
 import { SIGNAL_TYPE_META } from '../lib/signalTypes'
+import { detectChanges, buildAllChangeSignals, contactUpdateFor } from '../lib/linkedinImportDiff'
+import { deriveContactFacets } from '../lib/contactFacets'
 // 2026-09-01: the matching logic itself (keyword matching, function/seniority/
 // sector/market filters) moved to linkedinImportMatch.js so it's directly
 // unit-testable rather than living only as closures inside this component —
@@ -82,6 +84,19 @@ function ExportWalkthrough() {
       </p>
     </div>
   )
+}
+
+// LinkedIn writes "Connected On" as a locale-ish date string ("21 Jun 2023").
+// A value Postgres cannot parse must become null rather than throw and take the
+// whole import down — a missing connection date costs a small ranking bonus,
+// a failed import costs the customer their entire CRM.
+function parseConnectedOn(raw) {
+  if (!raw) return null
+  const parsed = Date.parse(raw)
+  if (Number.isNaN(parsed)) return null
+  const d = new Date(parsed)
+  if (d.getFullYear() < 2000 || d.getFullYear() > 2100) return null
+  return d.toISOString().slice(0, 10)
 }
 
 export default function LinkedInImport({ embedded = false }) {
@@ -389,7 +404,13 @@ export default function LinkedInImport({ embedded = false }) {
       // a real email. A contact with neither is imported every time — there
       // is no reliable signal to dedupe it against, and silently dropping a
       // same-name contact risks merging two different real people.
-      const existingContacts = await fetchAllRows('contacts', 'linkedin_url, email')
+      // The extra columns are what turns a re-import from a no-op into the most
+      // valuable thing this screen does. Until 2026-09-05 an existing contact
+      // was detected and SKIPPED, so a contact who had changed employer since
+      // the last export was discarded as a duplicate — the move signal is not
+      // in one snapshot, it is in the difference between two, and it was being
+      // thrown away every time.
+      const existingContacts = await fetchAllRows('contacts', 'id, name, company, title, linkedin_url, email')
       const existingLinkedinUrls = new Set(existingContacts.map(c => c.linkedin_url).filter(Boolean))
       const existingEmails = new Set(existingContacts.map(c => c.email?.toLowerCase()).filter(Boolean))
       const isAlreadyImported = (c) =>
@@ -397,6 +418,41 @@ export default function LinkedInImport({ embedded = false }) {
         (c.email && existingEmails.has(c.email.toLowerCase()))
 
       const alreadyImportedCount = toImport.filter(isAlreadyImported).length
+
+      // Keyed the same way isAlreadyImported matches, so the two can never
+      // disagree about which incoming row is which existing contact.
+      const existingByKey = new Map()
+      for (const c of existingContacts) {
+        if (c.linkedin_url) existingByKey.set(c.linkedin_url, c)
+        if (c.email) existingByKey.set(c.email.toLowerCase(), c)
+      }
+
+      const changes = detectChanges(toImport, existingByKey)
+
+      // The CRM is updated FIRST and separately from the signals. Losing a lead
+      // is recoverable on the next import; silently keeping a stale employer on
+      // a contact is not, and every downstream ranking reads that company.
+      for (const change of changes) {
+        const update = contactUpdateFor(change)
+        if (!update) continue
+        const { error: updErr } = await supabase.from('contacts')
+          .update({ company: update.company, title: update.title })
+          .eq('id', update.id)
+        if (updErr) console.error('[linkedin-import] failed to update moved contact:', updErr.message)
+      }
+
+      // Signals are best-effort on purpose: a failure here must not fail the
+      // import the recruiter is watching, and the same change will be detected
+      // again next time because the dedup key is derived from the transition.
+      if (changes.length) {
+        const signalRows = buildAllChangeSignals(changes, { userId: user.id })
+        if (signalRows.length) {
+          const { error: sigErr } = await supabase
+            .from('intelligence_signals')
+            .upsert(signalRows, { onConflict: 'user_id,dedup_key', ignoreDuplicates: true })
+          if (sigErr) console.error('[linkedin-import] failed to write change signals:', sigErr.message)
+        }
+      }
 
       // 2026-09-02 audit fix: every imported contact used to be forced into
       // status 'hot' or 'warm' based purely on a title-keyword match, with
@@ -416,6 +472,16 @@ export default function LinkedInImport({ embedded = false }) {
         .map(c => {
           const text = `${c.title || ''}`.toLowerCase()
           const isSenior = seniorKeywords.some(k => keywordMatches(text, k))
+          // The facets are computed here, at import, from title text the
+          // parser already reads. Before this they were computed to run the
+          // import's own filters and then thrown away, which is why a CRM of
+          // 753 rows had nothing to sort or rank by — status said 'cold' on
+          // 752 of them and tags said 'linkedin-import' on 752.
+          //
+          // connected_on is the same story: read off the CSV, used as a filter
+          // on this screen, never stored. It is the only staleness signal that
+          // exists before a mailbox is connected.
+          const facets = deriveContactFacets(c)
           return {
             row: {
               user_id: user.id,
@@ -427,6 +493,11 @@ export default function LinkedInImport({ embedded = false }) {
               linkedin_url: c.linkedin_url || null,
               status: 'cold',
               tags: ['linkedin-import'],
+              connected_on: parseConnectedOn(c.connectedOn),
+              seniority_band: facets.seniority_band,
+              function_area: facets.function_area,
+              relationship_tier: facets.relationship_tier,
+              is_competitor: facets.is_competitor,
             },
             isSenior,
           }
