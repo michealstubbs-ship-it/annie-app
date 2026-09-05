@@ -125,3 +125,7 @@ export default async (req) => {
     status: 200, headers: { 'Content-Type': 'application/json' },
   })
 }
+
+// Netlify: a custom path replaces the default /.netlify/functions/ alias,
+// so this is the ONLY URL this function answers on.
+export const config = { path: '/api/email-sync-background' }

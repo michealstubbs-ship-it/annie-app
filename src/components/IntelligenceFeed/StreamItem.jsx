@@ -24,9 +24,19 @@ const STATES = [
   { key: STATE_PARKED, label: 'Park' },
 ]
 
-export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen, onResolved, onContactLogged, onContactSaved, userId, profile, onboarding }) {
+export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen, onResolved, onContactLogged, onContactSaved, userId, profile, onboarding, emailReady = false }) {
   const [open, setOpen] = useState(false)
   const s = item.signal
+
+  // Who the draft is addressed to. Only ever a real address Annie holds — the
+  // person already on the card, or the one the scan verified. Never assembled
+  // from a name and a domain: a guessed address sends a stranger a message in
+  // the recruiter's own name, from their own mailbox.
+  const recipient = item.wayIn?.person?.email
+    ? { email: item.wayIn.person.email, name: item.wayIn.person.name }
+    : (s.contact_email && s.contact_verified
+        ? { email: s.contact_email, name: s.contact_name }
+        : null)
   const meta = SIGNAL_TYPE_META[s.signal_type] || { label: s.signal_type, icon: '📌' }
 
   function toggle() {
@@ -127,7 +137,7 @@ export default function StreamItem({ item, onSetState, onDone, onDismiss, onSeen
           {/* Written on request, never in advance. The old page ran an AI copy
               pass across every item before it could render, paying to write an
               approach for leads nobody opened. */}
-          <DraftPanel item={item} profile={profile} onboarding={onboarding} />
+          <DraftPanel item={item} profile={profile} onboarding={onboarding} emailReady={emailReady} recipient={recipient} />
 
           {/* The only thing in the product that creates rung 1 — see LogNote's
               own header. Offered wherever there is a real person on the card. */}

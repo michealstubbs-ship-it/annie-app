@@ -125,3 +125,7 @@ export default async (req) => {
     return ok({ received: true, error: true })
   }
 }
+
+// Netlify: a custom path replaces the default /.netlify/functions/ alias,
+// so this is the ONLY URL this function answers on.
+export const config = { path: '/api/email-webhook' }

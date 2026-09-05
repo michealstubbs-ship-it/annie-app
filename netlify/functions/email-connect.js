@@ -101,3 +101,7 @@ export default async (req) => {
     return jsonError(500, 'Something went wrong')
   }
 }
+
+// Netlify: a custom path replaces the default /.netlify/functions/ alias,
+// so this is the ONLY URL this function answers on.
+export const config = { path: '/api/email-connect' }

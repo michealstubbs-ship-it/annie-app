@@ -16,7 +16,7 @@
 // strength of the route in and says which rung it is on. CRM housekeeping —
 // follow-ups, dormant contacts, meeting prep — has moved out; on day one of
 // the snag week this page showed nine cards and every one was admin.
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useAuth } from '../../contexts/AuthContext'
 import { useStream } from './useStream'
 import StreamItem from './StreamItem'
@@ -26,6 +26,7 @@ import { SIGNAL_TYPE_META } from '../../lib/signalTypes'
 import { STATE_WORKING, STATE_PARKED } from '../../lib/stream/buildStream'
 import { RUNG_COLD } from '../../lib/stream/wayIn'
 import TopUpPanel from './TopUpPanel'
+import { getEmailStatus } from '../../lib/email/emailApi'
 
 const VIEWS = [
   { key: 'all', label: 'Everything' },
@@ -37,6 +38,19 @@ const VIEWS = [
 export default function IntelligenceFeed() {
   const { user, profile } = useAuth()
   const { items, counts, credits, loading, error, onboarding, setState, markDone, dismiss, markSeen, applyResolvedContact, applyContactLogged, applyContactSaved } = useStream({ user })
+  // Asked once for the whole feed, not once per card: twenty items would
+  // otherwise fire twenty identical status calls on every render pass. A
+  // failure here is silent on purpose — email is an extra, and the feed must
+  // still work exactly as before when it is off or unreachable.
+  const [emailReady, setEmailReady] = useState(false)
+  useEffect(() => {
+    let live = true
+    getEmailStatus().then(status => {
+      if (live) setEmailReady(Boolean(status?.available && status?.account?.status === 'connected'))
+    })
+    return () => { live = false }
+  }, [])
+
   const [view, setView] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
   const [topUpDismissed, setTopUpDismissed] = useState(false)
@@ -167,6 +181,7 @@ export default function IntelligenceFeed() {
               userId={user?.id}
               profile={profile}
               onboarding={onboarding}
+              emailReady={emailReady}
               onSetState={setState}
               onDone={markDone}
               onDismiss={dismiss}

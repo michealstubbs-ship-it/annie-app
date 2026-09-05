@@ -10,6 +10,7 @@ import { CURRENCY_OPTIONS } from '../lib/invoiceCalc'
 import { resolveMarketCurrencyCode, DEFAULT_CURRENCY_CODE } from '../lib/marketCurrency'
 import { withTimeout } from '../lib/withTimeout'
 import ConfirmDialog from './ConfirmDialog'
+import EmailConnect from './EmailConnect'
 import ErrorBanner from './ErrorBanner'
 
 // Matches the old LOCAL_POLL_WINDOW_MS this page used to hand-roll: local
@@ -293,6 +294,12 @@ Only return the style profile text, nothing else.`
         <p className="text-sm text-gray-500 mb-4">Import or re-import your LinkedIn connections. Annie only adds contacts matching the filters you set.</p>
         <button onClick={() => navigate('/dashboard/import-linkedin')} className="btn-primary">Import LinkedIn contacts</button>
       </div>
+
+      {/* Sits directly under LinkedIn contacts because both answer the same
+          question — "where do Annie's contacts come from?" — and because a
+          recruiter who just imported LinkedIn is exactly who should be offered
+          the mailbox next. */}
+      <EmailConnect />
 
       <div className="card p-6 mb-6">
         <h2 className="text-lg font-bold text-navy mb-1">Invoicing details</h2>
